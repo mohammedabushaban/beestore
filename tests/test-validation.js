@@ -114,3 +114,19 @@ test('valid sale with a positive quantity still posts', async () => {
   assert.strictEqual(res.data.totalMinor, 4000);
   assert.strictEqual(res.data.status, 'paid');
 });
+
+test('variant rejects a non-positive opening quantity when provided', async () => {
+  const { api, prd } = await freshApi();
+  for (const quantity of [0, -3, 2.5]) {
+    const res = await api.variants.create({
+      productId: prd.id, size: 'L', color: 'G', priceMinor: 2000, quantity,
+    });
+    assert.strictEqual(res.ok, false, 'quantity=' + quantity);
+    assert.strictEqual(res.error.code, 'INVALID');
+  }
+  const okRes = await api.variants.create({
+    productId: prd.id, size: 'L', color: 'G', priceMinor: 2000, quantity: 4,
+  });
+  assert.strictEqual(okRes.ok, true);
+  assert.strictEqual(okRes.data.quantity, 4);
+});

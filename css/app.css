@@ -110,11 +110,23 @@ input, select, textarea, button {
   transition: transform 0.3s;
 }
 .sidebar-header {
-  padding: 20px;
+  padding: 12px;
   background: var(--primary);
   color: #fff;
   font-size: 20px;
   font-weight: bold;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-direction: row;
+}
+.sidebar-logo {
+  width: 48px;
+  height: 48px;
+  border-radius: 8px;
+  object-fit: cover;
+  background: #fff;
+  padding: 4px;
 }
 .sidebar-backdrop {
   display: none;

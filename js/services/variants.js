@@ -80,6 +80,9 @@
         }
 
         const quantity = Number(data.quantity) || 0;
+        if (data.quantity != null && !(Number.isInteger(quantity) && quantity > 0)) {
+          throw BeeStore.errors.err('INVALID', 'الكمية الافتتاحية مطلوبة ويجب أن تكون أكبر من صفر');
+        }
         const variant = {
           id: BeeStore.ids.randomId('var'),
           productId: data.productId,

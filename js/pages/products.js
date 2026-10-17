@@ -197,7 +197,7 @@
     const colorSelect = select(colors.map(x => ({ value: x, label: x })), colors[0] || '');
     const costInput = input('number', '', { min: 0, step: 0.01 });
     const priceInput = input('number', '', { min: 0, step: 0.01 });
-    const qtyInput = input('number', '0', { min: 0 });
+    const qtyInput = input('number', '', { min: 1, step: 1 });
     const barcodeInput = input('text', '', { placeholder: 'اتركه فارغاً للتوليد التلقائي' });
 
     const { overlay } = BeeStore.dialogs.openDialog('صنف جديد', [
@@ -205,8 +205,8 @@
       formField('المقاس', sizeSelect, true),
       formField('اللون', colorSelect, true),
       formField('التكلفة', costInput),
-      formField('السعر', priceInput, true),
-      formField('الكمية الافتتاحية', qtyInput),
+      formField('السعر', priceInput),
+      formField('الكمية الافتتاحية', qtyInput, true, 'مطلوبة ويجب أن تكون أكبر من صفر'),
       formField('الباركود', barcodeInput),
       el('button', {
         class: 'btn btn-primary',
@@ -215,13 +215,15 @@
           if (!sizeSelect.value && !colorSelect.value) { toast('حدد المقاس واللون', 'error'); return; }
           const priceMinor = BeeStore.money.fromMajor(priceInput.value);
           if (priceMinor <= 0) { toast('سعر البيع مطلوب - أدخل سعراً أكبر من صفر', 'error'); return; }
+          const qty = Math.floor(Number(qtyInput.value));
+          if (!qty || qty <= 0) { toast('الكمية الافتتاحية مطلوبة ويجب أن تكون أكبر من صفر', 'error'); return; }
           const res = await BeeStore.api.variants.create({
             productId: productSelect.value,
             size: sizeSelect.value,
             color: colorSelect.value,
             costMinor: BeeStore.money.fromMajor(costInput.value),
             priceMinor,
-            quantity: Number(qtyInput.value) || 0,
+            quantity: qty,
             barcode: barcodeInput.value.trim(),
           });
           if (res.ok) { toast('تم إضافة الصنف'); overlay.remove(); render(document.getElementById('page-content')); }

@@ -46,6 +46,7 @@ BeeStore is a browser-only Arabic RTL accounting & inventory system for a childr
 - `BeeStore-v2-Monthly-Periods.md` — v2 addendum: monthly periods, month closing, hardening, acceptance scenario (§13.2)
 
 ## Recent Changes
+- Add-variant dialog now requires a positive opening quantity (`variants.create` rejects an explicit non-positive qty with `INVALID`; still allowed when omitted for import/test paths); `tests/test-validation.js` (+1); 97/97 green.
 - Recurring generation now targets the selected period month (was always today's month, so created expenses landed outside the scoped list and looked unsaved); button + toast show the month; `tests/test-expenses.js` (+1); 96/96 green.
 - JSDoc on `settings` (all services done), digit normalization in service qty/day inputs, real-IDB v2 smoke tests (close/reopen gate, integrity, monthReview), v2 manual CHECKLIST.
 - Return accounting: return badge (كامل/جزئي) + refunded qty + returns card in invoices view, `sales.printData` includes `returns`, dashboard today + 30-day chart net of returns, `salesReport` adds `{returns,net}` per group + reports columns, daily-closing dialog shows gross/refunds/net; `tests/test-return-accounting.js` (+5); 95/95 green.

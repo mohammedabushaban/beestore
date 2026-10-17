@@ -41,6 +41,15 @@
     async create(data) {
       return this.repo.transaction(async (tx) => {
         await BeeStore.periods.assertOpen(tx, data.date || BeeStore.dates.today());
+        if (!String(data.name || '').trim()) {
+          throw BeeStore.errors.err('INVALID', 'اسم المنتج مطلوب');
+        }
+        if (data.defaultCostMinor != null && BeeStore.money.roundMinor(data.defaultCostMinor) <= 0) {
+          throw BeeStore.errors.err('INVALID', 'سعر التكلفة الافتراضي مطلوب - أدخل قيمة أكبر من صفر');
+        }
+        if (data.defaultPriceMinor != null && BeeStore.money.roundMinor(data.defaultPriceMinor) <= 0) {
+          throw BeeStore.errors.err('INVALID', 'سعر البيع الافتراضي مطلوب - أدخل سعراً أكبر من صفر');
+        }
         const product = {
           id: BeeStore.ids.randomId('prd'),
           name: data.name,

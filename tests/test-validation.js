@@ -115,6 +115,21 @@ test('valid sale with a positive quantity still posts', async () => {
   assert.strictEqual(res.data.status, 'paid');
 });
 
+test('product rejects missing name or non-positive cost/price when provided', async () => {
+  const { api } = await freshApi();
+  const noName = await api.products.create({ defaultCostMinor: 1000, defaultPriceMinor: 2000 });
+  assert.strictEqual(noName.ok, false);
+  assert.strictEqual(noName.error.code, 'INVALID');
+  const badCost = await api.products.create({ name: 'X', defaultCostMinor: 0, defaultPriceMinor: 2000 });
+  assert.strictEqual(badCost.ok, false);
+  assert.strictEqual(badCost.error.code, 'INVALID');
+  const badPrice = await api.products.create({ name: 'X', defaultCostMinor: 1000, defaultPriceMinor: 0 });
+  assert.strictEqual(badPrice.ok, false);
+  assert.strictEqual(badPrice.error.code, 'INVALID');
+  const ok = await api.products.create({ name: 'X', defaultCostMinor: 1000, defaultPriceMinor: 2000 });
+  assert.strictEqual(ok.ok, true);
+});
+
 test('variant rejects a non-positive opening quantity when provided', async () => {
   const { api, prd } = await freshApi();
   for (const quantity of [0, -3, 2.5]) {

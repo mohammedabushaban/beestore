@@ -6,13 +6,22 @@
     const hasIndexedDB = 'indexedDB' in window;
     const hasFS = 'showDirectoryPicker' in window;
     const hasLocks = 'navigator' in window && 'locks' in navigator;
+    const isFile = !!(window.location && window.location.protocol === 'file:');
 
-    if (!hasIndexedDB || !hasFS || !hasLocks) {
+    if (!hasIndexedDB || !hasFS || !hasLocks || isFile) {
       document.getElementById('browser-warning').style.display = 'block';
     }
 
     BeeStore.repo = new BeeStore.IdbRepository();
-    await BeeStore.repo.open();
+    try {
+      // A file:// page has no usable IndexedDB: open() may hang forever.
+      await _openRepoWithTimeout(BeeStore.repo, 5000);
+    } catch (e) {
+      _showFatal('تعذّر فتح قاعدة البيانات المحلية (IndexedDB). يحدث هذا عند فتح الملف مباشرة برابط ' +
+        'file:// — يمنع المتصفح IndexedDB هناك. شغّل البرنامج عبر خادم محلي ' +
+        '(مثال: python -m http.server) أو افتح النسخة المنشورة على رابط https.');
+      return;
+    }
 
     // Startup migration: upgrade older exports/data to the current schema.
     try {
@@ -57,6 +66,42 @@
     if (navigator.storage && navigator.storage.persist) {
       navigator.storage.persist();
     }
+  }
+
+  function _openRepoWithTimeout(repo, ms) {
+    return new Promise((resolve, reject) => {
+      let done = false;
+      const timer = setTimeout(() => {
+        if (done) return;
+        done = true;
+        reject(new Error('IndexedDB open timed out'));
+      }, ms);
+      repo.open().then(() => {
+        if (done) return;
+        done = true;
+        clearTimeout(timer);
+        resolve();
+      }, (err) => {
+        if (done) return;
+        done = true;
+        clearTimeout(timer);
+        reject(err);
+      });
+    });
+  }
+
+  function _showFatal(message) {
+    const app = document.getElementById('app');
+    if (app) app.style.display = 'none';
+    const box = document.createElement('div');
+    box.style.cssText = 'position:fixed;top:50%;left:50%;transform:translate(-50%,-50%);background:#fff;padding:32px;border-radius:8px;text-align:center;max-width:520px;box-shadow:0 4px 24px rgba(0,0,0,.15);line-height:1.9;';
+    const h = document.createElement('h2');
+    h.textContent = 'تعذّر تشغيل البرنامج';
+    const p = document.createElement('p');
+    p.textContent = message;
+    box.appendChild(h);
+    box.appendChild(p);
+    document.body.appendChild(box);
   }
 
   function startApp() {
@@ -104,9 +149,14 @@
       else openSidebar();
     }
 
-    document.querySelectorAll('.sidebar-nav a').forEach(a => {
-      a.addEventListener('click', closeSidebar);
-    });
+    // Close on any nav tap. Delegated + capture so it also fires on touch
+    // devices right after the tap, before the link's own handler runs.
+    sidebar.addEventListener('click', (e) => {
+      const link = e.target && e.target.closest ? e.target.closest('a') : null;
+      if (link) closeSidebar();
+    }, true);
+    // Safety net: any navigation (back/forward, link) closes the sidebar.
+    window.addEventListener('hashchange', closeSidebar);
     window.addEventListener('resize', () => {
       if (window.innerWidth > 768) closeSidebar();
     });

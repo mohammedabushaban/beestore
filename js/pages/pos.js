@@ -178,8 +178,8 @@
     const discountValue = input('number', '0', { min: 0, step: 0.01, 'aria-label': 'قيمة الخصم' });
     refs.discountType = discountType;
     refs.discountValue = discountValue;
-    discountType.addEventListener('change', () => { discount.type = discountType.value; _updateTotals(); });
-    discountValue.addEventListener('input', () => { discount.value = BeeStore.money.parseDecimal(discountValue.value); _updateTotals(); });
+    discountType.addEventListener('change', () => { discount.type = discountType.value; _updateTotals(); _syncAutoPayment(); });
+    discountValue.addEventListener('input', () => { discount.value = BeeStore.money.parseDecimal(discountValue.value); _updateTotals(); _syncAutoPayment(); });
 
     const paymentsDiv = el('div', { id: 'pos-payments', role: 'list', 'aria-label': 'طرق الدفع' });
     const totalsDiv = el('div', { id: 'pos-totals', class: 'pos-totals', role: 'region', 'aria-label': 'إجماليات الفاتورة' });
@@ -359,6 +359,7 @@
       ]));
     }
     _updateTotals();
+    _syncAutoPayment();
   }
 
   function _computeTotals() {
@@ -422,7 +423,8 @@
     return methods.map(m => ({ value: m.id, label: m.name }));
   }
 
-  function _addPayment(container) {
+  function _addPayment(container, opts) {
+    opts = opts || {};
     const methodSelect = select(_paymentMethods(), 'cash');
     const amountInput = input('number', '', { placeholder: 'المبلغ', min: 0, step: 0.01 });
     const row = el('div', { class: 'payment-row' }, [
@@ -433,10 +435,40 @@
         onclick: () => { row.remove(); _recalcPayments(); },
       }, 'حذف'),
     ]);
+    if (opts.auto) row.setAttribute('data-auto', '1');
     container.appendChild(row);
-    amountInput.addEventListener('input', _recalcPayments);
+    // Once the accountant edits the amount, stop auto-filling it.
+    amountInput.addEventListener('input', () => {
+      amountInput.setAttribute('data-manual', '1');
+      _recalcPayments();
+    });
     methodSelect.addEventListener('change', _recalcPayments);
-    setTimeout(() => amountInput.focus(), 50);
+    if (!opts.silent) setTimeout(() => amountInput.focus(), 50);
+    return row;
+  }
+
+  // Auto-fill a primary payment row with the invoice total, based on the
+  // selected products. Stays mandatory-but-editable: as soon as the accountant
+  // types an amount, that row is left alone.
+  function _syncAutoPayment() {
+    const div = refs.paymentsDiv;
+    if (!div) return;
+    if (cart.length === 0) {
+      const autoRow = div.querySelector('.payment-row[data-auto="1"]');
+      if (autoRow && autoRow.querySelector('input').getAttribute('data-manual') !== '1') autoRow.remove();
+      _recalcPayments();
+      return;
+    }
+    let row = div.querySelector('.payment-row[data-auto="1"]');
+    if (!row) {
+      if (div.querySelector('.payment-row')) return;
+      row = _addPayment(div, { auto: true, silent: true });
+    }
+    const amountInput = row.querySelector('input');
+    if (amountInput.getAttribute('data-manual') === '1') return;
+    const total = _computeTotals().total;
+    amountInput.value = (total / 100).toFixed(2);
+    _recalcPayments();
   }
 
   function _recalcPayments() {

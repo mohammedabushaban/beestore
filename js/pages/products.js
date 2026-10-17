@@ -321,7 +321,7 @@
       v.productName,
       v.size + ' / ' + v.color,
       String(v.quantity),
-      v.lowStockThreshold || threshold,
+      String(v.lowStockThreshold || threshold),
     ]);
 
     container.appendChild(el('div', { class: 'table-wrapper' },
@@ -347,17 +347,21 @@
     const { overlay } = BeeStore.dialogs.openDialog('منتج جديد', [
       formField('اسم المنتج', nameInput, true),
       formField('التصنيف', categorySelect),
-      formField('التكلفة الافتراضية', costInput),
-      formField('السعر الافتراضي', priceInput),
+      formField('التكلفة الافتراضية', costInput, true),
+      formField('السعر الافتراضي', priceInput, true),
       el('button', {
         class: 'btn btn-primary',
         onclick: async () => {
           if (!nameInput.value.trim()) { toast('اسم المنتج مطلوب', 'error'); return; }
+          const defaultCostMinor = BeeStore.money.fromMajor(costInput.value);
+          if (defaultCostMinor <= 0) { toast('سعر التكلفة مطلوب - أدخل قيمة أكبر من صفر', 'error'); return; }
+          const defaultPriceMinor = BeeStore.money.fromMajor(priceInput.value);
+          if (defaultPriceMinor <= 0) { toast('سعر البيع مطلوب - أدخل سعراً أكبر من صفر', 'error'); return; }
           const res = await BeeStore.api.products.create({
             name: nameInput.value.trim(),
             categoryId: categorySelect.value || null,
-            defaultCostMinor: BeeStore.money.fromMajor(costInput.value),
-            defaultPriceMinor: BeeStore.money.fromMajor(priceInput.value),
+            defaultCostMinor,
+            defaultPriceMinor,
           });
           if (res.ok) { toast('تم إضافة المنتج'); overlay.remove(); render(document.getElementById('page-content')); }
           else toast(res.error.message, 'error');

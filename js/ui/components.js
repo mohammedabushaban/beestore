@@ -15,7 +15,8 @@
     if (children) {
       for (const c of [].concat(children)) {
         if (c === null || c === undefined) continue;
-        e.appendChild(typeof c === 'string' ? document.createTextNode(c) : c);
+        const isText = typeof c === 'string' || typeof c === 'number' || typeof c === 'boolean';
+        e.appendChild(isText ? document.createTextNode(String(c)) : c);
       }
     }
     return e;

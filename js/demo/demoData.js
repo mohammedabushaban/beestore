@@ -48,7 +48,12 @@
           });
         }
       }
-      const prod = await BeeStore.products.create({ ...pd, variants });
+      const prod = await BeeStore.products.create({
+        ...pd,
+        defaultCostMinor: pd.cost,
+        defaultPriceMinor: pd.price,
+        variants,
+      });
       const createdProduct = await BeeStore.products.getWithVariants(prod.id);
       for (const v of createdProduct.variants) {
         allVariants.push({ ...v, productName: pd.name });

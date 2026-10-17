@@ -1,0 +1,13 @@
+# Local application data — never commit (contains real shop/customer data)
+DB/
+db.json
+docs/db.json
+docs/backups/
+
+# Dependencies / build artifacts
+node_modules/
+
+# OS / editor cruft
+.DS_Store
+Thumbs.db
+*.log

@@ -1,0 +1,155 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="UTF-8">
+  <title>BeeStore Smoke Tests</title>
+  <style>
+    body { font-family: monospace; padding: 20px; }
+    .pass { color: green; }
+    .fail { color: red; }
+  </style>
+</head>
+<body>
+  <h1>BeeStore Smoke Tests (IndexedDB)</h1>
+  <div id="results"></div>
+  <script src="../js/core/namespace.js"></script>
+  <script src="../js/core/config.js"></script>
+  <script src="../js/core/money.js"></script>
+  <script src="../js/core/dates.js"></script>
+  <script src="../js/core/ids.js"></script>
+  <script src="../js/core/validate.js"></script>
+  <script src="../js/core/errors.js"></script>
+  <script src="../js/storage/repository.js"></script>
+  <script src="../js/storage/idbRepository.js"></script>
+  <script src="../js/services/settings.js"></script>
+  <script src="../js/services/audit.js"></script>
+  <script src="../js/services/accounts.js"></script>
+  <script src="../js/services/categories.js"></script>
+  <script src="../js/services/products.js"></script>
+  <script src="../js/services/variants.js"></script>
+  <script src="../js/services/stock.js"></script>
+  <script src="../js/services/sales.js"></script>
+  <script src="../js/services/customers.js"></script>
+  <script src="../js/services/purchases.js"></script>
+  <script src="../js/services/suppliers.js"></script>
+  <script src="../js/services/expenses.js"></script>
+  <script src="../js/services/payroll.js"></script>
+  <script src="../js/services/employees.js"></script>
+  <script src="../js/services/transactions.js"></script>
+  <script src="../js/services/periods.js"></script>
+  <script src="../js/services/reports.js"></script>
+  <script src="../js/services/maintenance.js"></script>
+  <script>
+    const results = document.getElementById('results');
+    let passed = 0, failed = 0;
+
+    async function test(name, fn) {
+      try {
+        await fn();
+        results.innerHTML += '<div class="pass">✓ ' + name + '</div>';
+        passed++;
+      } catch (e) {
+        results.innerHTML += '<div class="fail">✗ ' + name + ': ' + e.message + '</div>';
+        failed++;
+      }
+    }
+
+    function assert(cond, msg) {
+      if (!cond) throw new Error(msg || 'Assertion failed');
+    }
+
+    async function run() {
+      const BeeStore = window.BeeStore;
+      const repo = new BeeStore.IdbRepository();
+      await repo.open();
+      for (const name of ['settings', 'audit', 'accounts', 'categories', 'products',
+        'variants', 'stock', 'sales', 'customers', 'purchases', 'suppliers',
+        'expenses', 'payroll', 'employees', 'transactions', 'periods',
+        'reports', 'maintenance']) {
+        if (BeeStore[name]) BeeStore[name].repo = repo;
+      }
+
+      await test('Repository opens', async () => {
+        assert(repo.opened, 'Repository not opened');
+      });
+
+      await test('errorLog store exists (dbVersion upgrade)', async () => {
+        assert(repo.db.objectStoreNames.contains('errorLog'), 'errorLog store missing');
+      });
+
+      await test('Can create and get product', async () => {
+        await repo.transaction(async (tx) => {
+          const p = tx.put('products', {
+            name: 'Test', categoryId: null, defaultCostMinor: 5000,
+            defaultPriceMinor: 10000, active: true, createdAt: BeeStore.dates.now()
+          });
+          const fetched = await tx.get('products', p.id);
+          assert(fetched.name === 'Test', 'Product not found');
+        });
+      });
+
+      await test('Variants list works', async () => {
+        const variants = await repo.list('variants');
+        assert(Array.isArray(variants), 'Variants not an array');
+      });
+
+      await test('Stock movements work', async () => {
+        await repo.transaction(async (tx) => {
+          tx.put('stockMovements', {
+            variantId: 'test', date: BeeStore.dates.today(), type: 'opening',
+            qtyChange: 10, unitCostMinor: 5000, balanceAfter: 10,
+            createdAt: BeeStore.dates.now()
+          });
+          const movements = await tx.list('stockMovements', m => m.variantId === 'test');
+          assert(movements.length === 1, 'Movement not found');
+        });
+      });
+
+      await test('Export produces valid JSON', async () => {
+        const data = await repo.exportAll();
+        assert(data.schemaVersion, 'Missing schemaVersion');
+        assert(data.collections, 'Missing collections');
+        const json = JSON.stringify(data);
+        assert(json.length > 0, 'Empty JSON');
+      });
+
+      await test('V2 close/reopen gate works on IndexedDB', async () => {
+        await BeeStore.settings.save({ systemStartDate: '2026-01-01' });
+        const acc = await repo.transaction(async (tx) => tx.put('accounts',
+          { name: 'SmokeCash', type: 'cash', openingBalanceMinor: 0, active: true }));
+        await BeeStore.periods.close('2026-01', 'smoke');
+        assert(await BeeStore.periods.isClosed('2026-01'), 'Month not locked');
+        let blocked = false;
+        try {
+          await BeeStore.expenses.create({ date: '2026-01-15', amountMinor: 100, description: 'smoke', accountId: acc.id });
+        } catch (e) { blocked = e && e.code === 'PERIOD_CLOSED'; }
+        assert(blocked, 'Closed-month write not rejected');
+        assert(await BeeStore.periods.reopen('2026-01', 'smoke'), 'Reopen failed');
+        assert(!(await BeeStore.periods.isClosed('2026-01')), 'Month still locked');
+      });
+
+      await test('V2 integrity check runs on IndexedDB', async () => {
+        const res = await BeeStore.maintenance.integrityCheck();
+        assert(Array.isArray(res.errors), 'No errors array');
+      });
+
+      await test('V2 month review runs on IndexedDB', async () => {
+        const review = await BeeStore.reports.monthReview('2026-01');
+        assert(review && review.kpis, 'No KPIs');
+      });
+
+      await test('Clear works', async () => {
+        await repo.clearAll();
+        const products = await repo.list('products');
+        assert(products.length === 0, 'Products not cleared');
+      });
+
+      results.innerHTML += '<h2>Results: ' + passed + ' passed, ' + failed + ' failed</h2>';
+    }
+
+    run().catch(e => {
+      results.innerHTML += '<div class="fail">Fatal: ' + e.message + '</div>';
+    });
+  </script>
+</body>
+</html>

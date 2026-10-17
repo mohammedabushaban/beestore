@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>بي ستور - نظام المحاسبة والمخزون</title>
+  <link rel="stylesheet" href="css/app.css">
+  <link rel="stylesheet" href="css/print.css" media="print">
+  <script src="vendor/chart.js/chart.umd.min.js"></script>
+  <script src="vendor/jsbarcode/JsBarcode.all.min.js"></script>
+</head>
+<body>
+  <div id="browser-warning" class="browser-warning" style="display:none">
+    متصفحك لا يدعم الحفظ التلقائي في الملف. يرجى استخدام Chrome أو Edge والحصول على الملفات عبر خادم محلي (مثل <code>python -m http.server</code>) للحصول على أفضل تجربة.
+  </div>
+
+  <div id="first-run-wizard" class="wizard-overlay" style="display:none">
+    <div class="wizard">
+      <h2>مرحباً بك في بي ستور</h2>
+      <div id="wizard-step-1">
+        <h3>معلومات المتجر</h3>
+        <div class="form-group">
+          <label class="form-label">اسم المتجر (عربي)</label>
+          <input type="text" id="wizard-store-name" class="form-input" value="بي ستور">
+        </div>
+        <div class="form-group">
+          <label class="form-label">الهاتف</label>
+          <input type="text" id="wizard-store-phone" class="form-input">
+        </div>
+        <div class="form-group">
+          <label class="form-label">العنوان</label>
+          <input type="text" id="wizard-store-address" class="form-input">
+        </div>
+        <div class="form-group">
+          <label class="form-label">تاريخ بدء استخدام النظام</label>
+          <input type="date" id="wizard-start-date" class="form-input">
+          <p class="form-hint">لا يمكن تسجيل أي مستند قبل هذا التاريخ. الافتراضي: أول الشهر الحالي.</p>
+        </div>
+        <button class="btn btn-primary" onclick="BeeStore.wizard.nextStep()">التالي</button>
+      </div>
+      <div id="wizard-step-2" style="display:none">
+        <h3>اختيار مجلد البيانات</h3>
+        <p>اختر مجلداً لحفظ بياناتك تلقائياً. ننصح بإنشاء مجلد جديد مثل <strong>BeeStore-Data</strong></p>
+        <button class="btn btn-primary" onclick="BeeStore.wizard.pickFolder()">اختيار المجلد</button>
+        <button class="btn btn-secondary" onclick="BeeStore.wizard.skipFolder()">تخطي</button>
+      </div>
+      <div id="wizard-step-3" style="display:none">
+        <h3>بيانات تجريبية</h3>
+        <p>هل تريد تحميل بيانات تجريبية للتجربة؟</p>
+        <button class="btn btn-primary" onclick="BeeStore.wizard.loadDemo()">تحميل بيانات تجريبية</button>
+        <button class="btn btn-secondary" onclick="BeeStore.wizard.finish()">البدء بدون بيانات</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="save-status" class="save-status" style="display:none">
+    <span id="save-status-icon">⚪</span>
+    <span id="save-status-text">جاري التحميل...</span>
+  </div>
+
+  <div id="app" style="display:none">
+    <nav class="sidebar" id="sidebar">
+      <div class="sidebar-header">
+        <img src="bee.jpg" alt="BeeStore logo" class="sidebar-logo">
+        <h1>بي ستور</h1>
+      </div>
+      <ul class="sidebar-nav">
+        <li><a href="#/" onclick="BeeStore.router.navigate('/'); return false;" data-route="/">الرئيسية</a></li>
+        <li><a href="#/pos" onclick="BeeStore.router.navigate('/pos'); return false;" data-route="/pos">فاتورة جديدة</a></li>
+        <li><a href="#/invoices" onclick="BeeStore.router.navigate('/invoices'); return false;" data-route="/invoices">الفواتير</a></li>
+        <li><a href="#/returns" onclick="BeeStore.router.navigate('/returns'); return false;" data-route="/returns">المرتجعات والاستبدال</a></li>
+        <li><a href="#/products" onclick="BeeStore.router.navigate('/products'); return false;" data-route="/products">المنتجات والمخزون</a></li>
+        <li><a href="#/stocktake" onclick="BeeStore.router.navigate('/stocktake'); return false;" data-route="/stocktake">جرد المخزون</a></li>
+        <li><a href="#/labels" onclick="BeeStore.router.navigate('/labels'); return false;" data-route="/labels">الباركود والملصقات</a></li>
+        <li><a href="#/purchases" onclick="BeeStore.router.navigate('/purchases'); return false;" data-route="/purchases">المشتريات</a></li>
+        <li><a href="#/suppliers" onclick="BeeStore.router.navigate('/suppliers'); return false;" data-route="/suppliers">الموردون</a></li>
+        <li><a href="#/customers" onclick="BeeStore.router.navigate('/customers'); return false;" data-route="/customers">الزبائن والديون</a></li>
+        <li><a href="#/expenses" onclick="BeeStore.router.navigate('/expenses'); return false;" data-route="/expenses">المصاريف</a></li>
+        <li><a href="#/employees" onclick="BeeStore.router.navigate('/employees'); return false;" data-route="/employees">الموظفون والرواتب</a></li>
+        <li><a href="#/accounts" onclick="BeeStore.router.navigate('/accounts'); return false;" data-route="/accounts">الحسابات</a></li>
+        <li><a href="#/reports" onclick="BeeStore.router.navigate('/reports'); return false;" data-route="/reports">التقارير</a></li>
+        <li><a href="#/periods" onclick="BeeStore.router.navigate('/periods'); return false;" data-route="/periods">إقفال الشهور</a></li>
+        <li><a href="#/settings" onclick="BeeStore.router.navigate('/settings'); return false;" data-route="/settings">الإعدادات</a></li>
+      </ul>
+    </nav>
+
+    <div class="main-content">
+      <header class="header">
+        <button class="hamburger" aria-label="القائمة" onclick="(BeeStore.toggleSidebar || function(){document.getElementById('sidebar').classList.toggle('open');})()">☰</button>
+        <div class="header-title" id="page-title">الرئيسية</div>
+        <div class="period-selector" id="period-selector"></div>
+        <div class="header-save-status" id="header-save-status"></div>
+      </header>
+      <main id="page-content" class="page-content"></main>
+    </div>
+  </div>
+
+  <div id="toast-container" class="toast-container"></div>
+
+  <script src="js/core/namespace.js"></script>
+  <script src="js/core/config.js"></script>
+  <script src="js/core/money.js"></script>
+  <script src="js/core/dates.js"></script>
+  <script src="js/core/ids.js"></script>
+  <script src="js/core/validate.js"></script>
+  <script src="js/core/errors.js"></script>
+  <script src="js/storage/repository.js"></script>
+  <script src="js/storage/memoryRepository.js"></script>
+  <script src="js/storage/idbRepository.js"></script>
+  <script src="js/storage/migrations.js"></script>
+  <script src="js/storage/fileSync.js"></script>
+  <script src="js/services/settings.js"></script>
+  <script src="js/services/audit.js"></script>
+  <script src="js/services/accounts.js"></script>
+  <script src="js/services/categories.js"></script>
+  <script src="js/services/products.js"></script>
+  <script src="js/services/variants.js"></script>
+  <script src="js/services/stock.js"></script>
+  <script src="js/services/sales.js"></script>
+  <script src="js/services/customers.js"></script>
+  <script src="js/services/returns.js"></script>
+  <script src="js/services/purchases.js"></script>
+  <script src="js/services/purchaseReturns.js"></script>
+  <script src="js/services/suppliers.js"></script>
+  <script src="js/services/expenses.js"></script>
+  <script src="js/services/payroll.js"></script>
+  <script src="js/services/employees.js"></script>
+  <script src="js/services/transactions.js"></script>
+  <script src="js/services/periods.js"></script>
+  <script src="js/services/reports.js"></script>
+  <script src="js/services/dashboard.js"></script>
+  <script src="js/services/backup.js"></script>
+  <script src="js/services/maintenance.js"></script>
+  <script src="js/api/api.js"></script>
+  <script src="js/ui/router.js"></script>
+  <script src="js/ui/components.js"></script>
+  <script src="js/ui/dialogs.js"></script>
+  <script src="js/ui/print.js"></script>
+  <script src="js/ui/firstRun.js"></script>
+  <script src="js/ui/period.js"></script>
+  <script src="js/ui/errorLog.js"></script>
+  <script src="js/services/barcode.js"></script>
+  <script src="js/services/csv.js"></script>
+  <script src="js/pages/dashboard.js"></script>
+  <script src="js/pages/pos.js"></script>
+  <script src="js/pages/invoices.js"></script>
+  <script src="js/pages/returns.js"></script>
+  <script src="js/pages/products.js"></script>
+  <script src="js/pages/stocktake.js"></script>
+  <script src="js/pages/labels.js"></script>
+  <script src="js/pages/purchases.js"></script>
+  <script src="js/pages/suppliers.js"></script>
+  <script src="js/pages/customers.js"></script>
+  <script src="js/pages/expenses.js"></script>
+  <script src="js/pages/employees.js"></script>
+  <script src="js/pages/accounts.js"></script>
+  <script src="js/pages/reports.js"></script>
+  <script src="js/pages/periods.js"></script>
+  <script src="js/pages/settings.js"></script>
+  <script src="js/demo/demoData.js"></script>
+  <script src="js/app.js"></script>
+</body>
+</html>

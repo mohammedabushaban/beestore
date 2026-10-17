@@ -1,0 +1,21 @@
+@media print {
+  @page { margin: 0; }
+  body { margin: 0; padding: 0; background: white; }
+  .sidebar, .header, .toast-container, .dialog-overlay, .save-status, .browser-warning, 
+  .hamburger, .pos-actions, .payment-row, .search-results, .filter-row, .tabs, 
+  .btn, .form-group label, .form-hint, .card .btn { display: none !important; }
+  .main-content { margin: 0; }
+  .page-content { padding: 0; }
+  .card { box-shadow: none; border: 1px solid #ddd; margin-bottom: 8px; }
+  .table-wrapper { overflow-x: visible; }
+  .data-table { font-size: 12px; }
+  .data-table th, .data-table td { padding: 4px 6px; }
+  .page-title { display: none; }
+  .cards-grid { display: grid !important; grid-template-columns: repeat(2, 1fr) !important; gap: 8px !important; }
+  .stat-card { padding: 8px; }
+  .stat-value { font-size: 16px; }
+  .pos-layout { display: block; }
+  .pos-left, .pos-right { width: 100%; }
+  .chart-container, .chart-container-sm { display: none; }
+  a { text-decoration: none; color: inherit; }
+}

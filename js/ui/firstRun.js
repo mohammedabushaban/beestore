@@ -82,6 +82,9 @@
       if (BeeStore._setupRouter) BeeStore._setupRouter();
       if (BeeStore._setupSaveStatus) BeeStore._setupSaveStatus();
       if (BeeStore._setupVisibilityHandlers) BeeStore._setupVisibilityHandlers();
+      // The global period picker lives in the topbar — it must be rendered
+      // here too, otherwise it stays empty for wizard-created stores.
+      if (BeeStore.period && BeeStore.period.renderHeader) BeeStore.period.renderHeader();
       if (BeeStore.router) BeeStore.router.start();
     }
   }

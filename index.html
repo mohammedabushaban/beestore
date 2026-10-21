@@ -3,7 +3,9 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#101827">
   <title>بي ستور - نظام المحاسبة والمخزون</title>
+  <link rel="icon" href="bee.jpg">
   <link rel="stylesheet" href="css/app.css">
   <link rel="stylesheet" href="css/print.css" media="print">
   <script src="vendor/chart.js/chart.umd.min.js"></script>
@@ -59,29 +61,128 @@
   </div>
 
   <div id="app" style="display:none">
-    <nav class="sidebar" id="sidebar">
+    <nav class="sidebar" id="sidebar" aria-label="التنقل الرئيسي">
       <div class="sidebar-header">
         <img src="bee.jpg" alt="BeeStore logo" class="sidebar-logo">
-        <h1>بي ستور</h1>
+        <div class="sidebar-brand">
+          <h1>بي ستور</h1>
+          <p>المحاسبة والمخزون</p>
+        </div>
       </div>
+
       <ul class="sidebar-nav">
-        <li><a href="#/" onclick="BeeStore.router.navigate('/'); return false;" data-route="/">الرئيسية</a></li>
-        <li><a href="#/pos" onclick="BeeStore.router.navigate('/pos'); return false;" data-route="/pos">فاتورة جديدة</a></li>
-        <li><a href="#/invoices" onclick="BeeStore.router.navigate('/invoices'); return false;" data-route="/invoices">الفواتير</a></li>
-        <li><a href="#/returns" onclick="BeeStore.router.navigate('/returns'); return false;" data-route="/returns">المرتجعات والاستبدال</a></li>
-        <li><a href="#/products" onclick="BeeStore.router.navigate('/products'); return false;" data-route="/products">المنتجات والمخزون</a></li>
-        <li><a href="#/stocktake" onclick="BeeStore.router.navigate('/stocktake'); return false;" data-route="/stocktake">جرد المخزون</a></li>
-        <li><a href="#/labels" onclick="BeeStore.router.navigate('/labels'); return false;" data-route="/labels">الباركود والملصقات</a></li>
-        <li><a href="#/purchases" onclick="BeeStore.router.navigate('/purchases'); return false;" data-route="/purchases">المشتريات</a></li>
-        <li><a href="#/suppliers" onclick="BeeStore.router.navigate('/suppliers'); return false;" data-route="/suppliers">الموردون</a></li>
-        <li><a href="#/customers" onclick="BeeStore.router.navigate('/customers'); return false;" data-route="/customers">الزبائن والديون</a></li>
-        <li><a href="#/expenses" onclick="BeeStore.router.navigate('/expenses'); return false;" data-route="/expenses">المصاريف</a></li>
-        <li><a href="#/employees" onclick="BeeStore.router.navigate('/employees'); return false;" data-route="/employees">الموظفون والرواتب</a></li>
-        <li><a href="#/accounts" onclick="BeeStore.router.navigate('/accounts'); return false;" data-route="/accounts">الحسابات</a></li>
-        <li><a href="#/reports" onclick="BeeStore.router.navigate('/reports'); return false;" data-route="/reports">التقارير</a></li>
-        <li><a href="#/periods" onclick="BeeStore.router.navigate('/periods'); return false;" data-route="/periods">إقفال الشهور</a></li>
-        <li><a href="#/settings" onclick="BeeStore.router.navigate('/settings'); return false;" data-route="/settings">الإعدادات</a></li>
+        <li class="nav-group-title">نظرة عامة</li>
+        <li>
+          <a href="#/" onclick="BeeStore.router.navigate('/'); return false;" data-route="/">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 10.5 12 3l9 7.5"/><path d="M5.5 9.5V20a1 1 0 0 0 1 1h11a1 1 0 0 0 1-1V9.5"/></svg>
+            الرئيسية
+          </a>
+        </li>
+
+        <li class="nav-group-title">المبيعات</li>
+        <li>
+          <a href="#/pos" onclick="BeeStore.router.navigate('/pos'); return false;" data-route="/pos">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 3h12v18l-3-2-3 2-3-2-3 2z"/><path d="M9.5 8h5M9.5 12h5"/></svg>
+            فاتورة جديدة
+          </a>
+        </li>
+        <li>
+          <a href="#/invoices" onclick="BeeStore.router.navigate('/invoices'); return false;" data-route="/invoices">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/><path d="M9 13h6M9 17h4"/></svg>
+            الفواتير
+          </a>
+        </li>
+        <li>
+          <a href="#/returns" onclick="BeeStore.router.navigate('/returns'); return false;" data-route="/returns">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M17 3l4 4-4 4"/><path d="M21 7H9a4 4 0 0 0-4 4"/><path d="M7 21l-4-4 4-4"/><path d="M3 17h12a4 4 0 0 0 4-4"/></svg>
+            المرتجعات والاستبدال
+          </a>
+        </li>
+
+        <li class="nav-group-title">المخزون</li>
+        <li>
+          <a href="#/products" onclick="BeeStore.router.navigate('/products'); return false;" data-route="/products">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M21 8 12 3 3 8l9 5 9-5z"/><path d="M3 8v8l9 5 9-5V8"/><path d="M12 13v8"/></svg>
+            المنتجات والمخزون
+          </a>
+        </li>
+        <li>
+          <a href="#/stocktake" onclick="BeeStore.router.navigate('/stocktake'); return false;" data-route="/stocktake">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="4" width="14" height="17" rx="2"/><path d="M9 4h6v3H9z"/><path d="M9 12.5l2 2 4-4"/></svg>
+            جرد المخزون
+          </a>
+        </li>
+        <li>
+          <a href="#/labels" onclick="BeeStore.router.navigate('/labels'); return false;" data-route="/labels">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5v14M8 5v14M11.5 5v10M15.5 5v14M20 5v14"/></svg>
+            الباركود والملصقات
+          </a>
+        </li>
+
+        <li class="nav-group-title">المشتريات والعملاء</li>
+        <li>
+          <a href="#/purchases" onclick="BeeStore.router.navigate('/purchases'); return false;" data-route="/purchases">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="9" cy="20" r="1.4"/><circle cx="18" cy="20" r="1.4"/><path d="M2.5 3h2.8l2.4 11.5h11L21.5 7H6"/></svg>
+            المشتريات
+          </a>
+        </li>
+        <li>
+          <a href="#/suppliers" onclick="BeeStore.router.navigate('/suppliers'); return false;" data-route="/suppliers">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7h11v9H3z"/><path d="M14 10h4l3 3v3h-7z"/><circle cx="7" cy="18" r="1.6"/><circle cx="17" cy="18" r="1.6"/></svg>
+            الموردون
+          </a>
+        </li>
+        <li>
+          <a href="#/customers" onclick="BeeStore.router.navigate('/customers'); return false;" data-route="/customers">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="9" cy="8" r="3.2"/><path d="M3 20c0-3.3 2.7-5.5 6-5.5s6 2.2 6 5.5"/><path d="M16 5.6a3 3 0 0 1 0 5.6M17.5 14.9c1.9.8 3.5 2.4 3.5 4.6"/></svg>
+            الزبائن والديون
+          </a>
+        </li>
+
+        <li class="nav-group-title">المصاريف والموظفون</li>
+        <li>
+          <a href="#/expenses" onclick="BeeStore.router.navigate('/expenses'); return false;" data-route="/expenses">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="6" width="18" height="13" rx="3"/><path d="M3 10.5h18"/><circle cx="16.8" cy="14.5" r="1.3"/></svg>
+            المصاريف
+          </a>
+        </li>
+        <li>
+          <a href="#/employees" onclick="BeeStore.router.navigate('/employees'); return false;" data-route="/employees">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="10" cy="7" r="3"/><path d="M4 20c0-3.3 2.7-5 6-5s6 1.7 6 5"/><path d="M18 8.5h4M20 6.5v4"/></svg>
+            الموظفون والرواتب
+          </a>
+        </li>
+
+        <li class="nav-group-title">المحاسبة</li>
+        <li>
+          <a href="#/accounts" onclick="BeeStore.router.navigate('/accounts'); return false;" data-route="/accounts">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8.5"/><path d="M12 7v10M9.5 9.5h5M9.5 14.5h5"/></svg>
+            الحسابات
+          </a>
+        </li>
+        <li>
+          <a href="#/reports" onclick="BeeStore.router.navigate('/reports'); return false;" data-route="/reports">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20V11M10 20V4M16 20v-6M21 20H3"/></svg>
+            التقارير
+          </a>
+        </li>
+        <li>
+          <a href="#/periods" onclick="BeeStore.router.navigate('/periods'); return false;" data-route="/periods">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4.5" y="10" width="15" height="10.5" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg>
+            إقفال الشهور
+          </a>
+        </li>
+
+        <li class="nav-group-title">النظام</li>
+        <li>
+          <a href="#/settings" onclick="BeeStore.router.navigate('/settings'); return false;" data-route="/settings">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1A1.7 1.7 0 0 0 9 19.4a1.7 1.7 0 0 0-1.9.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.9 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1A1.7 1.7 0 0 0 4.6 9a1.7 1.7 0 0 0-.3-1.9l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.9.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.9-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.9V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>
+            الإعدادات
+          </a>
+        </li>
       </ul>
+
+      <div class="sidebar-footer">BeeStore — نظام محاسبي محلي</div>
     </nav>
 
     <div class="main-content">
@@ -90,6 +191,10 @@
         <div class="header-title" id="page-title">الرئيسية</div>
         <div class="period-selector" id="period-selector"></div>
         <div class="header-save-status" id="header-save-status"></div>
+        <button class="btn btn-primary btn-sm header-action" onclick="BeeStore.router.navigate('/pos')">
+          <svg viewBox="0 0 24 24" aria-hidden="true" style="width:15px;height:15px;stroke:currentColor;fill:none;stroke-width:2.2;stroke-linecap:round"><path d="M12 5v14M5 12h14"/></svg>
+          <span class="header-action-label">فاتورة جديدة</span>
+        </button>
       </header>
       <main id="page-content" class="page-content"></main>
     </div>

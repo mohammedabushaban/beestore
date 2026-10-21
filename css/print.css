@@ -1,21 +1,25 @@
 @media print {
   @page { margin: 0; }
-  body { margin: 0; padding: 0; background: white; }
-  .sidebar, .header, .toast-container, .dialog-overlay, .save-status, .browser-warning, 
-  .hamburger, .pos-actions, .payment-row, .search-results, .filter-row, .tabs, 
-  .btn, .form-group label, .form-hint, .card .btn { display: none !important; }
+  body { margin: 0; padding: 0; background: #fff; font-size: 13px; }
+  .sidebar, .sidebar-footer, .header, .toast-container, .dialog-overlay, .modal-backdrop,
+  .save-status, .browser-warning, .hamburger, .pos-actions, .payment-row, .search-results,
+  .filter-row, .tabs, .btn, .form-group label, .form-hint, .card .btn, .period-selector,
+  .header-action, .no-print { display: none !important; }
   .main-content { margin: 0; }
-  .page-content { padding: 0; }
-  .card { box-shadow: none; border: 1px solid #ddd; margin-bottom: 8px; }
+  .page-content { padding: 0; max-width: none; }
+  .card { box-shadow: none; border: 1px solid #cbd5e1; margin-bottom: 8px; break-inside: avoid; }
   .table-wrapper { overflow-x: visible; }
   .data-table { font-size: 12px; }
+  .data-table thead th { position: static; background: #f1f5f9; }
+  .data-table tbody tr:hover { background: transparent; }
   .data-table th, .data-table td { padding: 4px 6px; }
   .page-title { display: none; }
   .cards-grid { display: grid !important; grid-template-columns: repeat(2, 1fr) !important; gap: 8px !important; }
-  .stat-card { padding: 8px; }
+  .stat-card { padding: 8px; box-shadow: none; }
+  .stat-card::after { display: none; }
   .stat-value { font-size: 16px; }
   .pos-layout { display: block; }
-  .pos-left, .pos-right { width: 100%; }
+  .pos-left, .pos-right { width: 100%; position: static; }
   .chart-container, .chart-container-sm { display: none; }
   a { text-decoration: none; color: inherit; }
 }

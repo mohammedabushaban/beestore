@@ -251,7 +251,7 @@
           label: 'المبيعات',
           data: data.map(v => v / 100),
           borderColor: '#F5B700',
-          backgroundColor: 'rgba(245, 183, 0, 0.1)',
+          backgroundColor: 'rgba(245, 183, 0, 0.12)',
           fill: true,
           tension: 0.3,
           pointRadius: 3,
@@ -265,7 +265,7 @@
         scales: {
           x: { grid: { display: false } },
           y: { 
-            grid: { color: '#f0f0f0' },
+            grid: { color: '#eef1f6' },
             ticks: { callback: v => BeeStore.money.format(v * 100) }
           }
         }
@@ -291,13 +291,13 @@
           label: 'المبلغ',
           data: [revenue, grossProfit, expenses, netProfit],
           backgroundColor: [
-            'rgba(245, 183, 0, 0.8)',
-            'rgba(40, 167, 69, 0.8)',
-            'rgba(220, 53, 69, 0.8)',
-            netProfit >= 0 ? 'rgba(40, 167, 69, 0.8)' : 'rgba(220, 53, 69, 0.8)'
+            'rgba(245, 183, 0, 0.85)',
+            'rgba(22, 163, 74, 0.85)',
+            'rgba(220, 38, 38, 0.85)',
+            netProfit >= 0 ? 'rgba(22, 163, 74, 0.85)' : 'rgba(220, 38, 38, 0.85)'
           ],
           borderColor: [
-            '#F5B700', '#28a745', '#dc3545', netProfit >= 0 ? '#28a745' : '#dc3545'
+            '#F5B700', '#16A34A', '#DC2626', netProfit >= 0 ? '#16A34A' : '#DC2626'
           ],
           borderWidth: 2,
           borderRadius: 8,
@@ -310,7 +310,7 @@
         scales: {
           x: { grid: { display: false } },
           y: { 
-            grid: { color: '#f0f0f0' },
+            grid: { color: '#eef1f6' },
             ticks: { callback: v => v.toLocaleString() }
           }
         }
@@ -338,7 +338,7 @@
         datasets: [{
           data: data,
           backgroundColor: [
-            '#F5B700', '#28a745', '#17a2b8', '#dc3545', '#6f42c1'
+            '#F5B700', '#0EA5E9', '#16A34A', '#8B5CF6', '#F97316'
           ],
           borderWidth: 0,
         }]

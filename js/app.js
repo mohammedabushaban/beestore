@@ -173,6 +173,7 @@
       '/returns': { title: 'المرتجعات والاستبدال', render: BeeStore.pages.returns.render },
       '/products': { title: 'المنتجات والمخزون', render: BeeStore.pages.products.render },
       '/stocktake': { title: 'جرد المخزون', render: BeeStore.pages.stocktake.render },
+      '/price-check': { title: 'فحص سعر', render: BeeStore.pages.priceCheck.render },
       '/labels': { title: 'الباركود والملصقات', render: BeeStore.pages.labels.render },
       '/purchases': { title: 'المشتريات', render: BeeStore.pages.purchases.render },
       '/suppliers': { title: 'الموردون', render: BeeStore.pages.suppliers.render },

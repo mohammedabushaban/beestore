@@ -36,11 +36,13 @@
     else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
   }
 
-  function formField(label, input, required, helpText) {
+  function formField(label, input, required, helpText, action) {
     const id = 'field-' + Math.random().toString(36).slice(2);
     if (input && !input.id) input.id = id;
     const labelEl = el('label', { class: 'form-label', for: id }, label + (required ? ' *' : ''));
-    const items = [labelEl, input];
+    const items = [labelEl];
+    // Optional trailing action (e.g. a barcode scan button) next to the input.
+    items.push(action ? el('div', { class: 'field-with-action' }, [input, action]) : input);
     if (helpText) items.push(el('p', { class: 'form-hint', id: id + '-help' }, helpText));
     if (input) input.setAttribute('aria-describedby', id + '-help');
     return el('div', { class: 'form-group' }, items);

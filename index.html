@@ -10,6 +10,7 @@
   <link rel="stylesheet" href="css/print.css" media="print">
   <script src="vendor/chart.js/chart.umd.min.js"></script>
   <script src="vendor/jsbarcode/JsBarcode.all.min.js"></script>
+  <script src="vendor/zxing/zxing.min.js"></script>
 </head>
 <body>
   <div id="browser-warning" class="browser-warning" style="display:none">
@@ -110,6 +111,12 @@
           <a href="#/stocktake" onclick="BeeStore.router.navigate('/stocktake'); return false;" data-route="/stocktake">
             <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="4" width="14" height="17" rx="2"/><path d="M9 4h6v3H9z"/><path d="M9 12.5l2 2 4-4"/></svg>
             جرد المخزون
+          </a>
+        </li>
+        <li>
+          <a href="#/price-check" onclick="BeeStore.router.navigate('/price-check'); return false;" data-route="/price-check">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20.6 13.4 12.6 21.4a2 2 0 0 1-2.8 0l-7.2-7.2a2 2 0 0 1-.6-1.4V4a1 1 0 0 1 1-1h8.8a2 2 0 0 1 1.4.6l7.2 7.2a2 2 0 0 1 0 2.8z"/><circle cx="7.5" cy="7.5" r="1.4"/></svg>
+            فحص سعر
           </a>
         </li>
         <li>
@@ -244,6 +251,8 @@
   <script src="js/ui/firstRun.js"></script>
   <script src="js/ui/period.js"></script>
   <script src="js/ui/errorLog.js"></script>
+  <script src="js/ui/scanner.js"></script>
+  <script src="js/services/scan.js"></script>
   <script src="js/services/barcode.js"></script>
   <script src="js/services/csv.js"></script>
   <script src="js/pages/dashboard.js"></script>
@@ -252,6 +261,7 @@
   <script src="js/pages/returns.js"></script>
   <script src="js/pages/products.js"></script>
   <script src="js/pages/stocktake.js"></script>
+  <script src="js/pages/priceCheck.js"></script>
   <script src="js/pages/labels.js"></script>
   <script src="js/pages/purchases.js"></script>
   <script src="js/pages/suppliers.js"></script>

@@ -74,10 +74,13 @@
     });
     barcodeInput.addEventListener('keydown', async (e) => {
       if (e.key === 'Enter') {
+        // Enter adds the line and must never submit/save the invoice.
         e.preventDefault();
-        await _addToCart(barcodeInput.value.trim());
+        e.stopPropagation();
+        const code = barcodeInput.value.trim();
         barcodeInput.value = '';
         barcodeInput.focus();
+        await _addScanToCart(code);
       }
     });
 
@@ -122,9 +125,17 @@
             el('label', { class: 'form-label' }, 'التصنيف'),
             categorySelect,
           ]),
-          el('div', { class: 'form-group', style: 'flex: 1; min-width: 140px;' }, [
+          el('div', { class: 'form-group', style: 'flex: 1; min-width: 180px;' }, [
             el('label', { class: 'form-label' }, 'باركود'),
-            barcodeInput,
+            el('div', { class: 'field-with-action' }, [
+              barcodeInput,
+              BeeStore.scanner.scanButton((code) => _addScanToCart(code), {
+                label: 'مسح',
+                title: 'مسح أصناف الفاتورة',
+                continuous: true,
+                hint: 'امسح باركود الصنف — يُضاف تلقائياً للفاتورة',
+              }),
+            ]),
           ]),
           el('div', { class: 'form-group', style: 'flex: 1; min-width: 140px;' }, [
             el('label', { class: 'form-label' }, 'بحث'),
@@ -243,6 +254,11 @@
     if (keydownHandler) document.removeEventListener('keydown', keydownHandler);
     keydownHandler = (e) => {
       if (BeeStore.router.currentRoute !== '/pos') return;
+      // While any dialog is open (camera scanner, payment, confirm...) the
+      // page shortcuts must not fire: F2/F4 would steal focus and Ctrl+Enter
+      // could save an invoice behind the overlay. The scanner handles its own
+      // Escape/close keys.
+      if (document.querySelector('.dialog-overlay')) return;
 
       if (e.key === 'F2') {
         e.preventDefault();
@@ -267,52 +283,82 @@
     document.addEventListener('keydown', keydownHandler);
   }
 
-  async function _addToCart(query) {
-    if (!query) return;
-    let variant = null;
-    const barcodeRes = await BeeStore.api.variants.byBarcode(query);
-    if (barcodeRes.ok && barcodeRes.data) {
-      variant = barcodeRes.data;
-    } else {
-      const searchRes = await BeeStore.api.variants.search(query);
-      if (searchRes.ok && searchRes.data.length > 0) variant = searchRes.data[0];
-    }
-    if (!variant) { toast('المنتج غير موجود', 'error'); return; }
+  /**
+   * Adds a scanned/typed code to the invoice. Shared by the camera scanner,
+   * the USB scanner (Enter in the barcode field) and manual typing.
+   *
+   * @param {string} query barcode / SKU / product name
+   * @returns {Promise<{ok:boolean, label?:string, reason?:string, message?:string}>}
+   */
+  async function _addScanToCart(query) {
+    const code = (query || '').trim();
+    if (!code) return { ok: false, reason: 'empty' };
+    const res = await _addToCart(code);
+    if (res.ok) return res;
 
-    const productRes = await BeeStore.api.products.get(variant.productId);
-    const productName = productRes.ok && productRes.data ? productRes.data.name : '';
-    _addVariantToCart(variant, productName);
+    if (res.reason === 'not-found') {
+      toast('باركود غير موجود: ' + code, 'error', {
+        actionText: 'إضافة صنف',
+        duration: 12000,
+        onAction: () => _openNewVariant(code),
+      });
+    } else if (res.message) {
+      toast(res.message, 'error');
+    }
+    return res;
   }
 
-  function _addVariantToCart(variant, productName) {
-    const allowNeg = !!(settings && settings.allowNegativeStock);
-    const existing = cart.find(c => c.variantId === variant.id);
-    if (existing) {
-      if (!allowNeg && existing.qty >= variant.quantity) {
-        toast('لا يمكن إضافة المزيد - المخزون محدود', 'error');
-        return false;
-      }
-      existing.qty++;
-      existing.stockQty = variant.quantity;
-      existing.lineTotalMinor = existing.qty * existing.unitPriceMinor - existing.lineDiscountMinor;
-    } else {
-      if (!allowNeg && variant.quantity <= 0) {
-        toast('المخزون غير متوفر: ' + variant.size + ' / ' + variant.color, 'error');
-        return false;
-      }
-      cart.push({
-        variantId: variant.id,
-        productName,
-        size: variant.size,
-        color: variant.color,
-        barcode: variant.barcode,
-        qty: 1,
-        unitPriceMinor: variant.priceMinor,
-        unitCostMinor: variant.costMinor,
-        lineDiscountMinor: 0,
-        lineTotalMinor: variant.priceMinor,
-        stockQty: variant.quantity,
+  /** Opens the "new variant" dialog prefilled with the unknown barcode. */
+  function _openNewVariant(barcode) {
+    // The camera overlay sits above normal dialogs — close it first.
+    if (BeeStore.scanner && typeof BeeStore.scanner.closeCurrent === 'function') {
+      BeeStore.scanner.closeCurrent();
+    }
+    const products = BeeStore.pages && BeeStore.pages.products;
+    if (products && typeof products.openAddVariant === 'function') {
+      products.openAddVariant({
+        barcode,
+        onSaved: () => toast('تمت إضافة الصنف — امسح الباركود لإضافته للفاتورة'),
       });
+    } else {
+      BeeStore.router.navigate('/products');
+    }
+  }
+
+  async function _addToCart(query) {
+    if (!query) return { ok: false, reason: 'empty' };
+    const variant = await BeeStore.scanning.lookupVariant(BeeStore.api, query);
+    if (!variant) {
+      return { ok: false, reason: 'not-found', code: query, message: 'باركود غير موجود' };
+    }
+
+    let productName = '';
+    try {
+      const productRes = await BeeStore.api.products.get(variant.productId);
+      if (productRes.ok && productRes.data) productName = productRes.data.name;
+    } catch (e) { /* keep the line usable without a name */ }
+
+    const res = BeeStore.scanning.addToCart(cart, variant, productName, {
+      allowNegative: !!(settings && settings.allowNegativeStock),
+    });
+    if (!res.ok) return res;
+
+    _renderCart();
+    return {
+      ok: true,
+      item: res.item,
+      label: (productName ? productName + ' — ' : '') + variant.size + ' / ' + variant.color,
+    };
+  }
+
+  /** Cart add used by the search-results list (keeps its inline toast). */
+  function _addVariantToCart(variant, productName) {
+    const res = BeeStore.scanning.addToCart(cart, variant, productName, {
+      allowNegative: !!(settings && settings.allowNegativeStock),
+    });
+    if (!res.ok) {
+      if (res.message) toast(res.message, 'error');
+      return false;
     }
     _renderCart();
     return true;

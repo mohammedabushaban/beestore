@@ -181,7 +181,18 @@
     ));
   }
 
-  async function _addVariant() {
+  /**
+   * Opens the "new variant" dialog. Exported so other pages (POS, price
+   * check) can offer "create it now" after an unknown barcode.
+   *
+   * @param {{barcode?:string, onSaved?:Function}} [options]
+   */
+  function openAddVariant(options) {
+    return _addVariant(options || {});
+  }
+
+  async function _addVariant(options) {
+    options = options || {};
     const productsRes = await BeeStore.api.products.list();
     if (!productsRes.ok) { toast(productsRes.error.message, 'error'); return; }
     const activeProducts = productsRes.data.filter(p => p.active !== false);
@@ -198,7 +209,14 @@
     const costInput = input('number', '', { min: 0, step: 0.01 });
     const priceInput = input('number', '', { min: 0, step: 0.01 });
     const qtyInput = input('number', '', { min: 1, step: 1 });
-    const barcodeInput = input('text', '', { placeholder: 'اتركه فارغاً للتوليد التلقائي' });
+    const barcodeInput = input('text', options.barcode || '', { placeholder: 'اتركه فارغاً للتوليد التلقائي' });
+    let overlayRef = null;
+    const barcodeScanBtn = BeeStore.scanner.scanButton(async (code) => {
+      const check = await _checkBarcodeAvailable(code, null, () => {
+        if (overlayRef) overlayRef.remove();
+      });
+      if (check.ok) barcodeInput.value = code;
+    }, { label: 'مسح' });
 
     const { overlay } = BeeStore.dialogs.openDialog('صنف جديد', [
       formField('المنتج', productSelect, true),
@@ -207,7 +225,7 @@
       formField('التكلفة', costInput),
       formField('السعر', priceInput),
       formField('الكمية الافتتاحية', qtyInput, true, 'مطلوبة ويجب أن تكون أكبر من صفر'),
-      formField('الباركود', barcodeInput),
+      formField('الباركود', barcodeInput, false, null, barcodeScanBtn),
       el('button', {
         class: 'btn btn-primary',
         onclick: async () => {
@@ -217,6 +235,11 @@
           if (priceMinor <= 0) { toast('سعر البيع مطلوب - أدخل سعراً أكبر من صفر', 'error'); return; }
           const qty = Math.floor(Number(qtyInput.value));
           if (!qty || qty <= 0) { toast('الكمية الافتتاحية مطلوبة ويجب أن تكون أكبر من صفر', 'error'); return; }
+          const barcode = barcodeInput.value.trim();
+          if (barcode) {
+            const check = await _checkBarcodeAvailable(barcode, null, () => overlay.remove());
+            if (!check.ok) return;
+          }
           const res = await BeeStore.api.variants.create({
             productId: productSelect.value,
             size: sizeSelect.value,
@@ -224,13 +247,18 @@
             costMinor: BeeStore.money.fromMajor(costInput.value),
             priceMinor,
             quantity: qty,
-            barcode: barcodeInput.value.trim(),
+            barcode,
           });
-          if (res.ok) { toast('تم إضافة الصنف'); overlay.remove(); render(document.getElementById('page-content')); }
-          else toast(res.error.message, 'error');
+          if (res.ok) {
+            toast('تم إضافة الصنف');
+            overlay.remove();
+            if (typeof options.onSaved === 'function') options.onSaved(res.data);
+            else render(document.getElementById('page-content'));
+          } else toast(res.error.message, 'error');
         },
       }, 'حفظ'),
     ]);
+    overlayRef = overlay;
 
     const applyDefaults = () => {
       const p = activeProducts.find(x => x.id === productSelect.value);
@@ -252,6 +280,13 @@
       const priceInput = input('number', (v.priceMinor / 100).toFixed(2));
       const thresholdInput = input('number', v.lowStockThreshold != null ? String(v.lowStockThreshold) : '');
       const barcodeInput = input('text', v.barcode || '');
+      let overlayRef = null;
+      const barcodeScanBtn = BeeStore.scanner.scanButton(async (code) => {
+        const check = await _checkBarcodeAvailable(code, id, () => {
+          if (overlayRef) overlayRef.remove();
+        });
+        if (check.ok) barcodeInput.value = code;
+      }, { label: 'مسح' });
 
       const { overlay } = BeeStore.dialogs.openDialog('تعديل الصنف', [
         formField('المقاس', sizeInput),
@@ -259,24 +294,71 @@
         formField('التكلفة', costInput),
         formField('السعر', priceInput),
         formField('حد التنبيه', thresholdInput),
-        formField('الباركود', barcodeInput),
+        formField('الباركود', barcodeInput, false, null, barcodeScanBtn),
         el('button', {
           class: 'btn btn-primary',
           onclick: async () => {
+            const barcode = barcodeInput.value.trim();
+            if (barcode) {
+              const check = await _checkBarcodeAvailable(barcode, id, () => overlay.remove());
+              if (!check.ok) return;
+            }
             const res2 = await BeeStore.api.variants.update(id, {
               size: sizeInput.value.trim(),
               color: colorInput.value.trim(),
               costMinor: BeeStore.money.fromMajor(costInput.value),
               priceMinor: BeeStore.money.fromMajor(priceInput.value),
               lowStockThreshold: thresholdInput.value ? Number(thresholdInput.value) : null,
-              barcode: barcodeInput.value.trim(),
+              barcode,
             });
             if (res2.ok) { toast('تم التحديث'); overlay.remove(); render(document.getElementById('page-content')); }
             else toast(res2.error.message, 'error');
           },
         }, 'حفظ'),
       ]);
+      overlayRef = overlay;
     });
+  }
+
+  /**
+   * Checks that a barcode is not already used by another variant.
+   *
+   * @param {string} code barcode to check
+   * @param {string|null} excludeVariantId current variant (editing) — its own
+   *   barcode is not a duplicate
+   * @param {Function} [closeCurrent] closes the dialog the scan started from
+   *   before opening the owner variant
+   * @returns {Promise<{ok:boolean, message?:string}>}
+   */
+  async function _checkBarcodeAvailable(code, excludeVariantId, closeCurrent) {
+    const clean = (code || '').trim();
+    if (!clean) return { ok: true };
+    let owner = null;
+    try {
+      const res = await BeeStore.api.variants.byBarcode(clean);
+      if (res.ok) owner = res.data;
+    } catch (e) { /* treat as free; the service still guards on save */ }
+    if (!owner || owner.id === excludeVariantId) return { ok: true };
+
+    let productName = 'صنف آخر';
+    try {
+      const p = await BeeStore.api.products.get(owner.productId);
+      if (p.ok && p.data) productName = p.data.name;
+    } catch (e) { /* keep the generic name */ }
+
+    toast(
+      'الباركود مستخدم مسبقاً في: ' + productName + ' — ' + owner.size + ' / ' + owner.color,
+      'error',
+      {
+        actionText: 'فتح الصنف',
+        duration: 12000,
+        onAction: () => {
+          if (typeof closeCurrent === 'function') closeCurrent();
+          _editVariant(owner.id);
+        },
+      }
+    );
+    return { ok: false, message: 'الباركود مستخدم مسبقاً' };
   }
 
   async function _renderStock(container) {
@@ -498,6 +580,6 @@
   }
 
   BeeStore.pages = BeeStore.pages || {};
-  BeeStore.pages.products = { render };
-  if (typeof module !== 'undefined') module.exports = { render };
+  BeeStore.pages.products = { render, openAddVariant, editVariant: _editVariant };
+  if (typeof module !== 'undefined') module.exports = { render, openAddVariant };
 })(typeof window !== 'undefined' ? window : globalThis);

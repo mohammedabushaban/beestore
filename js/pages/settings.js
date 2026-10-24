@@ -168,6 +168,16 @@
     const settingsRes = await BeeStore.api.settings.get();
     const s = settingsRes.ok ? settingsRes.data : {};
     const folderName = status.folderName || s.dataFolderName || null;
+    const fileName = status.fileName || 'db.json';
+    const backupDir = status.backupDir || 'backups';
+    const relativePath = folderName ? folderName + '/' + fileName : null;
+
+    let fileInfo = null;
+    let backups = [];
+    if (fileSync && status.hasHandle) {
+      try { fileInfo = await fileSync.getFileInfo(); } catch (e) { /* ignore */ }
+      try { backups = await fileSync.listBackups(); } catch (e) { /* ignore */ }
+    }
 
     let statusText = 'غير متاح في هذا المتصفح';
     if (status.supported) {
@@ -230,10 +240,21 @@
       },
     }, 'تحميل نسخة احتياطية'));
 
+    container.appendChild(_storageLocationCard({
+      supported: status.supported,
+      hasHandle: !!status.hasHandle,
+      needPermission: status.status === 'need-permission',
+      folderName,
+      fileName,
+      backupDir,
+      relativePath,
+      fileInfo,
+      backups,
+    }));
+
     container.appendChild(el('div', { class: 'card' }, [
       el('h3', {}, 'حالة الحفظ في الملف'),
       el('p', {}, status.supported ? 'المتصفح: مدعوم' : 'المتصفح: غير مدعوم'),
-      el('p', {}, 'مجلد البيانات: ' + (folderName || '—')),
       el('p', {}, 'الحالة: ' + statusText),
       status.lastSavedAt ? el('p', {}, 'آخر حفظ: ' + BeeStore.dates.formatDateTime(status.lastSavedAt)) : null,
       el('p', { class: 'form-hint' }, 'يُحفظ مكان المجلد ويُستعاد تلقائياً عند إعادة فتح البرنامج. قد يطلب المتصفح تأكيد الإذن مرة واحدة في كل جلسة.'),
@@ -398,6 +419,117 @@
         toast(res.error.message, 'error');
       }
     });
+  }
+
+  /**
+   * Card that answers "where is my data saved?" with the folder name, the
+   * JSON file name, its size/date, and the backups folder. The browser never
+   * reveals the absolute OS path, so we show exactly what is available and
+   * say so in plain Arabic.
+   */
+  function _storageLocationCard(info) {
+    const children = [el('h3', {}, 'مكان حفظ البيانات')];
+
+    if (!info.supported) {
+      children.push(el('p', { class: 'alert alert-warning' },
+        'هذا المتصفح لا يدعم الحفظ في مجلد. استخدم Chrome أو Edge على الكمبيوتر لربط مجلد وحفظ ملف بيانات قابل للنسخ.'));
+      children.push(el('p', { class: 'form-hint' }, [
+        'البيانات الحالية محفوظة داخل قاعدة بيانات المتصفح ',
+        el('code', { dir: 'ltr' }, BeeStore.config.dbName),
+        '.',
+      ]));
+      return el('div', { class: 'card' }, children);
+    }
+
+    if (!info.hasHandle) {
+      children.push(el('div', { class: 'storage-browser' }, [
+        el('span', { class: 'storage-icon', 'aria-hidden': 'true' }, '🗄️'),
+        el('div', {}, [
+          el('div', { class: 'storage-title' }, 'البيانات محفوظة داخل المتصفح فقط'),
+          el('p', { class: 'form-hint' }, [
+            'قاعدة البيانات: ',
+            el('code', { dir: 'ltr' }, BeeStore.config.dbName),
+            ' (IndexedDB). اربط مجلداً من الزر أدناه لتُحفظ نسخة ',
+            el('code', { dir: 'ltr' }, info.fileName),
+            ' يمكنك فتحها ونسخها.',
+          ]),
+          info.folderName ? el('p', { class: 'form-hint' },
+            'المجلد المرتبط سابقاً: ' + info.folderName + ' — أعد ربطه لمنح الإذن من جديد.') : null,
+        ]),
+      ]));
+      return el('div', { class: 'card' }, children);
+    }
+
+    children.push(el('div', { class: 'path-box' }, [
+      el('span', { class: 'path-icon', 'aria-hidden': 'true' }, '📁'),
+      el('div', { class: 'path-content' }, [
+        el('div', { class: 'path-label' }, 'مسار ملف الحفظ'),
+        el('code', { class: 'path-value', dir: 'ltr' }, info.relativePath),
+        el('div', { class: 'path-meta' }, [
+          el('span', {}, 'اسم الملف: ' + info.fileName),
+          el('span', {}, 'المجلد: ' + info.folderName),
+        ]),
+      ]),
+      el('button', {
+        class: 'btn btn-sm btn-secondary', type: 'button',
+        onclick: () => _copyToClipboard(info.relativePath),
+      }, 'نسخ'),
+    ]));
+
+    const facts = [];
+    if (info.fileInfo) {
+      facts.push(el('span', {}, 'الحجم: ' + _formatBytes(info.fileInfo.size)));
+      facts.push(el('span', {}, 'آخر تعديل للملف: ' +
+        BeeStore.dates.formatDateTime(new Date(info.fileInfo.lastModified).toISOString())));
+    } else if (info.needPermission) {
+      facts.push(el('span', {}, 'بحاجة إلى إذن المجلد لعرض حجم الملف وتاريخه.'));
+    } else {
+      facts.push(el('span', {}, 'ملف البيانات لم يُنشأ بعد — اضغط "حفظ الآن".'));
+    }
+    facts.push(el('span', {}, 'مجلد النسخ الاحتياطية: ' + info.folderName + '/' + info.backupDir + '/'));
+    if (info.backups && info.backups.length > 0) {
+      facts.push(el('span', {}, 'أحدث نسخة احتياطية: ' + info.backups[0].name));
+    }
+    children.push(el('div', { class: 'file-facts' }, facts));
+    children.push(el('p', { class: 'form-hint' }, [
+      'المتصفح لا يسمح لأي تطبيق بمعرفة المسار الكامل للقرص (مثل ',
+      el('code', { dir: 'ltr' }, 'C:\\Users\\...'),
+      ') لأسباب أمنية، لذلك يظهر اسم المجلد واسم الملف فقط. ' +
+      'لتجد الملف افتح المجلد نفسه من مستكشف الملفات.',
+    ]));
+
+    return el('div', { class: 'card' }, children);
+  }
+
+  function _formatBytes(bytes) {
+    if (bytes == null) return '—';
+    if (bytes < 1024) return bytes + ' بايت';
+    if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' كيلوبايت';
+    return (bytes / (1024 * 1024)).toFixed(2) + ' ميجابايت';
+  }
+
+  function _copyToClipboard(text) {
+    if (!text) return;
+    const done = () => toast('تم نسخ المسار');
+    if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+      navigator.clipboard.writeText(text).then(done).catch(() => _legacyCopy(text));
+      return;
+    }
+    _legacyCopy(text);
+  }
+
+  function _legacyCopy(text) {
+    try {
+      const ta = el('textarea', { style: 'position:fixed;opacity:0;inset-inline-start:-9999px' });
+      ta.value = text;
+      document.body.appendChild(ta);
+      ta.select();
+      const ok = document.execCommand('copy');
+      ta.remove();
+      toast(ok ? 'تم نسخ المسار' : 'تعذّر النسخ', ok ? 'success' : 'error');
+    } catch (e) {
+      toast('تعذّر النسخ', 'error');
+    }
   }
 
   BeeStore.pages = BeeStore.pages || {};

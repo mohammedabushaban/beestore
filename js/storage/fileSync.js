@@ -276,14 +276,46 @@
       }
     }
 
+    /**
+     * Info about the data file on disk, used to show the user exactly which
+     * file is being written. Returns null when no folder is linked or the
+     * file does not exist yet.
+     *
+     * @returns {Promise<{name:string,size:number,lastModified:number}|null>}
+     */
+    async getFileInfo() {
+      if (!this.dirHandle) return null;
+      try {
+        const fileHandle = await this.dirHandle.getFileHandle(BeeStore.config.fileName);
+        const file = await fileHandle.getFile();
+        return { name: file.name, size: file.size, lastModified: file.lastModified };
+      } catch (e) {
+        return null;
+      }
+    }
+
+    /**
+     * Status + the names of the files/folders the app writes to.
+     *
+     * The File System Access API deliberately never exposes the full absolute
+     * path (e.g. C:\Users\...); only the picked folder's own name is available.
+     * `relativePath` is therefore "folder/file.json", not the OS path.
+     */
     getStatus() {
+      const fileName = BeeStore.config.fileName;
+      const folderName = this.dirHandle ? this.dirHandle.name : null;
       return {
         status: this.status,
         lastSavedAt: this.lastSavedAt,
         lastError: this.lastError,
-        folderName: this.dirHandle ? this.dirHandle.name : null,
+        folderName,
+        fileName,
+        backupDir: BeeStore.config.backupDir,
+        backupPrefix: BeeStore.config.backupPrefix,
+        relativePath: folderName ? folderName + '/' + fileName : null,
         hasHandle: !!this.dirHandle,
         supported: this.isSupported(),
+        storage: this.dirHandle ? 'file' : 'browser',
       };
     }
   }

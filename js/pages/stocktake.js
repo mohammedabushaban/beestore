@@ -16,13 +16,46 @@
       }
     }
 
+    const listDiv = el('div', { id: 'stocktake-list' });
+
+    // Count by scanning: the first scan of a variant starts a fresh count at
+    // 1 (physical count), then each further scan adds one.
+    const scannedOnce = new Set();
+    async function _scanCount(code) {
+      const variant = await BeeStore.scanning.lookupVariant(BeeStore.api, code);
+      if (!variant) {
+        toast('باركود غير موجود: ' + code, 'error');
+        return { ok: false, message: 'باركود غير موجود' };
+      }
+      const counted = listDiv.querySelector('input[data-variant-id="' + variant.id + '"]');
+      if (!counted) {
+        toast('الصنف غير موجود في القائمة المعروضة', 'warning');
+        return { ok: false, message: 'الصنف غير موجود في القائمة' };
+      }
+      const previous = scannedOnce.has(variant.id) ? (Number(counted.value) || 0) : 0;
+      counted.value = String(previous + 1);
+      scannedOnce.add(variant.id);
+      counted.dispatchEvent(new Event('input', { bubbles: true }));
+      counted.scrollIntoView({ block: 'center', behavior: 'smooth' });
+      counted.classList.add('scan-highlight');
+      setTimeout(() => counted.classList.remove('scan-highlight'), 1200);
+      return {
+        ok: true,
+        label: (variant.size + ' / ' + variant.color) + ' — العدّ: ' + (previous + 1),
+      };
+    }
+
     const filterRow = el('div', { class: 'filter-row' }, [
       catSelect,
       el('button', { class: 'btn btn-secondary', onclick: () => _loadVariants() }, 'عرض'),
+      BeeStore.scanner.scanButton(_scanCount, {
+        label: 'مسح للجرد',
+        title: 'جرد المخزون بالباركود',
+        continuous: true,
+        hint: 'امسح كل قطعة — أول مسحة تبدأ العدّ من جديد ثم تزيد',
+      }),
     ]);
     container.appendChild(filterRow);
-
-    const listDiv = el('div', { id: 'stocktake-list' });
     container.appendChild(listDiv);
 
     const dateInput = input('date', BeeStore.dates.today());

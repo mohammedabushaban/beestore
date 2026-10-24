@@ -223,10 +223,8 @@
     const results = el('div', { class: 'search-results' });
     const itemsDiv = el('div', { id: 'exchange-items' });
 
-    searchInput.addEventListener('keydown', async (e) => {
-      if (e.key !== 'Enter') return;
-      e.preventDefault();
-      const q = searchInput.value.trim();
+    async function addByQuery(q) {
+      q = String(q || '').trim();
       if (!q) return;
       let variant = null;
       const barcodeRes = await BeeStore.api.variants.byBarcode(q);
@@ -262,11 +260,22 @@
       itemsDiv.appendChild(row);
       searchInput.value = '';
       searchInput.focus();
+    }
+
+    searchInput.addEventListener('keydown', async (e) => {
+      if (e.key !== 'Enter') return;
+      e.preventDefault();
+      await addByQuery(searchInput.value);
     });
+
+    const scanBtn = BeeStore.scanner.scanButton(async (code) => {
+      searchInput.value = code;
+      await addByQuery(code);
+    }, { label: 'مسح' });
 
     panel.appendChild(el('div', { class: 'form-group' }, [
       el('label', { class: 'form-label' }, 'أضف صنفاً للاستبدال (Enter)'),
-      searchInput,
+      el('div', { class: 'field-with-action' }, [searchInput, scanBtn]),
       results,
     ]));
     panel.appendChild(itemsDiv);

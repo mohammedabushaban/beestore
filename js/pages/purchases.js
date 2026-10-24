@@ -256,13 +256,48 @@
 
     const qtyInput = input('number', '1', { min: 1 });
     const costInput = input('number', '', { min: 0, step: 0.01, placeholder: 'سعر الشراء' });
+
+    // Receiving: scan the supplier label → select the variant + prefill cost.
+    let scannedVariant = null;
+    const selectVariant = (v) => {
+      if (!v) return;
+      const exists = Array.prototype.some.call(variantSelect.options, (o) => o.value === v.id);
+      if (!exists) variantSelect.appendChild(el('option', { value: v.id }, v.size + ' / ' + v.color));
+      variantSelect.value = v.id;
+      if (!costInput.value) costInput.value = ((v.costMinor || 0) / 100).toFixed(2);
+    };
+    const variantScanBtn = BeeStore.scanner.scanButton(() => selectVariant(scannedVariant), {
+      label: 'مسح',
+      title: 'مسح صنف المشتريات',
+      validate: async (code) => {
+        const v = await BeeStore.scanning.lookupVariant(BeeStore.api, code);
+        if (!v) {
+          toast('باركود غير موجود: ' + code, 'error', {
+            actionText: 'إضافة صنف',
+            duration: 12000,
+            onAction: () => {
+              const products = BeeStore.pages && BeeStore.pages.products;
+              if (products && typeof products.openAddVariant === 'function') {
+                products.openAddVariant({
+                  barcode: code,
+                  onSaved: (created) => { selectVariant(created); toast('تمت إضافة الصنف واختياره'); },
+                });
+              }
+            },
+          });
+          return { ok: false, message: 'باركود غير موجود' };
+        }
+        scannedVariant = v;
+        return { ok: true, label: v.size + ' / ' + v.color };
+      },
+    });
     const paymentInput = input('number', '0', { min: 0, step: 0.01, placeholder: 'المدفوع' });
     const dateInput = input('date', BeeStore.dates.today());
 
     const { overlay } = BeeStore.dialogs.openDialog('فاتورة مشتريات', [
       formField('التاريخ', dateInput, true),
       formField('المورد', supplierSelect, true),
-      formField('الصنف', variantSelect, true),
+      formField('الصنف', variantSelect, true, null, variantScanBtn),
       formField('الكمية', qtyInput, true),
       formField('سعر الشراء', costInput, true),
       formField('المدفوع', paymentInput),

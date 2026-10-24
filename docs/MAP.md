@@ -18,7 +18,7 @@
 | `memoryRepository.js` | In-memory repo (tests), serialized tx, once-per-commit index rebuild | `BeeStore.MemoryRepository` | `repository.js`, `core/*` |
 | `idbRepository.js` | IndexedDB repo, load-to-memory + indexes, serialized tx, once-per-commit index rebuild | `BeeStore.IdbRepository` | `repository.js`, `core/*` |
 | `migrations.js` | Schema version upgrades | `BeeStore.migrations.{migrate,migrations}` | `namespace.js` |
-| `fileSync.js` | Folder handle, db.json mirror, dated backups, status | `BeeStore.FileSync` | `core/*`, `config.js` |
+| `fileSync.js` | Folder handle, db.json mirror, dated backups, status + file info (name/size/lastModified) and folder/file path metadata | `BeeStore.FileSync` | `core/*`, `config.js` |
 
 ## Services (js/services/)
 | File | Responsibility | Exports | Depends On |
@@ -46,6 +46,7 @@
 | `backup.js` | Backup create/list/download/restore | `BeeStore.backup`, `BeeStore.BackupService` | `storage/*`, `fileSync.js` |
 | `maintenance.js` | Recalculate stock, Data Integrity Checker (9 checks), reset all, check empty | `BeeStore.maintenance`, `BeeStore.MaintenanceService` | `storage/*`, `stock.js` |
 | `barcode.js` | JsBarcode wrapper (canvas/SVG) | `BeeStore.barcode`, `BeeStore.BarcodeService` | `vendor/jsbarcode` |
+| `scan.js` | Scan → variant lookup (exact barcode, then search), POS cart add (stock limits, qty+1), price-check lookup | `BeeStore.scanning.{lookupVariant,addToCart,priceCheck,normalizeCode}` | `scanner.js` (normalize), `api.variants` |
 | `csv.js` | CSV import (products, digit-normalized) + export (formula-guarded, BOM) | `BeeStore.csv`, `BeeStore.CsvService` | `core/*`, `storage/*`, `products.js`, `variants.js` |
 
 ## API Facade (js/api/)
@@ -63,18 +64,20 @@
 | `firstRun.js` | First-run wizard (store info → folder → demo/empty) | `BeeStore.FirstRunWizard` | `components.js`, `api.js`, `fileSync.js`, `settings.js` |
 | `period.js` | v2 global period store: month/year/custom selection (localStorage + URL hash + memory fallback), header selector, scope bar, `defaultDateForNew`/`applyDefaultDate` | `BeeStore.period.{get,set,setYear,setCustom,init,toQuery,shift,getRange,monthLabel,label,selMonth,isClosed,monthsWithData,defaultDateForNew,applyDefaultDate,scopeBar,renderHeader}` | `components.js`, `dialogs.js`, `dates.js`, `api.periods` |
 | `errorLog.js` | v2 §12.3 global error capture (last 200 in IDB `errorLog`), Arabic dialog + copy, diagnostics download | `BeeStore.errorLog.{repo,install,capture,list,clear,diagnostics}` | `components.js`, `ids.js` |
+| `scanner.js` | Camera barcode scanner: full-screen overlay, rear camera, torch, camera switch, BarcodeDetector + vendored ZXing fallback, continuous mode with 1.5 s repeat filter, beep/vibrate/flash, manual entry, Arabic errors | `BeeStore.scanner.{open,scan,scanButton,closeCurrent,isSupported,unsupportedReason,reasonMessage,normalizeCode,createRepeatFilter,REASONS,PREFERRED_FORMATS}` | `components.js`, `vendor/zxing` |
 
 ## Pages (js/pages/)
 | File | Responsibility | Exports | Depends On |
 |------|---------------|---------|------------|
 | `dashboard.js` | Dashboard page (cards, charts, recent invoices) | `BeeStore.pages.dashboard` | `ui/*`, `api.dashboard`, `api.reports` |
-| `pos.js` | POS page (barcode scan, cart, discount, payments, save w/ clientKey + in-flight guard) | `BeeStore.pages.pos` | `ui/*`, `api.products`, `api.variants`, `api.sales`, `api.customers`, `api.settings` |
+| `pos.js` | POS page (camera + USB barcode scan, continuous scanning, unknown-barcode create action, cart, discount, payments, save w/ clientKey + in-flight guard) | `BeeStore.pages.pos` | `ui/*`, `scanner.js`, `scan.js`, `api.products`, `api.variants`, `api.sales`, `api.customers`, `api.settings` |
 | `invoices.js` | Invoice list (period-scoped + show-all, search, filter, view, print, void) | `BeeStore.pages.invoices` | `ui/*`, `api.sales`, `print.js` |
 | `returns.js` | Returns & exchanges list (period-scoped) + create | `BeeStore.pages.returns` | `ui/*`, `api.returns`, `api.sales`, `api.customers`, `api.variants` |
-| `products.js` | Products, categories, variants, stock, low-stock, CSV import | `BeeStore.pages.products` | `ui/*`, `api.products`, `api.categories`, `api.variants`, `api.stock`, `csv.js` |
-| `stocktake.js` | Stocktake page (count sheet, apply) | `BeeStore.pages.stocktake` | `ui/*`, `api.variants`, `api.stock` |
+| `products.js` | Products, categories, variants (scan barcode + duplicate guard linking to owner variant), stock, low-stock, CSV import | `BeeStore.pages.products` | `ui/*`, `scanner.js`, `scan.js`, `api.products`, `api.categories`, `api.variants`, `api.stock`, `csv.js` |
+| `stocktake.js` | Stocktake page (count sheet, scan-to-count, apply) | `BeeStore.pages.stocktake` | `ui/*`, `scanner.js`, `scan.js`, `api.variants`, `api.stock` |
+| `priceCheck.js` | "فحص سعر" page: scan/manual barcode → name, size, color, price, stock | `BeeStore.pages.priceCheck` | `ui/*`, `scanner.js`, `scan.js`, `api.variants` |
 | `labels.js` | Barcode label sheet builder + print | `BeeStore.pages.labels` | `ui/*`, `api.variants`, `api.settings`, `barcode.js`, `print.js` |
-| `purchases.js` | Purchase list (period-scoped) + create, purchase returns tab | `BeeStore.pages.purchases` | `ui/*`, `api.purchases`, `api.suppliers`, `api.variants` |
+| `purchases.js` | Purchase list (period-scoped) + create (scan receiving → variant + cost), purchase returns tab | `BeeStore.pages.purchases` | `ui/*`, `scanner.js`, `scan.js`, `api.purchases`, `api.suppliers`, `api.variants` |
 | `suppliers.js` | Supplier list + payments + period-scoped statement | `BeeStore.pages.suppliers` | `ui/*`, `api.suppliers` |
 | `customers.js` | Customer list, period-scoped statement, payments, installments | `BeeStore.pages.customers` | `ui/*`, `api.customers` |
 | `expenses.js` | Expense list (period-scoped), categories, recurring | `BeeStore.pages.expenses` | `ui/*`, `api.expenses` |
@@ -82,7 +85,7 @@
 | `accounts.js` | Accounts, ledger, transfers, owner tx, daily closing | `BeeStore.pages.accounts` | `ui/*`, `api.accounts`, `api.transactions`, `api.reports` |
 | `reports.js` | All reports (P&L, sales, inventory, aging, balance, daily) + v2 tabs (Month Review, Profit⇄Cash, Compare, Year Overview) | `BeeStore.pages.reports` | `ui/*`, `ui/period.js`, `api.reports` |
 | `periods.js` | v2 month-closing page: months table, live checklist, KPIs, close/reopen/integrity/print | `BeeStore.pages.periods` | `ui/*`, `ui/period.js`, `api.periods`, `api.reports`, `api.maintenance`, `api.backup` |
-| `settings.js` | Settings page (store info, tax, invoice, sizes/colors, payment methods, backup, audit, maintenance + integrity check + error log) | `BeeStore.pages.settings` | `ui/*`, `api.settings`, `api.backup`, `api.maintenance`, `api.audit`, `fileSync.js` |
+| `settings.js` | Settings page (store info, tax, invoice, sizes/colors, payment methods, backup + storage-path card, audit, maintenance + integrity check + error log) | `BeeStore.pages.settings` | `ui/*`, `api.settings`, `api.backup`, `api.maintenance`, `api.audit`, `fileSync.js` |
 
 ## Demo (js/demo/)
 | File | Responsibility | Exports | Depends On |

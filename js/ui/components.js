@@ -22,17 +22,39 @@
     return e;
   }
 
-  function toast(message, type) {
+  /**
+   * Short-lived notification.
+   *
+   * @param {string} message
+   * @param {'success'|'error'|'info'|'warning'} [type]
+   * @param {{actionText?:string, onAction?:Function, duration?:number}} [options]
+   *   Optional action button (e.g. "إضافة صنف" after an unknown barcode).
+   */
+  function toast(message, type, options) {
     type = type || 'success';
+    options = options || {};
     const container = document.getElementById('toast-container') || (() => {
       const c = el('div', { id: 'toast-container', class: 'toast-container', role: 'status', 'aria-live': 'polite' });
       document.body.appendChild(c);
       return c;
     })();
     const t = el('div', { class: 'toast toast-' + type, role: 'alert' }, message);
+    let timer = null;
+    const dismiss = () => {
+      if (timer) clearTimeout(timer);
+      t.classList.remove('show');
+      setTimeout(() => t.remove(), 300);
+    };
+    if (options.actionText && typeof options.onAction === 'function') {
+      t.classList.add('toast-has-action');
+      t.appendChild(el('button', {
+        class: 'toast-action', type: 'button',
+        onclick: () => { dismiss(); options.onAction(); },
+      }, options.actionText));
+    }
     container.appendChild(t);
     setTimeout(() => t.classList.add('show'), 10);
-    setTimeout(() => { t.classList.remove('show'); setTimeout(() => t.remove(), 300); }, 3000);
+    timer = setTimeout(dismiss, options.duration || 3000);
   }
 
   function confirmDialog(title, message, onConfirm, options = {}) {

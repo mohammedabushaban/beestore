@@ -64,10 +64,14 @@
         <button type="button" class="btn btn-secondary">تخطي</button>
       </div>
       <div id="wizard-step-3" style="display:none">
-        <h3>بيانات تجريبية</h3>
-        <p>هل تريد تحميل بيانات تجريبية للتجربة؟</p>
-        <button type="button" class="btn btn-primary">تحميل بيانات تجريبية</button>
-        <button type="button" class="btn btn-secondary">البدء بدون بيانات</button>
+        <h3>البدء</h3>
+        <p>هل تريد تحميل بيانات تجريبية للتجربة، أم استعادة نسخة احتياطية من هاتفك القديم؟</p>
+        <div class="dialog-actions" style="flex-wrap: wrap;">
+          <button type="button" class="btn btn-primary" id="wizard-demo">تحميل بيانات تجريبية</button>
+          <button type="button" class="btn btn-warning" id="wizard-restore">استعادة من نسخة احتياطية</button>
+          <button type="button" class="btn btn-secondary" id="wizard-empty">البدء بدون بيانات</button>
+        </div>
+        <p class="form-hint">على هاتف جديد: ثبّت التطبيق، افتحه، ثم اختر «استعادة من نسخة احتياطية» وحدد ملف BeeStore-backup. لن تُحفظ النسخة داخل التطبيق — احتفظ بالملف في Drive أو واتساب.</p>
       </div>
     </div>
   </div>
@@ -257,6 +261,7 @@
   <script src="js/services/periods.js"></script>
   <script src="js/services/reports.js"></script>
   <script src="js/services/dashboard.js"></script>
+  <script src="js/services/backupFile.js"></script>
   <script src="js/services/backup.js"></script>
   <script src="js/services/maintenance.js"></script>
   <script src="js/services/snapshots.js"></script>
@@ -264,6 +269,7 @@
   <script src="js/ui/router.js"></script>
   <script src="js/ui/components.js"></script>
   <script src="js/ui/dialogs.js"></script>
+  <script src="js/ui/backupUI.js"></script>
   <script src="js/ui/print.js"></script>
   <script src="js/ui/firstRun.js"></script>
   <script src="js/ui/period.js"></script>

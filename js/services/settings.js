@@ -43,7 +43,12 @@
     autoBackup: true,
     backupKeep: 30,
     backupReminderDays: 3,
+    backupWarnDays: 2,
+    backupCriticalDays: 7,
     lastBackupAt: null,
+    lastOffDeviceBackupAt: null,
+    lastBackupMethod: null,
+    lastBackupRevision: null,
     lastFileSaveAt: null,
     dataFolderName: null,
     // v2 §2: first business date; no document may precede it.

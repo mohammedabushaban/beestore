@@ -16,6 +16,8 @@
     offlineReady: false,
     lastError: null,
     appReady: false,
+    backupWarning: false,
+    backupStatus: null,
   };
   let lastCheckAt = 0;
   let installHintTimer = null;
@@ -134,6 +136,8 @@
       applying: state.applying,
       online: root.navigator ? root.navigator.onLine !== false : true,
       lastError: state.lastError ? String(state.lastError.message || state.lastError) : null,
+      backupWarning: state.backupWarning,
+      backupStatus: state.backupStatus,
     };
   }
 
@@ -322,6 +326,71 @@
     root.document.body.appendChild(banner);
   }
 
+  async function _checkBackupReminder() {
+    if (!BeeStore.backup || typeof BeeStore.backup.status !== 'function') return null;
+    try {
+      const status = await BeeStore.backup.status();
+      return status && (status.overdue || status.critical) ? status : null;
+    } catch (e) {
+      return null;
+    }
+  }
+
+  function _backupReminderText(status) {
+    const days = Math.floor(Number(status && status.ageDays) || 0);
+    if (!status || !status.lastBackupAt) {
+      return 'لم تُنشئ نسخة احتياطية بعد. الهاتف هو النسخة الوحيدة من بياناتك.';
+    }
+    if (status.critical) {
+      return 'مرّ أكثر من ' + days + ' يوم على آخر نسخة. إذا ضاع الهاتف أو حُذفت بيانات المتصفح ستفقد كل شيء.';
+    }
+    return 'مرّ أكثر من ' + days + ' يوم على آخر نسخة. احفظ نسخة في Drive أو واتساب أو بريد إلكتروني.';
+  }
+
+  async function _backupNowFromBanner() {
+    if (!BeeStore.backupUI || typeof BeeStore.backupUI.shareBackup !== 'function') {
+      if (BeeStore.router) BeeStore.router.navigate('/settings');
+      return;
+    }
+    const result = await BeeStore.backupUI.shareBackup();
+    if (result && result.ok && result.data && result.data.method !== 'cancelled') {
+      state.backupWarning = false;
+      state.backupStatus = null;
+      _removeBanner();
+    }
+  }
+
+  function _showBackupBanner(status) {
+    if (!state.appReady || !root.document || state.updateAvailable) return;
+    const ui = BeeStore.ui;
+    if (!ui || !ui.el) return;
+    _removeBanner();
+    const critical = !!(status && status.critical);
+    const banner = _bannerShell('pwa-banner-backup' + (critical ? ' pwa-banner-backup-critical' : ''));
+    banner.appendChild(ui.el('span', { class: 'pwa-banner-icon', 'aria-hidden': 'true' }, critical ? '⚠️' : '🛡️'));
+    banner.appendChild(ui.el('div', { class: 'pwa-banner-text' }, [
+      ui.el('strong', {}, critical ? 'نسخة احتياطية متأخرة جداً' : 'حان وقت النسخة الاحتياطية'),
+      ui.el('span', {}, _backupReminderText(status)),
+    ]));
+    banner.appendChild(ui.el('div', { class: 'pwa-banner-actions' }, [
+      ui.el('button', {
+        class: 'btn btn-sm btn-primary',
+        type: 'button',
+        onclick: function () {
+          _backupNowFromBanner().catch(function () {
+            if (BeeStore.ui && BeeStore.ui.toast) BeeStore.ui.toast('تعذّر إنشاء النسخة الاحتياطية', 'error');
+          });
+        },
+      }, 'نسخ الآن'),
+      ui.el('button', {
+        class: 'btn btn-sm btn-secondary',
+        type: 'button',
+        onclick: function () { _removeBanner(); },
+      }, 'لاحقاً'),
+    ]));
+    root.document.body.appendChild(banner);
+  }
+
   function _installHintDismissed() {
     try {
       const at = Number(root.localStorage.getItem(INSTALL_DISMISS_KEY) || 0);
@@ -338,7 +407,7 @@
 
   function _showInstallBanner() {
     if (!state.appReady || !root.document || state.installed || _installHintDismissed()) return;
-    if (state.updateAvailable) return; // update banner has priority
+    if (state.updateAvailable || state.backupWarning) return; // update/backup have priority
     const ui = BeeStore.ui;
     if (!ui || !ui.el) return;
     _removeBanner();
@@ -378,7 +447,17 @@
       _showUpdateBanner();
       return;
     }
-    _scheduleInstallHint();
+    _checkBackupReminder().then(function (status) {
+      if (status) {
+        state.backupWarning = true;
+        state.backupStatus = status;
+        _showBackupBanner(status);
+      } else {
+        _scheduleInstallHint();
+      }
+    }).catch(function () {
+      _scheduleInstallHint();
+    });
   }
 
   function showInstallGuide() {

@@ -16,6 +16,7 @@
     async open() { throw new Error('not implemented'); }
     async get(collection, id) { throw new Error('not implemented'); }
     async list(collection, predicate) { throw new Error('not implemented'); }
+    async count(collection) { throw new Error('not implemented'); }
     async query(collection, indexName, valueOrRange) { throw new Error('not implemented'); }
     async transaction(fn) { throw new Error('not implemented'); }
     async exportAll() { throw new Error('not implemented'); }

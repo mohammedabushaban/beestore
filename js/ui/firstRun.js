@@ -50,7 +50,7 @@
         skipBtn.onclick = () => this._showStep(3);
       }
 
-      const demoBtn = document.querySelector('#wizard-step-3 .btn-primary');
+      const demoBtn = document.getElementById('wizard-demo');
       if (demoBtn) {
         demoBtn.onclick = async () => {
           await BeeStore.loadDemoData();
@@ -58,7 +58,18 @@
         };
       }
 
-      const emptyBtn = document.querySelector('#wizard-step-3 .btn-secondary');
+      const restoreBtn = document.getElementById('wizard-restore');
+      if (restoreBtn) {
+        restoreBtn.onclick = function () {
+          if (BeeStore.backupUI) {
+            BeeStore.backupUI.restoreFromFile({ reload: true });
+          } else {
+            BeeStore.ui.toast('خدمة الاستعادة غير متاحة', 'error');
+          }
+        };
+      }
+
+      const emptyBtn = document.getElementById('wizard-empty');
       if (emptyBtn) {
         emptyBtn.onclick = () => this.finish();
       }

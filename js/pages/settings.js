@@ -190,6 +190,20 @@
     }
     const latestSnapshot = snapshots.length ? snapshots[0] : null;
 
+    const settingsRes = await BeeStore.api.settings.get();
+    const settings = settingsRes.ok ? settingsRes.data : {};
+    const meta = await BeeStore.repo.get('meta', 'meta') || {};
+    const collectionCounts = {};
+    let totalRecords = 0;
+    if (BeeStore.repo && typeof BeeStore.repo.count === 'function') {
+      for (const name of (BeeStore.COLLECTIONS || [])) {
+        if (name === 'meta') continue;
+        const count = await BeeStore.repo.count(name);
+        collectionCounts[name] = count;
+        totalRecords += count;
+      }
+    }
+
     const storageRows = [];
     if (!storage.supported) {
       storageRows.push(el('p', { class: 'alert alert-warning' },
@@ -202,6 +216,32 @@
         const pct = Math.min(100, Math.round((storage.usage / storage.quota) * 100));
         storageRows.push(el('p', { class: 'form-hint' },
           'المستخدم: ' + _formatBytes(storage.usage) + ' من ' + _formatBytes(storage.quota) + ' (' + pct + '%).'));
+        if (pct >= 90) {
+          storageRows.push(el('p', { class: 'alert alert-danger' },
+            '⛔ مساحة التخزين شبه ممتلئة (' + pct + '%). خذ نسخة احتياطية خارج الهاتف الآن، ثم احذف اللقطات القديمة أو البيانات غير الضرورية.'));
+        } else if (pct >= 70) {
+          storageRows.push(el('p', { class: 'alert alert-warning' },
+            '⚠️ مساحة التخزين تقترب من الامتلاء (' + pct + '%). خذ نسخة احتياطية خارج الهاتف وراجع حجم البيانات.'));
+        }
+        const started = settings.systemStartDate || (meta.createdAt || '').slice(0, 10);
+        const startedTime = started ? new Date(started + 'T00:00:00').getTime() : NaN;
+        const days = Number.isFinite(startedTime) ? Math.max(1, (Date.now() - startedTime) / 86400000) : null;
+        if (days) {
+          const yearly = Math.round((storage.usage / days) * 365);
+          storageRows.push(el('p', { class: 'form-hint' },
+            'تقدير الاستخدام السنوي: ' + _formatBytes(yearly) + ' (بناءً على ' + Math.round(days) + ' يوم).'));
+        }
+      }
+      if (totalRecords > 0) {
+        const labels = {
+          sales: 'فواتير', products: 'منتجات', variants: 'متغيرات',
+          stockMovements: 'حركات مخزون', purchases: 'مشتريات', expenses: 'مصاريف',
+        };
+        const top = ['sales', 'products', 'variants', 'stockMovements', 'purchases', 'expenses']
+          .filter(function (name) { return collectionCounts[name] > 0; })
+          .map(function (name) { return labels[name] + ': ' + collectionCounts[name]; });
+        storageRows.push(el('p', { class: 'form-hint' },
+          'إجمالي السجلات: ' + totalRecords + (top.length ? ' · ' + top.join(' · ') : '')));
       }
       if (!storage.persisted) {
         storageRows.push(el('button', {
@@ -329,6 +369,8 @@
     const status = fileSync ? fileSync.getStatus() : { supported: false };
     const settingsRes = await BeeStore.api.settings.get();
     const s = settingsRes.ok ? settingsRes.data : {};
+    const backupRes = await BeeStore.api.backup.status();
+    const backupStatus = backupRes.ok ? backupRes.data : {};
     const folderName = status.folderName || s.dataFolderName || null;
     const fileName = status.fileName || 'db.json';
     const backupDir = status.backupDir || 'backups';
@@ -394,13 +436,7 @@
       }, 'فصل المجلد'));
     }
 
-    buttons.push(el('button', {
-      class: 'btn btn-secondary',
-      onclick: async () => {
-        const res = await BeeStore.api.backup.download();
-        if (res.ok) toast('تم تحميل النسخة الاحتياطية');
-      },
-    }, 'تحميل نسخة احتياطية'));
+    container.appendChild(_offDeviceBackupCard(backupStatus, s, container));
 
     container.appendChild(_storageLocationCard({
       supported: status.supported,
@@ -425,34 +461,105 @@
 
     container.appendChild(el('div', { class: 'card' }, [
       el('h3', {}, 'استعادة نسخة احتياطية'),
-      el('p', {}, 'يمكنك استعادة نسخة احتياطية من الملفات المحفوظة'),
+      el('p', {}, 'اختر ملف نسخة احتياطية (.json) — عادي أو مشفّر. سيُتحقق من سلامته وتظهر لك ملخص قبل الاستبدال.'),
+      el('p', { class: 'form-hint' }, 'تُنشأ نسخة أمان داخلية تلقائياً قبل الاستعادة. إذا كانت النسخة من جهاز آخر، توقّف عن العمل على الجهاز القديم بعد الاستعادة.'),
       el('button', {
         class: 'btn btn-warning',
-        onclick: () => {
-          const fileInput = el('input', { type: 'file', accept: '.json', style: 'display:none' });
-          document.body.appendChild(fileInput);
-          fileInput.onchange = () => {
-            const file = fileInput.files[0];
-            document.body.removeChild(fileInput);
-            if (!file) return;
-            const reader = new FileReader();
-            reader.onload = async (e) => {
-              try {
-                const data = JSON.parse(e.target.result);
-                const res = await BeeStore.api.backup.restore(data);
-                if (res.ok) { toast('تم الاستعادة بنجاح'); setTimeout(() => location.reload(), 1500); }
-                else toast(res.error.message, 'error');
-              } catch (err) {
-                toast('ملف غير صالح: ' + err.message, 'error');
-              }
-            };
-            reader.onerror = () => toast('فشل قراءة الملف', 'error');
-            reader.readAsText(file);
-          };
-          fileInput.click();
-        },
+        type: 'button',
+        onclick: function () { BeeStore.backupUI.restoreFromFile(); },
       }, 'استعادة من ملف'),
     ]));
+  }
+
+  function _offDeviceBackupCard(status, settings, container) {
+    const methodLabel = status.lastBackupMethod === 'share'
+      ? 'تمت مشاركتها خارج الهاتف'
+      : status.lastBackupMethod === 'download'
+        ? 'نُزّلت على هذا الجهاز — تأكد من نقلها خارج الهاتف'
+        : '';
+    let statusLine;
+    let statusClass = 'form-hint';
+    if (status.lastBackupAt) {
+      statusLine = 'آخر نسخة احتياطية: ' + BeeStore.dates.formatDateTime(status.lastBackupAt) +
+        (methodLabel ? ' — ' + methodLabel : '');
+      if (status.critical) {
+        statusClass = 'alert alert-danger';
+        statusLine = '⚠️ نسخة احتياطية متأخرة جداً. ' + statusLine + ' — مرّ أكثر من ' + Math.floor(status.ageDays || 0) + ' يوم.';
+      } else if (status.overdue) {
+        statusClass = 'alert alert-warning';
+        statusLine = '⚠️ حان وقت النسخة الاحتياطية. ' + statusLine + ' — مرّ أكثر من ' + Math.floor(status.ageDays || 0) + ' يوم.';
+      }
+    } else {
+      statusLine = 'لم تُنشئ نسخة احتياطية خارج الجهاز بعد. الهاتف هو النسخة الوحيدة من بياناتك.';
+      statusClass = status.critical ? 'alert alert-danger' : 'alert alert-warning';
+    }
+
+    const encryptToggle = el('input', { type: 'checkbox', id: 'backup-encrypt' });
+    const passInput = input('password', '', {
+      autocomplete: 'new-password',
+      placeholder: 'كلمة مرور التشفير',
+      disabled: true,
+    });
+    const passGroup = el('div', { class: 'form-group', style: 'display: none;' }, [
+      el('label', { class: 'form-label', for: 'backup-passphrase' }, 'كلمة المرور *'),
+      passInput,
+      el('p', { class: 'form-hint' }, 'لن تُحفظ كلمة المرور في البرنامج. إن نسيتها لا يمكن استعادة هذه النسخة.'),
+    ]);
+    passInput.id = 'backup-passphrase';
+    encryptToggle.onchange = function () {
+      passInput.disabled = !encryptToggle.checked;
+      passGroup.style.display = encryptToggle.checked ? 'block' : 'none';
+      if (encryptToggle.checked) setTimeout(function () { passInput.focus(); }, 50);
+    };
+
+    function options() {
+      const encrypt = !!encryptToggle.checked;
+      const passphrase = encrypt ? String(passInput.value || '') : null;
+      if (encrypt && !passphrase) {
+        toast('أدخل كلمة مرور التشفير أولاً', 'error');
+        passInput.focus();
+        return null;
+      }
+      return { encrypt: encrypt, passphrase: passphrase };
+    }
+
+    return el('div', { class: 'card' }, [
+      el('h3', {}, 'نسخة احتياطية خارج الجهاز'),
+      el('p', { class: statusClass }, statusLine),
+      el('p', {}, 'الهاتف وحده ليس مكاناً آمناً للنسخة الوحيدة. أنشئ نسخة وشاركها إلى Drive أو واتساب أو بريد إلكتروني، أو نزّلها وانقلها خارج الهاتف.'),
+      settings.address ? null : el('p', { class: 'alert alert-warning' },
+        '⚠️ عنوان المتجر فارغ. أضف العنوان من تبويب «عام» قبل إنشاء النسخة النهائية.'),
+      el('div', { class: 'backup-encrypt-row' }, [
+        el('label', { for: 'backup-encrypt', style: 'display:flex;align-items:center;gap:8px;cursor:pointer;' }, [
+          encryptToggle,
+          el('span', {}, 'تشفير بكلمة مرور (موصى به عند الإرسال عبر واتساب)'),
+        ]),
+      ]),
+      passGroup,
+      el('div', { class: 'dialog-actions' }, [
+        el('button', {
+          class: 'btn btn-primary',
+          type: 'button',
+          onclick: async function () {
+            const opts = options();
+            if (!opts) return;
+            await BeeStore.backupUI.shareBackup(opts);
+            _showTab('backup', container);
+          },
+        }, 'نسخ ومشاركة'),
+        el('button', {
+          class: 'btn btn-secondary',
+          type: 'button',
+          onclick: async function () {
+            const opts = options();
+            if (!opts) return;
+            await BeeStore.backupUI.downloadBackup(opts);
+            _showTab('backup', container);
+          },
+        }, 'تنزيل فقط'),
+      ]),
+      el('p', { class: 'form-hint' }, 'إذا لم يدعم المتصفح مشاركة الملفات، سيُنزّل الملف تلقائياً. ملف النسخة يحمل بصمة SHA-256 للتحقق من سلامته.'),
+    ]);
   }
 
   async function _renderMaintenance(container) {

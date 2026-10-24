@@ -226,9 +226,13 @@
     backup = {
       createNow: async () => ok(await BeeStore.backup.createNow()),
       list: async () => ok(await BeeStore.backup.list()),
-      download: async () => ok(await BeeStore.backup.download()),
-      restore: async (data) => ok(await BeeStore.backup.restore(data)),
+      createPayload: async (options) => ok(await BeeStore.backup.createPayload(options)),
+      share: async (options) => ok(await BeeStore.backup.share(options)),
+      download: async (options) => ok(await BeeStore.backup.download(options)),
+      inspect: async (data, options) => ok(await BeeStore.backup.inspect(data, options)),
+      restore: async (data, options) => ok(await BeeStore.backup.restore(data, options)),
       restoreFromFile: async (name) => ok(await BeeStore.backup.restoreFromFile(name)),
+      status: async () => ok(await BeeStore.backup.status()),
     };
 
     maintenance = {

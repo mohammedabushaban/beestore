@@ -70,6 +70,10 @@
       return all;
     }
 
+    async count(collection) {
+      return this.data[collection] ? this.data[collection].size : 0;
+    }
+
     async query(collection, indexName, valueOrRange) {
       const idx = this._ensureIndex(collection, indexName);
       if (valueOrRange && typeof valueOrRange === 'object' && !(valueOrRange instanceof Date)) {
@@ -235,6 +239,44 @@
         result.collections[c] = Array.from(this.data[c].values());
       }
       return result;
+    }
+
+    /**
+     * Builds the backup JSON as a Blob from per-collection chunks. This avoids
+     * one giant JSON.stringify of the whole database (v3-Lite §5/§6).
+     * @returns {Promise<{blob: Blob, schemaVersion: number, counts: Object, meta: Object, settings: Object}>}
+     */
+    async exportAllStreamed() {
+      const parts = [];
+      const meta = this.data.meta.get('meta') || null;
+      const settings = this.data.meta.get('settings') || null;
+      const counts = {};
+      parts.push('{"schemaVersion":' + JSON.stringify(this.schemaVersion));
+      parts.push(',"meta":' + JSON.stringify(meta));
+      parts.push(',"settings":' + JSON.stringify(settings));
+      parts.push(',"collections":{');
+      let firstCollection = true;
+      for (const c of COLLECTIONS) {
+        if (c === 'meta') continue;
+        const docs = Array.from(this.data[c].values());
+        counts[c] = docs.length;
+        if (!firstCollection) parts.push(',');
+        firstCollection = false;
+        parts.push(JSON.stringify(c) + ':[');
+        for (let i = 0; i < docs.length; i += 500) {
+          if (i > 0) parts.push(',');
+          parts.push(JSON.stringify(docs.slice(i, i + 500)).slice(1, -1));
+        }
+        parts.push(']');
+      }
+      parts.push('}}');
+      return {
+        blob: new Blob(parts, { type: 'application/json' }),
+        schemaVersion: this.schemaVersion,
+        counts: counts,
+        meta: meta,
+        settings: settings,
+      };
     }
 
     async importAll(json) {

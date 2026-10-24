@@ -135,13 +135,22 @@ iOS 14.3+ exposes `getUserMedia` only in Safari (or a WebView with camera permis
 - [ ] Close browser abruptly mid-use and confirm no data is lost
 - [ ] Confirm Settings → البيانات shows whether persistent storage is granted; if not, request it
 - [ ] Understand that «مسح بيانات الموقع» in browser settings deletes IndexedDB; take a backup first
-- [ ] Download a backup JSON, then restore it on the same origin and verify the data
+- [ ] Create an off-device backup from Settings → النسخ الاحتياطي → نسخ ومشاركة; save it to Drive/WhatsApp/email
+- [ ] Create a backup with a passphrase; verify the file is encrypted and cannot be restored with a wrong passphrase
+- [ ] Restore the unencrypted backup on the same origin; review the summary/warnings, type `استعادة` to enable the button, confirm, and verify data
+- [ ] Restore the encrypted backup; confirm the passphrase is requested and the checksum verifies
+- [ ] Tamper with one character in a backup JSON; confirm restore is blocked with a checksum error and data is unchanged
+- [ ] Restore an older backup; confirm the “older backup” warning appears and a pre-restore safety snapshot is created
+- [ ] Restore a backup with a different `meta.deviceId`; confirm the “different device” warning appears
+- [ ] On a fresh install, choose “استعادة من نسخة احتياطية” from the wizard and verify the app starts with the restored data
+- [ ] Set the last backup to 3 days ago with new activity; confirm the reminder banner appears; at 8 days confirm the red critical banner
+- [ ] Confirm the dashboard shows the last backup time and “نسخ الآن” works
+- [ ] Confirm Settings → البيانات shows record counts, storage usage, and 70%/90% warnings when applicable
 - [ ] Open a second tab and confirm it is blocked
 - [ ] Verify data is tied to the origin (scheme + host + port): opening a different host/port shows a separate empty database
-- [ ] Before changing hosting/domain: download a backup from the old address and restore it on the new one
-- [ ] Keep a copy of the backup outside the phone (Drive/WhatsApp/email/USB); L1 has no automatic share-sheet backup yet
+- [ ] Before changing hosting/domain: create an off-device backup from the old address and restore it on the new one
 - [ ] Apply a PWA update and confirm no invoices/products/settings were lost
-- [ ] Confirm the pre-migration snapshot exists/downloads when a schema migration is triggered (L3 will expand restore)
+- [ ] Confirm the pre-migration snapshot exists/downloads when a schema migration is triggered
 
 ## Data Integrity
 

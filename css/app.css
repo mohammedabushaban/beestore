@@ -1276,6 +1276,65 @@ button.search-result-item:hover {
   background: rgba(255, 255, 255, 0.12);
   color: #fff;
 }
+.pwa-banner-backup {
+  background: linear-gradient(180deg, #173047, #0f2235);
+  border: 1px solid rgba(245, 158, 11, 0.55);
+}
+.pwa-banner-backup-critical {
+  background: linear-gradient(180deg, #7f1d1d, #4c1111);
+  border-color: rgba(248, 113, 113, 0.75);
+}
+.pwa-banner-backup .btn-primary {
+  background: var(--amber-400);
+  color: var(--ink-950);
+  box-shadow: none;
+}
+.pwa-banner-backup .btn-primary:hover:not(:disabled) { background: var(--amber-300); }
+.pwa-banner-backup .btn-secondary {
+  background: transparent;
+  color: #fff;
+  border-color: rgba(255, 255, 255, 0.35);
+  box-shadow: none;
+}
+.pwa-banner-backup .btn-secondary:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.12);
+  color: #fff;
+}
+
+.backup-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 12px;
+  margin: 12px 0;
+  padding: 12px;
+  background: var(--ink-50, #f8fafc);
+  border-radius: var(--radius-sm, 8px);
+}
+.backup-summary-grid > div {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.backup-summary-grid strong { color: var(--ink-900); font-size: 0.9rem; }
+.backup-summary-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 10px 0;
+  max-height: 190px;
+  overflow: auto;
+}
+.backup-summary-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 4px 0;
+  border-bottom: 1px solid var(--ink-100, #eef2f6);
+  font-size: 0.88rem;
+}
+.backup-summary-row strong { color: var(--ink-900); }
+.backup-warning-list { display: flex; flex-direction: column; gap: 8px; margin: 12px 0; }
+.backup-encrypt-row { margin: 14px 0 8px; font-size: 0.9rem; color: var(--ink-800); }
 
 .install-guide h4 {
   margin: 18px 0 6px;

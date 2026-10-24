@@ -53,6 +53,43 @@
       container.appendChild(cards);
     });
 
+    // v3-Lite §6: the phone is the only live copy; show backup freshness on
+    // the dashboard, not only deep inside Settings.
+    await safeWidget(container, async () => {
+      const res = await BeeStore.api.backup.status();
+      if (!res.ok) return;
+      const status = res.data || {};
+      let text;
+      let cls = 'alert alert-info';
+      if (!status.lastBackupAt) {
+        text = '⚠️ لم تُنشئ نسخة احتياطية بعد. الهاتف هو النسخة الوحيدة من بياناتك.';
+        cls = status.critical ? 'alert alert-danger' : 'alert alert-warning';
+      } else {
+        const method = status.lastBackupMethod === 'download'
+          ? ' — نُزّلت على هذا الجهاز، انقلها خارج الهاتف'
+          : status.lastBackupMethod === 'share'
+            ? ' — محفوظة خارج الهاتف'
+            : '';
+        text = 'آخر نسخة احتياطية: ' + BeeStore.dates.formatDateTime(status.lastBackupAt) + method;
+        if (status.critical) cls = 'alert alert-danger';
+        else if (status.overdue) cls = 'alert alert-warning';
+      }
+      container.appendChild(el('div', { class: cls }, [
+        el('span', {}, text + ' '),
+        el('button', {
+          class: 'btn btn-sm btn-primary',
+          type: 'button',
+          onclick: async function () {
+            if (!BeeStore.backupUI) return;
+            const result = await BeeStore.backupUI.shareBackup();
+            if (result && result.ok && result.data && result.data.method !== 'cancelled') {
+              render(container);
+            }
+          },
+        }, 'نسخ الآن'),
+      ]));
+    });
+
     // v2 §9.5: payroll status for the current month + selected-month strip.
     await safeWidget(container, async () => {
       await _payrollStatusLine(container);

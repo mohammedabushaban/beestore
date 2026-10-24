@@ -1,7 +1,7 @@
 # BeeStore — Project Memory
 
 ## Project Summary
-BeeStore is a **v3-Lite** browser-only Arabic RTL accounting & inventory system for one children's clothing shop on **one phone**. It is delivered as an installable offline PWA from a free static HTTPS host (currently GitHub Pages; Cloudflare Pages is the commercial-safe alternative). Data lives in IndexedDB; the JSON folder mirror is an optional desktop-only extra. **Never open `index.html` via `file://`** — it is no longer a supported target. Local dev: `python3 -m http.server 8080` then `http://localhost:8080/`. Tests: `node --test tests/*.js` (currently 144). After any app-shell change: `node scripts/build-sw-list.js`.
+BeeStore is a **v3-Lite** browser-only Arabic RTL accounting & inventory system for one children's clothing shop on **one phone**. It is delivered as an installable offline PWA from a free static HTTPS host (currently GitHub Pages; Cloudflare Pages is the commercial-safe alternative). Data lives in IndexedDB; the JSON folder mirror is an optional desktop-only extra. **Never open `index.html` via `file://`** — it is no longer a supported target. Local dev: `python3 -m http.server 8080` then `http://localhost:8080/`. Tests: `node --test tests/*.js` (currently 153). After any app-shell change: `node scripts/build-sw-list.js`. **L3 off-device backups are implemented; L2 phone storage is partial** (persistence, streamed export, storage monitor, desktop folder gating done; memory window/lazy month loading pending).
 
 ## Architecture Overview
 
@@ -19,7 +19,7 @@ BeeStore is a **v3-Lite** browser-only Arabic RTL accounting & inventory system 
 
 **Global namespace**: `window.BeeStore` (IIFE-wrapped files, classic `<script>` tags, no ES modules)
 
-**Script load order** (index.html): core → storage → services → api → ui → pages → demo → `services/pwa.js` → `app.js`. `services/snapshots.js` loads with the services.
+**Script load order** (index.html): core → storage → services (`services/backupFile.js` before `services/backup.js`) → api → ui (`ui/backupUI.js` after dialogs) → pages → demo → `services/pwa.js` → `app.js`. `services/snapshots.js` loads with the services.
 
 ## Golden Rules (never break)
 - Money = integer minor units (agorot/cents). Use `BeeStore.money` only.
@@ -36,6 +36,10 @@ BeeStore is a **v3-Lite** browser-only Arabic RTL accounting & inventory system 
 - The first-run wizard stays in the DOM hidden; visibility (computed `display`) matters, not mere presence.
 - PWA data is origin-scoped (scheme + host + port), not path-scoped. Warn before any host/port change.
 - Keep `index.html`'s CSP self-only: no third-party scripts, analytics, or remote fonts.
+- **Backup integrity:** the SHA-256 `integrity.value` covers only `schemaVersion`, `meta`, `settings`, `collections` via `dataJson()`; never include `integrity` itself. A checksum mismatch must abort restore without touching data.
+- **Never store the encryption passphrase.** It is used only in memory for AES-GCM/PBKDF2; losing it means losing that backup.
+- **Restore is destructive:** always create a `pre-restore` snapshot first; if the snapshot fails, abort. Never overwrite live data before checksum/passphrase validation.
+- `lastBackupRevision` records the post-bookkeeping `meta.revision`; do not treat the settings write that marks a backup as new business activity.
 
 ## Short Recipes
 
@@ -52,7 +56,7 @@ BeeStore is a **v3-Lite** browser-only Arabic RTL accounting & inventory system 
 **Add data-model field + migration**: Add field in service `create()`, bump `schemaVersion` in `namespace.js`, add migration in `storage/migrations.js`.
 
 ## Specs (docs/specs/)
-- **`BeeStore-v3-Lite.md` — authoritative v3-Lite spec (L1–L5). Read this first.**
+- **`BeeStore-v3-Lite.md` — authoritative v3-Lite spec (L1–L10). Read this first.**
 - `BeeStore-Project-Spec.md` — v1 base system (sections 1-15)
 - `BeeStore-v2-Monthly-Periods.md` — v2 addendum: monthly periods, month closing, hardening, acceptance scenario (§13.2)
 
@@ -64,10 +68,12 @@ BeeStore is a **v3-Lite** browser-only Arabic RTL accounting & inventory system 
 - `sw.js` deletes old `beestore-v3-lite-*` caches on activate and calls `clients.claim()`.
 - Update UX: `تحديث متوفر` banner; apply only on tap; reload once via `controllerchange`; never lose an in-progress invoice.
 - Persistence: `navigator.storage.persist()` on boot; result + usage/quota + install/offline/update status in Settings → البيانات.
-- Pre-migration: `app.js` writes a snapshot to `beestore-snapshots` before `migrations.migrate`; abort migration if the snapshot fails.
+- Off-device backup: Settings → النسخ الاحتياطي uses `navigator.share({files})` with a download fallback, SHA-256 integrity, optional AES-GCM encryption, and restore summary/warnings. The dashboard and PWA banner warn after 2 days with new activity (critical at 7). New phones can restore from the wizard.
+- Pre-migration: `app.js` writes a snapshot to `beestore-snapshots` before `migrations.migrate`; abort migration if the snapshot fails. Restore also writes a `pre-restore` snapshot first.
 - Tests: `tests/test-pwa.js`, `tests/test-sw.js`, `tests/test-snapshots.js`; browser checks cover offline start and safe update.
 
 ## Recent Changes
+- **v3-Lite L3 — off-device backups, encryption, safe restore, new phone (2026-10-24)**: `js/services/backupFile.js` (SHA-256 over stable data fields, AES-GCM/PBKDF2 210k, filename, summary/warnings, freshness status, share/download fallback) + expanded `backup.js` (streamed payload, share/download, inspect, restore with `pre-restore` snapshot, status). `js/ui/backupUI.js` handles file picker, passphrase retry, restore review/confirm, toasts. Settings → النسخ الاحتياطي has an off-device card (encryption, share/download, address warning) and full restore; the first-run wizard has **استعادة من نسخة احتياطية**. Dashboard shows last backup + “نسخ الآن”; PWA shows 2/7-day reminder banners. Repositories gained `exportAllStreamed()` and `count()`; Settings → البيانات shows counts/usage/year estimate + 70/90% warnings. Tests: `test-backup-file.js` (+9), **153/153 green**; SW precache 86 files. Browser-verified: UI, 116 KB checksum payload, encrypted round-trip + wrong passphrase, full restore (10 products), dashboard line, critical banner, wizard restore. Docs: README, DEPLOY_AR, CHECKLIST, CHANGELOG, MAP.
 - **v3-Lite L1 — PWA, offline shell, safe updates (2026-10-24)**: `manifest.json` + generated icons; `sw.js` with explicit 84-file precache and content-hash `CACHE_VERSION`; `scripts/build-sw-list.js`; `js/services/pwa.js` (registration, update banner, install guide, persistence, safe gate); CSP meta with `script-src 'self'` and all 24 inline `onclick` handlers removed (delegated `[data-route]` navigation, hamburger listener fixed for wizard-created stores); Settings → البيانات; pre-migration snapshots in separate `beestore-snapshots` DB (last 10, download UI); fixed `IdbRepository` reporting the stored schema version; phone-first startup no longer warns when File System Access is missing; wizard skips the folder step on phones. Tests: `test-pwa.js`, `test-sw.js`, `test-snapshots.js`; **144/144 green**. Browser-verified: 84 cached files, offline reload, install banner/guide, Settings Data tab, update banner + blocked-with-cart + successful apply with old-cache cleanup. Docs: `docs/DEPLOY_AR.md`, README, MAP, CHANGELOG, CHECKLIST.
 - **Camera barcode scanning + price check + save-file location**: `js/ui/scanner.js` is a full-screen overlay (rear camera, torch, camera switch, BarcodeDetector + vendored ZXing fallback, continuous 1.5 s repeat filter, beep/vibrate/flash, unknown-code buzz, manual entry, Arabic errors). Wired into POS (add line / qty+1, unknown → actionable "إضافة صنف", invoice never lost, Enter never submits, shortcuts paused while dialogs are open), product/variant forms (prefill + duplicate guard linking to the owner variant), purchases receiving (select variant + cost), stocktake (scan-to-count) and the new `/price-check` page (name/size/color/price/stock). Pure scan logic lives in `js/services/scan.js`; `fileSync.getStatus()/getFileInfo()` now expose the data file name, folder/file path, size and last-modified, shown in Settings → النسخ الاحتياطي with an honest note that the browser hides the absolute OS path. Tests: `test-scanner.js`, `test-scan.js`, `test-filesync-path.js`; 126/126 green.
 - **Full UI redesign (v2 design system)**: `css/app.css` rewritten around design tokens (amber brand, slate neutrals, soft shadows, layered radii); dark graphite sidebar with grouped nav + inline SVG icons, glass topbar, pill tabs, modern tables/badges/dialogs/toasts, new stat cards, and refreshed print styles. `index.html` shell rebuilt (grouped nav, quick "فاتورة جديدة" action, mobile header). Fixed: the global period picker stayed empty for wizard-created stores (`firstRun.finish()` now renders it) and got squeezed on phones (icon-only quick action + `flex-shrink: 0`). 98/98 tests green.

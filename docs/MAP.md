@@ -16,7 +16,7 @@
 |------|---------------|---------|------------|
 | `repository.js` | Repository interface contract + collection list | `BeeStore.RepositoryInterface`, `BeeStore.COLLECTIONS` | `namespace.js` |
 | `memoryRepository.js` | In-memory repo (tests), serialized tx, once-per-commit index rebuild | `BeeStore.MemoryRepository` | `repository.js`, `core/*` |
-| `idbRepository.js` | IndexedDB repo, load-to-memory + indexes, serialized tx, once-per-commit index rebuild | `BeeStore.IdbRepository` | `repository.js`, `core/*` |
+| `idbRepository.js` | IndexedDB repo, load-to-memory + indexes, serialized tx, once-per-commit index rebuild; reports the **stored** `schemaVersion` so startup migrations are not skipped | `BeeStore.IdbRepository` | `repository.js`, `core/*` |
 | `migrations.js` | Schema version upgrades | `BeeStore.migrations.{migrate,migrations}` | `namespace.js` |
 | `fileSync.js` | Folder handle, db.json mirror, dated backups, status + file info (name/size/lastModified) and folder/file path metadata | `BeeStore.FileSync` | `core/*`, `config.js` |
 
@@ -48,6 +48,8 @@
 | `barcode.js` | JsBarcode wrapper (canvas/SVG) | `BeeStore.barcode`, `BeeStore.BarcodeService` | `vendor/jsbarcode` |
 | `scan.js` | Scan → variant lookup (exact barcode, then search), POS cart add (stock limits, qty+1), price-check lookup | `BeeStore.scanning.{lookupVariant,addToCart,priceCheck,normalizeCode}` | `scanner.js` (normalize), `api.variants` |
 | `csv.js` | CSV import (products, digit-normalized) + export (formula-guarded, BOM) | `BeeStore.csv`, `BeeStore.CsvService` | `core/*`, `storage/*`, `products.js`, `variants.js` |
+| `pwa.js` | Browser-only PWA manager: SW registration, update detection/banner, safe-update gate (POS cart/saving/visible dialog/closing), install prompt + Arabic Android/iPhone guide, persistence status, cache version | `BeeStore.pwa.{register,checkForUpdate,applyUpdate,getState,onAppReady,getCacheVersion,isStandalone,isSafeToUpdate,collectAppState,storageStatus,requestPersistence,showInstallGuide,install}` | `components.js`, `dialogs.js`, `pos.js` |
+| `snapshots.js` | Separate IndexedDB `beestore-snapshots` for pre-migration safety snapshots; metadata + data stores, newest-10 pruning, download | `BeeStore.SnapshotService`, `BeeStore.snapshots` | `namespace.js`, `config.js` |
 
 ## API Facade (js/api/)
 | File | Responsibility | Exports | Depends On |
@@ -61,7 +63,7 @@
 | `components.js` | Reusable UI primitives (el, toast, confirm, table, pagination, dropdown, skeletons, escapeHtml, safeWidget) | `BeeStore.ui.{el,toast,confirmDialog,formatMoney,formatDate,statusBadge,emptyState,table,pagination,loadingSpinner,skeleton,dropdown,escapeHtml,safeWidget}` | `namespace.js`, `money.js`, `dates.js` |
 | `dialogs.js` | Form dialog helpers (openDialog, formField, input, select, textarea, checkbox, radio, date, number, file) | `BeeStore.dialogs.{openDialog,formField,input,select,textarea,checkbox,radioGroup,fileInput,numberInput,dateInput,hiddenInput}` | `components.js` |
 | `print.js` | Invoice (A4/80mm), label sheet with Code128 images, daily closing print | `BeeStore.print.{printInvoice,printLabelSheet,printDailyClosing,buildInvoiceHtml,buildLabelSheetHtml}` | `components.js`, `api.js`, `money.js`, `dates.js` |
-| `firstRun.js` | First-run wizard (store info → folder → demo/empty) | `BeeStore.FirstRunWizard` | `components.js`, `api.js`, `fileSync.js`, `settings.js` |
+| `firstRun.js` | First-run wizard (store info → folder → demo/empty); skips the desktop-only folder step on phones and signals PWA app-ready | `BeeStore.FirstRunWizard` | `components.js`, `api.js`, `fileSync.js`, `settings.js`, `pwa.js` |
 | `period.js` | v2 global period store: month/year/custom selection (localStorage + URL hash + memory fallback), header selector, scope bar, `defaultDateForNew`/`applyDefaultDate` | `BeeStore.period.{get,set,setYear,setCustom,init,toQuery,shift,getRange,monthLabel,label,selMonth,isClosed,monthsWithData,defaultDateForNew,applyDefaultDate,scopeBar,renderHeader}` | `components.js`, `dialogs.js`, `dates.js`, `api.periods` |
 | `errorLog.js` | v2 §12.3 global error capture (last 200 in IDB `errorLog`), Arabic dialog + copy, diagnostics download | `BeeStore.errorLog.{repo,install,capture,list,clear,diagnostics}` | `components.js`, `ids.js` |
 | `scanner.js` | Camera barcode scanner: full-screen overlay, rear camera, torch, camera switch, BarcodeDetector + vendored ZXing fallback, continuous mode with 1.5 s repeat filter, beep/vibrate/flash, manual entry, Arabic errors | `BeeStore.scanner.{open,scan,scanButton,closeCurrent,isSupported,unsupportedReason,reasonMessage,normalizeCode,createRepeatFilter,REASONS,PREFERRED_FORMATS}` | `components.js`, `vendor/zxing` |
@@ -70,7 +72,7 @@
 | File | Responsibility | Exports | Depends On |
 |------|---------------|---------|------------|
 | `dashboard.js` | Dashboard page (cards, charts, recent invoices) | `BeeStore.pages.dashboard` | `ui/*`, `api.dashboard`, `api.reports` |
-| `pos.js` | POS page (camera + USB barcode scan, continuous scanning, unknown-barcode create action, cart, discount, payments, save w/ clientKey + in-flight guard) | `BeeStore.pages.pos` | `ui/*`, `scanner.js`, `scan.js`, `api.products`, `api.variants`, `api.sales`, `api.customers`, `api.settings` |
+| `pos.js` | POS page (camera + USB barcode scan, continuous scanning, unknown-barcode create action, cart, discount, payments, save w/ clientKey + in-flight guard); exposes cart/saving state for the safe-update gate | `BeeStore.pages.pos.{render,getCartCount,isSaving,hasUnsavedWork}` | `ui/*`, `scanner.js`, `scan.js`, `api.products`, `api.variants`, `api.sales`, `api.customers`, `api.settings` |
 | `invoices.js` | Invoice list (period-scoped + show-all, search, filter, view, print, void) | `BeeStore.pages.invoices` | `ui/*`, `api.sales`, `print.js` |
 | `returns.js` | Returns & exchanges list (period-scoped) + create | `BeeStore.pages.returns` | `ui/*`, `api.returns`, `api.sales`, `api.customers`, `api.variants` |
 | `products.js` | Products, categories, variants (scan barcode + duplicate guard linking to owner variant), stock, low-stock, CSV import | `BeeStore.pages.products` | `ui/*`, `scanner.js`, `scan.js`, `api.products`, `api.categories`, `api.variants`, `api.stock`, `csv.js` |
@@ -85,14 +87,23 @@
 | `accounts.js` | Accounts, ledger, transfers, owner tx, daily closing | `BeeStore.pages.accounts` | `ui/*`, `api.accounts`, `api.transactions`, `api.reports` |
 | `reports.js` | All reports (P&L, sales, inventory, aging, balance, daily) + v2 tabs (Month Review, Profit⇄Cash, Compare, Year Overview) | `BeeStore.pages.reports` | `ui/*`, `ui/period.js`, `api.reports` |
 | `periods.js` | v2 month-closing page: months table, live checklist, KPIs, close/reopen/integrity/print | `BeeStore.pages.periods` | `ui/*`, `ui/period.js`, `api.periods`, `api.reports`, `api.maintenance`, `api.backup` |
-| `settings.js` | Settings page (store info, tax, invoice, sizes/colors, payment methods, backup + storage-path card, audit, maintenance + integrity check + error log) | `BeeStore.pages.settings` | `ui/*`, `api.settings`, `api.backup`, `api.maintenance`, `api.audit`, `fileSync.js` |
+| `settings.js` | Settings page (store info, tax, invoice, sizes/colors, payment methods, backup + storage-path card, **البيانات** tab: persistence/install/offline/update/cache version/snapshots, audit, maintenance + integrity check + error log) | `BeeStore.pages.settings` | `ui/*`, `api.settings`, `api.backup`, `api.maintenance`, `api.audit`, `fileSync.js`, `pwa.js`, `snapshots.js` |
 
 ## Demo (js/demo/)
 | File | Responsibility | Exports | Depends On |
 |------|---------------|---------|------------|
 | `demoData.js` | Load ~20 products, variants, suppliers, customers, sales, expenses, employees | `BeeStore.loadDemoData()` | All services |
 
+## PWA / Shell (root + scripts/)
+| File | Responsibility | Exports / Notes | Depends On |
+|------|---------------|-----------------|------------|
+| `manifest.json` | PWA identity: Arabic/RTL, standalone, `start_url`/`scope` `./`, theme `#F5B700`, 192/512 + maskable icons | — | `icons/*` |
+| `icons/icon.svg`, `icons/icon-maskable.svg` | Editable icon sources (bee mark on amber) | — | — |
+| `icons/icon-192.png`, `icons/icon-512.png`, `icons/icon-maskable-512.png`, `icons/apple-touch-icon-180.png` | Generated PNGs (Chromium screenshots of the SVGs; no ImageMagick) | — | SVG sources |
+| `sw.js` | Cache-first app shell; explicit `PRECACHE` + content-hash `CACHE_VERSION`; navigation fallback to `index.html`; old-cache cleanup; `SKIP_WAITING` only on page request; `GET_VERSION` reply | generated block must not be hand-edited | `scripts/build-sw-list.js` |
+| `scripts/build-sw-list.js` | Walks `index.html`, `manifest.json`, `bee.jpg`, `css/`, `js/`, `vendor/`, `icons/`; computes SHA-256; rewrites `sw.js` markers | `collectFiles`, `computeHash`, `versionForHash`, `renderBlock`, `updateSwFile` | Node `fs`, `path`, `crypto` |
+
 ## App Bootstrap (js/app.js)
 | File | Responsibility | Exports | Depends On |
 |------|---------------|---------|------------|
-| `app.js` | Init repo, fileSync, api, wizard or start, lock, router, save-status | `BeeStore._setupRouter`, `BeeStore._setupSaveStatus`, `BeeStore._setupVisibilityHandlers` | All layers |
+| `app.js` | Init repo, pre-migration snapshot, fileSync, api, wizard or start, single-tab lock, delegated `[data-route]` navigation, hamburger sidebar, save-status, PWA register/app-ready | `BeeStore._setupRouter`, `BeeStore._setupSaveStatus`, `BeeStore._setupVisibilityHandlers`, `BeeStore._setupSidebar` | All layers, `pwa.js`, `snapshots.js` |

@@ -15,6 +15,7 @@
       el('button', { class: 'tab', onclick: function () { _showTab('invoice', content); _setActiveTab(this); } }, 'الفاتورة والملصقات'),
       el('button', { class: 'tab', onclick: function () { _showTab('payments', content); _setActiveTab(this); } }, 'طرق الدفع'),
       el('button', { class: 'tab', onclick: function () { _showTab('backup', content); _setActiveTab(this); } }, 'النسخ الاحتياطي'),
+      el('button', { class: 'tab', onclick: function () { _showTab('data', content); _setActiveTab(this); } }, 'البيانات'),
       el('button', { class: 'tab', onclick: function () { _showTab('maintenance', content); _setActiveTab(this); } }, 'الصيانة'),
     ]);
     container.appendChild(tabs);
@@ -28,12 +29,20 @@
   }
 
   function _showTab(tab, container) {
-    container.innerHTML = '';
-    if (tab === 'general') _renderGeneral(container);
-    else if (tab === 'invoice') _renderInvoice(container);
-    else if (tab === 'payments') _renderPayments(container);
-    else if (tab === 'backup') _renderBackup(container);
-    else if (tab === 'maintenance') _renderMaintenance(container);
+    // Render each tab into its own panel. An async tab (e.g. البيانات waits for
+    // storage/update info) must not append its cards into a tab the user has
+    // already switched to; a detached panel makes late writes harmless.
+    const host = container._settingsHost || container;
+    host.innerHTML = '';
+    const panel = el('div', { class: 'settings-panel' });
+    panel._settingsHost = host;
+    host.appendChild(panel);
+    if (tab === 'general') _renderGeneral(panel);
+    else if (tab === 'invoice') _renderInvoice(panel);
+    else if (tab === 'payments') _renderPayments(panel);
+    else if (tab === 'backup') _renderBackup(panel);
+    else if (tab === 'data') _renderData(panel);
+    else if (tab === 'maintenance') _renderMaintenance(panel);
   }
 
   async function _renderGeneral(container) {
@@ -159,6 +168,159 @@
           },
         }, 'حفظ'),
       ]),
+    ]));
+  }
+
+  /**
+   * v3-Lite §2: storage persistence, install state, offline readiness, safe
+   * updates, and the automatic pre-migration snapshots. Phone-first wording.
+   */
+  async function _renderData(container) {
+    const pwa = BeeStore.pwa;
+    const state = pwa ? pwa.getState() : {
+      supported: false, installed: false, offlineReady: false,
+      updateAvailable: false, applying: false, online: true, lastError: null,
+    };
+    const storage = pwa ? await pwa.storageStatus() : { supported: false, persisted: false, usage: null, quota: null };
+    const cacheVersion = pwa ? await pwa.getCacheVersion() : null;
+
+    let snapshots = [];
+    if (BeeStore.snapshots) {
+      try { snapshots = await BeeStore.snapshots.list(); } catch (e) { snapshots = []; }
+    }
+    const latestSnapshot = snapshots.length ? snapshots[0] : null;
+
+    const storageRows = [];
+    if (!storage.supported) {
+      storageRows.push(el('p', { class: 'alert alert-warning' },
+        'هذا المتصفح لا يدعم طلب التخزين الدائم. البيانات تبقى في IndexedDB، لكن المتصفح قد يحذفها إذا ضغطت مساحة الهاتف. احتفظ بنسخة احتياطية خارج الهاتف.'));
+    } else {
+      storageRows.push(el('p', {}, storage.persisted
+        ? '✅ التخزين الدائم مفعّل — المتصفح لن يحذف بيانات التطبيق تلقائياً عند ضغط المساحة.'
+        : '⚠️ التخزين الدائم غير مفعّل — قد يحذف المتصفح البيانات عند ضغط مساحة الهاتف.'));
+      if (storage.usage != null && storage.quota) {
+        const pct = Math.min(100, Math.round((storage.usage / storage.quota) * 100));
+        storageRows.push(el('p', { class: 'form-hint' },
+          'المستخدم: ' + _formatBytes(storage.usage) + ' من ' + _formatBytes(storage.quota) + ' (' + pct + '%).'));
+      }
+      if (!storage.persisted) {
+        storageRows.push(el('button', {
+          class: 'btn btn-primary',
+          type: 'button',
+          onclick: async function () {
+            const result = await pwa.requestPersistence();
+            toast(result.persisted ? 'تم تفعيل التخزين الدائم' : 'لم يمنح المتصفح التخزين الدائم', result.persisted ? 'success' : 'warning');
+            _showTab('data', container);
+          },
+        }, 'طلب تخزين دائم'));
+      }
+    }
+
+    const installRows = [];
+    installRows.push(el('p', {}, state.installed
+      ? '✅ التطبيق مثبّت ويعمل كتطبيق مستقل.'
+      : '📱 التطبيق يعمل الآن داخل تبويب المتصفح. ثبّته كتطبيق على جهازك ليعمل دون شريط المتصفح.'));
+    installRows.push(el('div', { class: 'dialog-actions' }, [
+      el('button', {
+        class: 'btn btn-primary',
+        type: 'button',
+        onclick: function () { if (pwa) pwa.install(); },
+      }, state.installed ? 'طريقة التثبيت' : 'تثبيت التطبيق'),
+      !state.installed && pwa ? el('button', {
+        class: 'btn btn-secondary',
+        type: 'button',
+        onclick: function () { pwa.showInstallGuide(); },
+      }, 'دليل التثبيت') : null,
+    ]));
+
+    const updateRows = [];
+    if (!state.supported) {
+      updateRows.push(el('p', { class: 'alert alert-warning' },
+        'العمل دون إنترنت غير متاح لأن التطبيق لم يُفتح عبر رابط https. افتح النسخة المنشورة ثم ثبّتها.'));
+    } else {
+      updateRows.push(el('p', {}, state.offlineReady
+        ? '✅ التطبيق محفوظ على الهاتف ويعمل دون إنترنت.'
+        : '⏳ جارٍ تجهيز النسخة المحلية. أعد فتح الصفحة مرة واحدة ثم سيعمل التطبيق دون إنترنت.'));
+      updateRows.push(el('p', { class: 'form-hint' },
+        'الإصدار: ' + (BeeStore.version || '—') + ' · نسخة الكاش: ' + (cacheVersion || '—')));
+      if (state.updateAvailable) {
+        updateRows.push(el('p', { class: 'alert alert-info' }, '🔄 يوجد تحديث جاهز. حدّث عندما لا تكون في منتصف فاتورة.'));
+        updateRows.push(el('button', {
+          class: 'btn btn-primary',
+          type: 'button',
+          onclick: function () {
+            if (pwa && pwa.applyUpdate()) toast('جارٍ تطبيق التحديث...', 'info');
+          },
+        }, 'تحديث الآن'));
+      } else {
+        updateRows.push(el('button', {
+          class: 'btn btn-secondary',
+          type: 'button',
+          onclick: async function () {
+            const result = await pwa.checkForUpdate();
+            if (!result.ok) toast('تعذّر التحقق من التحديث', 'error');
+            else toast(result.updateAvailable ? 'يوجد تحديث متوفر' : 'أنت على أحدث إصدار', result.updateAvailable ? 'info' : 'success');
+            setTimeout(function () { _showTab('data', container); }, 1200);
+          },
+        }, 'التحقق من التحديث'));
+      }
+    }
+
+    const snapshotRows = [];
+    if (!latestSnapshot) {
+      snapshotRows.push(el('p', { class: 'form-hint' }, 'لا توجد لقطات محلية بعد. تُنشأ لقطة تلقائياً قبل أي تحديث لقاعدة البيانات.'));
+    } else {
+      snapshotRows.push(el('div', { class: 'path-box' }, [
+        el('span', { class: 'path-icon', 'aria-hidden': 'true' }, '🧷'),
+        el('div', { class: 'path-content' }, [
+          el('div', { class: 'path-label' }, latestSnapshot.reason === 'pre-migration' ? 'لقطة قبل تحديث البيانات' : 'لقطة محلية'),
+          el('div', { class: 'path-meta' }, [
+            el('span', {}, BeeStore.dates.formatDateTime(latestSnapshot.createdAt)),
+            el('span', {}, _formatBytes(latestSnapshot.size)),
+            el('span', {}, (latestSnapshot.documents || 0) + ' سجل'),
+          ]),
+        ]),
+        el('button', {
+          class: 'btn btn-sm btn-secondary',
+          type: 'button',
+          onclick: async function () {
+            try {
+              await BeeStore.snapshots.download(latestSnapshot.id);
+              toast('تم تنزيل اللقطة');
+            } catch (e) {
+              toast('تعذّر تنزيل اللقطة', 'error');
+            }
+          },
+        }, 'تنزيل'),
+      ]));
+      snapshotRows.push(el('p', { class: 'form-hint' },
+        'تُحفظ آخر ' + ((BeeStore.config && BeeStore.config.snapshotCount) || 10) + ' لقطات محلياً داخل قاعدة بيانات منفصلة. اللقطة ليست بديلاً عن النسخة الاحتياطية خارج الهاتف.'));
+    }
+
+    container.appendChild(el('div', { class: 'card' }, [
+      el('h3', {}, 'التخزين على هذا الهاتف'),
+      ...storageRows,
+    ]));
+
+    container.appendChild(el('div', { class: 'card' }, [
+      el('h3', {}, 'التطبيق والعمل دون إنترنت'),
+      ...installRows,
+      el('hr', { class: 'card-divider' }),
+      ...updateRows,
+    ]));
+
+    container.appendChild(el('div', { class: 'card' }, [
+      el('h3', {}, 'لقطات الأمان المحلية'),
+      ...snapshotRows,
+    ]));
+
+    container.appendChild(el('div', { class: 'card' }, [
+      el('h3', {}, 'معلومات التطبيق'),
+      el('p', {}, 'بي ستور — v3-Lite · الإصدار ' + (BeeStore.version || '—')),
+      el('p', { class: 'form-hint' }, 'إصدار مخطط البيانات: ' + (BeeStore.schemaVersion || '—') +
+        ' · قاعدة البيانات: ' + ((BeeStore.config && BeeStore.config.dbName) || '—')),
+      el('p', { class: 'form-hint' },
+        'بياناتك مرتبطة بأصل الموقع (المخطط + النطاق + المنفذ). تغيير النطاق أو المنفذ أو http/https ينشئ قاعدة فارغة؛ خذ نسخة احتياطية قبل أي انتقال. تغيير المسار وحده لا ينشئ قاعدة جديدة.'),
     ]));
   }
 

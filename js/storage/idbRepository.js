@@ -101,7 +101,16 @@
                 revision: 0, savedAt: null, deviceId: this._genDeviceId(),
               });
             }
-            if (--pending === 0) resolve();
+            if (--pending === 0) {
+              // exportAll() must report the schema version that is actually
+              // stored, otherwise startup migrations see the new version and
+              // silently skip every migration step.
+              const storedMeta = this.data.meta.get('meta');
+              if (storedMeta && storedMeta.schemaVersion) {
+                this.schemaVersion = storedMeta.schemaVersion;
+              }
+              resolve();
+            }
           };
           req.onerror = () => reject(req.error);
         }

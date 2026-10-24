@@ -1,21 +1,25 @@
 # BeeStore — Project Memory
 
 ## Project Summary
-BeeStore is a browser-only Arabic RTL accounting & inventory system for a children's clothing shop. Data lives in IndexedDB, mirrored to a JSON file via File System Access API. Open `index.html` by double-click in Chrome/Edge. Run tests with `node --test tests/test-sales.js`.
+BeeStore is a **v3-Lite** browser-only Arabic RTL accounting & inventory system for one children's clothing shop on **one phone**. It is delivered as an installable offline PWA from a free static HTTPS host (currently GitHub Pages; Cloudflare Pages is the commercial-safe alternative). Data lives in IndexedDB; the JSON folder mirror is an optional desktop-only extra. **Never open `index.html` via `file://`** — it is no longer a supported target. Local dev: `python3 -m http.server 8080` then `http://localhost:8080/`. Tests: `node --test tests/*.js` (currently 144). After any app-shell change: `node scripts/build-sw-list.js`.
 
 ## Architecture Overview
 
 **Layers** (bottom → top):
 - `core/` — utilities: namespace, config, money (minor units), dates (local YYYY-MM-DD), ids, validate, errors
 - `storage/` — repository interface + implementations: `memoryRepository` (tests), `idbRepository` (browser), `fileSync` (JSON mirror + backups), `migrations`
-- `services/` — **all business logic**, pure JS, no DOM/IndexedDB/window. Depend only on repository interface.
+- `services/` — **all business logic**, pure JS, no DOM/IndexedDB/window (except the browser-only `pwa.js` and `snapshots.js`). Depend only on repository interface.
 - `api/api.js` — thin facade `BeeStore.api.<namespace>.<method>` returning `{ok, data|error}` envelopes
-- `ui/` — router, components, dialogs, print helpers, first-run wizard, keyboard shortcuts
+- `ui/` — router, components, dialogs, print helpers, first-run wizard, keyboard shortcuts, camera scanner
 - `pages/` — one file per page, renders into `#page-content`
+- `services/pwa.js` — SW registration, update banner, install prompt/guide, persistence, safe-update gate
+- `services/snapshots.js` — separate IndexedDB (`beestore-snapshots`) for pre-migration snapshots (last 10)
+- `sw.js` + `scripts/build-sw-list.js` — explicit app-shell precache list + content-hash `CACHE_VERSION`
+- `manifest.json` + `icons/` — Arabic RTL standalone PWA identity
 
 **Global namespace**: `window.BeeStore` (IIFE-wrapped files, classic `<script>` tags, no ES modules)
 
-**Script load order** (index.html lines 92-149): core → storage → services → api → ui → pages → demo → app.js
+**Script load order** (index.html): core → storage → services → api → ui → pages → demo → `services/pwa.js` → `app.js`. `services/snapshots.js` loads with the services.
 
 ## Golden Rules (never break)
 - Money = integer minor units (agorot/cents). Use `BeeStore.money` only.
@@ -25,7 +29,13 @@ BeeStore is a browser-only Arabic RTL accounting & inventory system for a childr
 - No hard deletes: `status: "void"` / `active: false`.
 - Escape all user text: `textContent` or `BeeStore.ui.escapeHtml()`.
 - Arabic RTL throughout (`<html lang="ar" dir="rtl">`), Western digits.
-- No `fetch` of local files, no CDN, no ES modules, no build step.
+- No `fetch` of local files, no CDN, no ES modules, no build step for the app.
+- **No inline scripts or inline event handlers** (`onclick=` etc.) — CSP is `script-src 'self'`. Navigation uses delegated `[data-route]` clicks.
+- **Never edit the generated `PRECACHE` / `CACHE_VERSION` in `sw.js` by hand.** Run `node scripts/build-sw-list.js`; `tests/test-sw.js` fails if stale.
+- **Never call `skipWaiting()` during install.** The page sends `{type:'SKIP_WAITING'}` only after `BeeStore.pwa.applyUpdate()` passes the safe gate (empty POS cart, not saving, no **visible** dialog/wizard, no closing).
+- The first-run wizard stays in the DOM hidden; visibility (computed `display`) matters, not mere presence.
+- PWA data is origin-scoped (scheme + host + port), not path-scoped. Warn before any host/port change.
+- Keep `index.html`'s CSP self-only: no third-party scripts, analytics, or remote fonts.
 
 ## Short Recipes
 
@@ -42,10 +52,23 @@ BeeStore is a browser-only Arabic RTL accounting & inventory system for a childr
 **Add data-model field + migration**: Add field in service `create()`, bump `schemaVersion` in `namespace.js`, add migration in `storage/migrations.js`.
 
 ## Specs (docs/specs/)
+- **`BeeStore-v3-Lite.md` — authoritative v3-Lite spec (L1–L5). Read this first.**
 - `BeeStore-Project-Spec.md` — v1 base system (sections 1-15)
 - `BeeStore-v2-Monthly-Periods.md` — v2 addendum: monthly periods, month closing, hardening, acceptance scenario (§13.2)
 
+## PWA / Deployment
+- Hosting: GitHub Pages primary (repo already on GitHub; terms prohibit e-commerce/SaaS — BeeStore is an internal single-shop tool). Cloudflare Pages is the commercial-safe alternative. See `docs/DEPLOY_AR.md`.
+- `manifest.json`: `start_url: "./"`, `scope: "./"`, Arabic/RTL, standalone, theme `#F5B700`.
+- Icons: edit `icons/icon.svg` / `icons/icon-maskable.svg`, then screenshot with Chromium to PNG (no ImageMagick). Keep the SVGs as source.
+- `sw.js` caches only the explicit app shell; never data, backups, downloads, or cross-origin requests. Navigation is cache-first with `index.html` fallback.
+- `sw.js` deletes old `beestore-v3-lite-*` caches on activate and calls `clients.claim()`.
+- Update UX: `تحديث متوفر` banner; apply only on tap; reload once via `controllerchange`; never lose an in-progress invoice.
+- Persistence: `navigator.storage.persist()` on boot; result + usage/quota + install/offline/update status in Settings → البيانات.
+- Pre-migration: `app.js` writes a snapshot to `beestore-snapshots` before `migrations.migrate`; abort migration if the snapshot fails.
+- Tests: `tests/test-pwa.js`, `tests/test-sw.js`, `tests/test-snapshots.js`; browser checks cover offline start and safe update.
+
 ## Recent Changes
+- **v3-Lite L1 — PWA, offline shell, safe updates (2026-10-24)**: `manifest.json` + generated icons; `sw.js` with explicit 84-file precache and content-hash `CACHE_VERSION`; `scripts/build-sw-list.js`; `js/services/pwa.js` (registration, update banner, install guide, persistence, safe gate); CSP meta with `script-src 'self'` and all 24 inline `onclick` handlers removed (delegated `[data-route]` navigation, hamburger listener fixed for wizard-created stores); Settings → البيانات; pre-migration snapshots in separate `beestore-snapshots` DB (last 10, download UI); fixed `IdbRepository` reporting the stored schema version; phone-first startup no longer warns when File System Access is missing; wizard skips the folder step on phones. Tests: `test-pwa.js`, `test-sw.js`, `test-snapshots.js`; **144/144 green**. Browser-verified: 84 cached files, offline reload, install banner/guide, Settings Data tab, update banner + blocked-with-cart + successful apply with old-cache cleanup. Docs: `docs/DEPLOY_AR.md`, README, MAP, CHANGELOG, CHECKLIST.
 - **Camera barcode scanning + price check + save-file location**: `js/ui/scanner.js` is a full-screen overlay (rear camera, torch, camera switch, BarcodeDetector + vendored ZXing fallback, continuous 1.5 s repeat filter, beep/vibrate/flash, unknown-code buzz, manual entry, Arabic errors). Wired into POS (add line / qty+1, unknown → actionable "إضافة صنف", invoice never lost, Enter never submits, shortcuts paused while dialogs are open), product/variant forms (prefill + duplicate guard linking to the owner variant), purchases receiving (select variant + cost), stocktake (scan-to-count) and the new `/price-check` page (name/size/color/price/stock). Pure scan logic lives in `js/services/scan.js`; `fileSync.getStatus()/getFileInfo()` now expose the data file name, folder/file path, size and last-modified, shown in Settings → النسخ الاحتياطي with an honest note that the browser hides the absolute OS path. Tests: `test-scanner.js`, `test-scan.js`, `test-filesync-path.js`; 126/126 green.
 - **Full UI redesign (v2 design system)**: `css/app.css` rewritten around design tokens (amber brand, slate neutrals, soft shadows, layered radii); dark graphite sidebar with grouped nav + inline SVG icons, glass topbar, pill tabs, modern tables/badges/dialogs/toasts, new stat cards, and refreshed print styles. `index.html` shell rebuilt (grouped nav, quick "فاتورة جديدة" action, mobile header). Fixed: the global period picker stayed empty for wizard-created stores (`firstRun.finish()` now renders it) and got squeezed on phones (icon-only quick action + `flex-shrink: 0`). 98/98 tests green.
 - Product form requires name + cost + price (`products.create` rejects empty name / non-positive explicit cost or price); POS auto-fills an editable payment equal to the cart total (manual edit disables auto-fill); sidebar closes on nav tap (capture delegation) + any `hashchange`; `el()` now accepts numbers/booleans (fixed low-stock tab `appendChild` crash); `file://` shows a clear "run via http(s)" message instead of a blank page; demo data passes default cost/price; `tests/test-validation.js` (+1); 98/98 green.

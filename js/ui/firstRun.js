@@ -65,6 +65,11 @@
     }
 
     _showStep(step) {
+      // The JSON folder mirror is desktop-only. On a phone (no File System
+      // Access API) skip step 2 instead of showing a dead button.
+      if (step === 2 && (!BeeStore.fileSync || !BeeStore.fileSync.isSupported())) {
+        step = 3;
+      }
       this.step = step;
       for (let i = 1; i <= 3; i++) {
         const el = document.getElementById('wizard-step-' + i);
@@ -79,6 +84,7 @@
       if (BeeStore.settings && BeeStore.settings.ensureDefaults) {
         await BeeStore.settings.ensureDefaults();
       }
+      if (BeeStore._setupSidebar) BeeStore._setupSidebar();
       if (BeeStore._setupRouter) BeeStore._setupRouter();
       if (BeeStore._setupSaveStatus) BeeStore._setupSaveStatus();
       if (BeeStore._setupVisibilityHandlers) BeeStore._setupVisibilityHandlers();
@@ -86,6 +92,7 @@
       // here too, otherwise it stays empty for wizard-created stores.
       if (BeeStore.period && BeeStore.period.renderHeader) BeeStore.period.renderHeader();
       if (BeeStore.router) BeeStore.router.start();
+      if (BeeStore.pwa && BeeStore.pwa.onAppReady) BeeStore.pwa.onAppReady();
     }
   }
 

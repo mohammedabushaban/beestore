@@ -1,17 +1,48 @@
 # BeeStore Manual Acceptance Checklist
 
+> **v3-Lite:** the app is a PWA served over HTTPS. Do **not** test by opening `index.html` via `file://`; IndexedDB and installation are blocked there. Use the deployed URL or `python3 -m http.server 8080` → `http://localhost:8080/`.
+
 ## Browser Compatibility
 
-- [ ] Open `index.html` by double-click in Chrome
-- [ ] Open `index.html` by double-click in Edge
-- [ ] Verify the app loads and shows the first-run wizard
-- [ ] Open in Firefox/Safari and confirm the warning banner appears
+- [ ] Open the deployed HTTPS URL in Android Chrome
+- [ ] Open the deployed HTTPS URL in iPhone Safari (not an in-app browser)
+- [ ] Open the deployed HTTPS URL in desktop Chrome or Edge
+- [ ] Confirm the page loads and shows the first-run wizard (or the dashboard if already configured)
+- [ ] Confirm `file://` is not used anywhere in the test flow
 
 ## First-Run Wizard
 
-- [ ] Enter store name (Arabic and English)
-- [ ] Choose a data folder (create new subfolder like `BeeStore-Data`)
+- [ ] Enter store name (Arabic), phone, address, and system start date
+- [ ] On a phone: the folder step is skipped automatically (desktop-only feature)
+- [ ] On desktop Chrome/Edge: optionally choose a data folder (e.g. `BeeStore-Data`) or skip
 - [ ] Load demo data or start empty
+- [ ] After finishing, open **Settings → البيانات** and confirm the app version and cache version are visible
+
+## PWA, Install & Offline (v3-Lite L1)
+
+- [ ] `manifest.json` loads; the app name is «بي ستور» and the theme color is amber
+- [ ] Android: the in-app install banner appears (or Settings → البيانات → دليل التثبيت), and install adds a home-screen icon
+- [ ] iPhone: Safari → Share → Add to Home Screen works; the guide explains that Chrome/in-app browsers cannot install
+- [ ] Opening from the home-screen icon runs standalone (no browser address bar)
+- [ ] Settings → البيانات shows the persistence status; tapping «طلب تخزين دائم» updates the result
+- [ ] After one online load, Settings says «التطبيق محفوظ على الهاتف ويعمل دون إنترنت»
+- [ ] Airplane mode + close/reopen the app: the shell opens from cache and existing data is visible
+- [ ] Create and save a small invoice offline; close/reopen: the invoice is still there
+- [ ] Service worker controls the page and caches **84** app-shell files; no data/backup files are cached
+- [ ] No external/CDN requests in DevTools → Network; no CSP errors in Console
+- [ ] `index.html` has no inline `onclick` handlers; sidebar/header/nav links still navigate
+
+## Safe Update Flow (v3-Lite L1)
+
+- [ ] Change an app file, run `node scripts/build-sw-list.js`, deploy, then open the app online
+- [ ] The «تحديث متوفر» banner appears (or Settings → البيانات → التحقق من التحديث)
+- [ ] With a non-empty POS cart, tapping «تحديث الآن» is refused with the Arabic warning and the app does **not** reload
+- [ ] With a visible dialog/wizard open, the update is refused; a **hidden** finished wizard does not block it
+- [ ] With an empty cart, no save in progress, and no dialog, tapping «تحديث الآن» reloads once and the app starts normally
+- [ ] Settings → البيانات shows the new cache version; Application → Cache Storage contains only the new cache
+- [ ] The existing data (products, invoices, settings) is unchanged after the update
+- [ ] Settings → البيانات lists the pre-migration snapshot (when a schema migration ran) and «تنزيل» downloads a JSON file
+- [ ] Re-running `node --test tests/*.js` is green before every deploy
 
 ## Pages
 
@@ -102,9 +133,15 @@ iOS 14.3+ exposes `getUserMedia` only in Safari (or a WebView with camera permis
 ## Data Safety
 
 - [ ] Close browser abruptly mid-use and confirm no data is lost
-- [ ] Clear browser data and recover from the folder file
-- [ ] Restore a backup
+- [ ] Confirm Settings → البيانات shows whether persistent storage is granted; if not, request it
+- [ ] Understand that «مسح بيانات الموقع» in browser settings deletes IndexedDB; take a backup first
+- [ ] Download a backup JSON, then restore it on the same origin and verify the data
 - [ ] Open a second tab and confirm it is blocked
+- [ ] Verify data is tied to the origin (scheme + host + port): opening a different host/port shows a separate empty database
+- [ ] Before changing hosting/domain: download a backup from the old address and restore it on the new one
+- [ ] Keep a copy of the backup outside the phone (Drive/WhatsApp/email/USB); L1 has no automatic share-sheet backup yet
+- [ ] Apply a PWA update and confirm no invoices/products/settings were lost
+- [ ] Confirm the pre-migration snapshot exists/downloads when a schema migration is triggered (L3 will expand restore)
 
 ## Data Integrity
 

@@ -663,6 +663,19 @@
   }
 
   BeeStore.pages = BeeStore.pages || {};
-  BeeStore.pages.pos = { render };
-  if (typeof module !== 'undefined') module.exports = { render };
+  BeeStore.pages.pos = {
+    render,
+    // Used by the safe-update check: never reload in the middle of an invoice.
+    getCartCount: function () { return cart.length; },
+    isSaving: function () { return saving; },
+    hasUnsavedWork: function () { return saving || cart.length > 0; },
+  };
+  if (typeof module !== 'undefined') {
+    module.exports = {
+      render,
+      getCartCount: function () { return cart.length; },
+      isSaving: function () { return saving; },
+      hasUnsavedWork: function () { return saving || cart.length > 0; },
+    };
+  }
 })(typeof window !== 'undefined' ? window : globalThis);

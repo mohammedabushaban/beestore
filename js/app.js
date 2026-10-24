@@ -4,11 +4,13 @@
 
   async function init() {
     const hasIndexedDB = 'indexedDB' in window;
-    const hasFS = 'showDirectoryPicker' in window;
     const hasLocks = 'navigator' in window && 'locks' in navigator;
     const isFile = !!(window.location && window.location.protocol === 'file:');
 
-    if (!hasIndexedDB || !hasFS || !hasLocks || isFile) {
+    // The folder mirror is an optional desktop feature. A phone without the
+    // File System Access API is a fully supported target — only a missing
+    // IndexedDB (or opening via file://) prevents the app from running.
+    if (!hasIndexedDB || isFile) {
       document.getElementById('browser-warning').style.display = 'block';
     }
 
@@ -24,11 +26,23 @@
     }
 
     // Startup migration: upgrade older exports/data to the current schema.
+    // A local snapshot is written first (v3-Lite §2): a failed migration must
+    // never be the only copy of the owner's data.
+    BeeStore.snapshots = new BeeStore.SnapshotService();
     try {
       const meta = await BeeStore.repo.get('meta', 'meta');
       const stored = (meta && meta.schemaVersion) || 1;
       if (stored < BeeStore.schemaVersion) {
         const dump = await BeeStore.repo.exportAll();
+        try {
+          await BeeStore.snapshots.create('pre-migration', dump);
+        } catch (snapshotError) {
+          console.error('pre-migration snapshot failed', snapshotError);
+          _showFatal('تعذّر إنشاء نسخة أمان تلقائية قبل تحديث قاعدة البيانات. ' +
+            'لم يتم تغيير بياناتك. حرّر مساحة على الهاتف ثم أعد فتح التطبيق، ' +
+            'أو تواصل مع من يدعمك لاستعادة نسخة احتياطية.');
+          return;
+        }
         const migrated = await BeeStore.migrations.migrate(dump, BeeStore.schemaVersion);
         await BeeStore.repo.importAll(migrated);
       }
@@ -64,8 +78,10 @@
     }
 
     if (navigator.storage && navigator.storage.persist) {
-      navigator.storage.persist();
+      navigator.storage.persist().catch(function () { /* shown in Settings → البيانات */ });
     }
+
+    if (BeeStore.pwa) BeeStore.pwa.register();
   }
 
   function _openRepoWithTimeout(repo, ms) {
@@ -112,6 +128,7 @@
     _setupVisibilityHandlers();
     if (BeeStore.period) BeeStore.period.renderHeader();
     BeeStore.router.start();
+    if (BeeStore.pwa) BeeStore.pwa.onAppReady();
   }
 
   // Re-run the current page (used when the global period changes).
@@ -126,10 +143,14 @@
   BeeStore._setupVisibilityHandlers = _setupVisibilityHandlers;
   BeeStore._setupSidebar = _setupSidebar;
 
+  let sidebarSetup = false;
+
   function _setupSidebar() {
+    if (sidebarSetup) return;
     const sidebar = document.getElementById('sidebar');
     const hamburger = document.querySelector('.hamburger');
     if (!sidebar || !hamburger) return;
+    sidebarSetup = true;
 
     const backdrop = document.createElement('div');
     backdrop.className = 'sidebar-backdrop';
@@ -139,15 +160,19 @@
     function openSidebar() {
       sidebar.classList.add('open');
       backdrop.classList.add('show');
+      hamburger.setAttribute('aria-expanded', 'true');
     }
     function closeSidebar() {
       sidebar.classList.remove('open');
       backdrop.classList.remove('show');
+      hamburger.setAttribute('aria-expanded', 'false');
     }
     function toggleSidebar() {
       if (sidebar.classList.contains('open')) closeSidebar();
       else openSidebar();
     }
+
+    hamburger.addEventListener('click', toggleSidebar);
 
     // Close on any nav tap. Delegated + capture so it also fires on touch
     // devices right after the tap, before the link's own handler runs.
@@ -165,7 +190,24 @@
     BeeStore.closeSidebar = closeSidebar;
   }
 
+  let routeClicksBound = false;
+
+  function _bindRouteClicks() {
+    if (routeClicksBound) return;
+    routeClicksBound = true;
+    // All navigation used to be inline onclick attributes, which CSP blocks.
+    // One delegated listener keeps the same routes without inline scripts.
+    document.addEventListener('click', (e) => {
+      const target = e.target && e.target.closest ? e.target.closest('[data-route]') : null;
+      if (!target) return;
+      if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+      e.preventDefault();
+      BeeStore.router.navigate(target.getAttribute('data-route'));
+    });
+  }
+
   function _setupRouter() {
+    _bindRouteClicks();
     const pages = {
       '/': { title: 'الرئيسية', render: BeeStore.pages.dashboard.render },
       '/pos': { title: 'فاتورة جديدة', render: BeeStore.pages.pos.render },

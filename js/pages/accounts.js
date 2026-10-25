@@ -161,53 +161,30 @@
     ));
   }
 
+  // v3-Lite §4: the legacy partial closing dialog was replaced by the Days
+  // page wizard + Day Report. Keep the tab as a doorway so old habits still
+  // land in the full cash-reconciliation flow.
   async function _renderClosing(container) {
     const dateInput = input('date', BeeStore.dates.today());
-    container.appendChild(el('div', { class: 'filter-row' }, [
-      dateInput,
-      el('button', { class: 'btn btn-primary', onclick: () => _openClosing(dateInput.value) }, 'فتح إغلاق اليوم'),
+    const open = async () => {
+      if (!BeeStore.pages.days) { BeeStore.router.navigate('/days'); return; }
+      await BeeStore.pages.days.openWizard(dateInput.value, () => _renderClosing(container));
+    };
+    container.appendChild(el('div', { class: 'card' }, [
+      el('h3', {}, 'إغلاق اليوم'),
+      el('p', { class: 'form-hint' },
+        'إغلاق اليوم الآن مطابقة صندوق كاملة: ملخص اليوم، جرد النقد والفئات، إخراج النقد إلى البنك أو كسحب شخصي، ثم تقرير يوم قابل للطباعة والمشاركة.'),
+      el('div', { class: 'filter-row' }, [
+        dateInput,
+        el('button', { class: 'btn btn-success', onclick: open }, 'فتح معالج الإغلاق'),
+        el('button', {
+          class: 'btn btn-secondary',
+          onclick: () => BeeStore.router.navigate('/days'),
+        }, 'صفحة الأيام'),
+      ]),
+      el('p', { class: 'form-hint' },
+        'ملاحظة: لا يُسمح بإقفال يوم أقدم بينما يوجد يوم أحدث مُقفل؛ أعد فتح الأحدث أولاً. اليوم المنسي يمكن إقفاله «بدون جرد نقدي».'),
     ]));
-  }
-
-  async function _openClosing(date) {
-    const salesRes = await BeeStore.api.reports.dailyClosing(date);
-    const salesByMethod = salesRes.ok ? salesRes.data.salesByMethod : {};
-    const totalSales = salesRes.ok ? salesRes.data.totalSales : 0;
-    const refundMinor = salesRes.ok ? salesRes.data.refundMinor : 0;
-
-    const cashSales = salesByMethod['cash'] || 0;
-    const expenses = salesRes.ok ? salesRes.data.totalExpenses : 0;
-
-    const expectedCash = cashSales - expenses;
-    const countedInput = input('number', '', { placeholder: 'النقد المعدود', min: 0, step: 0.01 });
-    const noteInput = input('text', '', { placeholder: 'ملاحظة' });
-
-    const { overlay } = BeeStore.dialogs.openDialog('إغلاق اليوم - ' + date, [
-      el('p', {}, 'إجمالي المبيعات: ' + formatMoney(totalSales)),
-      refundMinor > 0 ? el('p', {}, 'مرتجعات نقدية: -' + formatMoney(refundMinor)) : null,
-      el('p', {}, 'مبيعات نقدية (صافي): ' + formatMoney(cashSales)),
-      el('p', {}, 'المصاريف: ' + formatMoney(expenses)),
-      el('p', { style: 'font-weight:600' }, 'المتوقع في الصندوق: ' + formatMoney(expectedCash)),
-      formField('النقد المعدود', countedInput),
-      formField('ملاحظة', noteInput),
-      el('button', {
-        class: 'btn btn-primary',
-        onclick: async () => {
-          const counted = BeeStore.money.fromMajor(countedInput.value);
-          const res = await BeeStore.api.transactions.dailyClosing({
-            date,
-            salesByMethod,
-            expensesMinor: expenses,
-            expectedCashMinor: expectedCash,
-            countedCashMinor: counted,
-            differenceMinor: counted - expectedCash,
-            note: noteInput.value.trim(),
-          });
-          if (res.ok) { toast('تم حفظ الإغلاق'); overlay.remove(); }
-          else toast(res.error.message, 'error');
-        },
-      }, 'حفظ'),
-    ]);
   }
 
   function _addAccount() {

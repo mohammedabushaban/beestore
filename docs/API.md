@@ -89,14 +89,24 @@ All methods return `{ ok: true, data: ... }` or `{ ok: false, error: { code, mes
 | `payroll.outstandingAdvances(employeeId)` | `GET /api/payroll/advances/:employeeId/outstanding` | Get outstanding advances |
 | `transactions.ownerTransaction(data)` | `POST /api/transactions/owner` | Owner transaction |
 | `transactions.transfer(data)` | `POST /api/transactions/transfer` | Transfer between accounts |
-| `transactions.dailyClosing(data)` | `POST /api/transactions/daily-closing` | Save daily closing |
+| `transactions.dailyClosing(data)` | `POST /api/transactions/daily-closing` | Legacy daily closing — delegates to `dailyClosings.close` |
+| `dailyClosings.preview(date)` | `GET /api/daily-closings/preview?date=` | Cash-drawer preview for a day (no writes) |
+| `dailyClosings.close(data)` | `POST /api/daily-closings` | Atomic day close (count, difference, take-out, retained float) |
+| `dailyClosings.get(date)` | `GET /api/daily-closings/:date` | Closing record or `null` |
+| `dailyClosings.list(from, to)` | `GET /api/daily-closings?from=&to=` | List closing records |
+| `dailyClosings.reopen(date, options)` | `POST /api/daily-closings/:date/reopen` | Reopen latest closed day (soft-void generated records) |
+| `dailyClosings.daysInMonth(month)` | `GET /api/daily-closings/month?month=` | All days + counts + total differences |
+| `dailyClosings.unclosedDays(options)` | `GET /api/daily-closings/unclosed` | Days with activity but no closing (excludes today) |
+| `dailyClosings.status()` | `GET /api/daily-closings/status` | Today/yesterday status + unclosed warnings |
+| `dailyClosings.report(date)` | `GET /api/daily-closings/:date/report` | Day Report data (opening/closing, methods, reconciliation) |
+| `dailyClosings.textSummary(report)` | — | Arabic share text for a loaded Day Report |
 | `reports.profitAndLoss(from, to)` | `GET /api/reports/pnl?from=&to=` | Profit & Loss |
 | `reports.salesReport(from, to, groupBy)` | `GET /api/reports/sales?from=&to=&groupBy=` | Sales report |
 | `reports.inventoryValuation()` | `GET /api/reports/inventory` | Inventory valuation |
 | `reports.receivablesAging()` | `GET /api/reports/receivables-aging` | Receivables aging |
 | `reports.payablesAging()` | `GET /api/reports/payables-aging` | Payables aging |
 | `reports.balanceSnapshot(asOf)` | `GET /api/reports/balance?asOf=` | Balance snapshot |
-| `reports.dailyClosing(date)` | `GET /api/reports/daily-closing?date=` | Daily closing report |
+| `reports.dailyClosing(date)` | `GET /api/reports/daily-closing?date=` | Legacy daily closing figures (kept for compatibility) |
 | `reports.monthReview(month)` | `GET /api/reports/month-review?month=` | v2 Month Review (§9.1) |
 | `reports.yearOverview(year)` | `GET /api/reports/year?year=` | v2 Year Overview (§9.2) |
 | `reports.profitCashReconciliation(month)` | `GET /api/reports/reconciliation?month=` | v2 Profit⇄Cash (§9.3) |

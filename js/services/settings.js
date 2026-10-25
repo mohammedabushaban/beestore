@@ -55,6 +55,12 @@
     systemStartDate: null,
     // v2 §2: reject future-dated documents by default.
     blockFutureDates: true,
+    // v3-Lite §4.1: cash drawer + day-closing preferences.
+    cashDrawerAccountId: null,
+    defaultBankAccountId: null,
+    // The daily count sheet is ordered biggest first. Amounts are major units
+    // (the UI converts using money.fromMajor), matching the ILS default.
+    cashDenominations: [200, 100, 50, 20, 10, 5, 2, 1, 0.5, 0.1],
   };
 
   class SettingsService {
@@ -152,6 +158,15 @@
           if (!pm.accountId) pm.accountId = pm.id === 'cash' ? cashAcc.id : bankAcc.id;
         }
         settings.paymentMethods = methods;
+        // v3-Lite §4: the cash drawer is the account the closing counts. Fall
+        // back to the cash account for installs that predate this setting.
+        const drawerValid = accounts.some(a => a.id === settings.cashDrawerAccountId);
+        if (!drawerValid) settings.cashDrawerAccountId = cashAcc.id;
+        const bankValid = accounts.some(a => a.id === settings.defaultBankAccountId);
+        if (!bankValid) settings.defaultBankAccountId = bankAcc.id;
+        if (!Array.isArray(settings.cashDenominations) || settings.cashDenominations.length === 0) {
+          settings.cashDenominations = DEFAULT_SETTINGS.cashDenominations.slice();
+        }
         settings.id = 'settings';
         tx.put('meta', settings);
         return settings;

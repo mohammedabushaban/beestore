@@ -14,7 +14,9 @@
      */
     async ownerTransaction(data) {
       return this.repo.transaction(async (tx) => {
-        await BeeStore.periods.assertOpen(tx, data.date || BeeStore.dates.today());
+        const date = data.date || BeeStore.dates.today();
+        await BeeStore.periods.assertOpen(tx, date);
+        await BeeStore.periods.assertDayOpen(tx, date);
         const txRecord = {
           id: BeeStore.ids.randomId('own'),
           date: data.date || BeeStore.dates.today(),
@@ -37,7 +39,9 @@
      */
     async transfer(data) {
       return this.repo.transaction(async (tx) => {
-        await BeeStore.periods.assertOpen(tx, data.date || BeeStore.dates.today());
+        const date = data.date || BeeStore.dates.today();
+        await BeeStore.periods.assertOpen(tx, date);
+        await BeeStore.periods.assertDayOpen(tx, date);
         const transfer = {
           id: BeeStore.ids.randomId('trf'),
           date: data.date || BeeStore.dates.today(),
@@ -53,35 +57,18 @@
       });
     }
 
-    /** Creates or updates the daily cash closing for a date.
-     * @param {Object} data {date,salesByMethod,expensesMinor,expectedCashMinor,countedCashMinor,differenceMinor,note}
-     * @returns {Promise<Object>} created/updated closing
-     * @throws {BeeError} PERIOD_CLOSED if date closed
+    /** Legacy daily-closing entry point. Delegates to the L4 service so the
+     * cash-difference ledger, day lock and generated records are never skipped.
+     * @param {Object} data {date,countedCashMinor,note,noCount}
+     * @returns {Promise<Object>} the closed dailyClosings record
+     * @throws {BeeError} VALIDATION|PERIOD_CLOSED|DAY_CLOSED|CONFLICT
      */
     async dailyClosing(data) {
-      return this.repo.transaction(async (tx) => {
-        await BeeStore.periods.assertOpen(tx, data.date);
-        const existing = await tx.list('dailyClosings', d => d.date === data.date);
-        if (existing.length > 0) {
-          const dc = existing[0];
-          const updated = { ...dc, ...data, id: dc.id, updatedAt: BeeStore.dates.now() };
-          tx.put('dailyClosings', updated);
-          return updated;
-        }
-        const dc = {
-          id: BeeStore.ids.randomId('clo'),
-          date: data.date,
-          salesByMethod: data.salesByMethod || {},
-          expensesMinor: BeeStore.money.roundMinor(data.expensesMinor || 0),
-          expectedCashMinor: BeeStore.money.roundMinor(data.expectedCashMinor || 0),
-          countedCashMinor: BeeStore.money.roundMinor(data.countedCashMinor || 0),
-          differenceMinor: BeeStore.money.roundMinor(data.differenceMinor || 0),
-          note: data.note || '',
-          createdAt: BeeStore.dates.now(),
-          updatedAt: BeeStore.dates.now(),
-        };
-        tx.put('dailyClosings', dc);
-        return dc;
+      return BeeStore.dailyClosing.close({
+        date: data.date,
+        countedCashMinor: data.countedCashMinor,
+        noCount: data.noCount,
+        note: data.note,
       });
     }
   }

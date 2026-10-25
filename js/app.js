@@ -242,6 +242,7 @@
     _bindRouteClicks();
     const pages = {
       '/': { title: 'الرئيسية', render: BeeStore.pages.dashboard.render },
+      '/days': { title: 'الأيام', render: BeeStore.pages.days.render },
       '/pos': { title: 'فاتورة جديدة', render: BeeStore.pages.pos.render },
       '/invoices': { title: 'الفواتير', render: BeeStore.pages.invoices.render },
       '/returns': { title: 'المرتجعات والاستبدال', render: BeeStore.pages.returns.render },

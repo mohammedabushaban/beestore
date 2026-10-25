@@ -21,6 +21,9 @@
     container.appendChild(el('h2', { class: 'page-title' }, 'الرئيسية'));
     if (BeeStore.period) await BeeStore.period.scopeBar(container);
 
+    // v3-Lite §4.6: today/yesterday cards + unclosed-day warnings.
+    await safeWidget(container, async () => { await _dayStatus(container); });
+
     // v2 §6.2/§9.5: banner when this month's recurring expenses are missing.
     await _maybeRecurringBanner(container);
 
@@ -217,6 +220,136 @@
         container.appendChild(banner);
       }
     } catch (e) { /* banner is best-effort */ }
+  }
+
+  // v3-Lite §4.6: today/yesterday cards and the unclosed-days warning list.
+  async function _dayStatus(container) {
+    const res = await BeeStore.api.dailyClosings.status();
+    if (!res.ok) return;
+    const s = res.data || {};
+    const today = s.today || {};
+    const yesterday = s.yesterday || {};
+    const unclosed = Array.isArray(s.unclosed) ? s.unclosed : [];
+    const reload = () => render(container);
+    const openReport = (date) => {
+      if (BeeStore.pages.days && BeeStore.pages.days.openReport) {
+        BeeStore.pages.days.openReport(date, reload);
+      } else {
+        BeeStore.router.navigate('/days');
+      }
+    };
+    const openWizard = (date) => {
+      if (BeeStore.pages.days && BeeStore.pages.days.openWizard) {
+        BeeStore.pages.days.openWizard(date, reload);
+      } else {
+        BeeStore.router.navigate('/days');
+      }
+    };
+    const signed = (v) => {
+      const n = Number(v) || 0;
+      return (n > 0 ? '+' : '') + formatMoney(n);
+    };
+
+    const todayClosed = today.status === 'closed';
+    const todayCard = el('div', { class: 'card stat-card day-home-card' }, [
+      el('div', { class: 'day-home-head' }, [
+        el('div', { class: 'stat-title' }, 'اليوم — ' + formatDate(today.date)),
+        el('span', { class: 'badge ' + (todayClosed ? 'badge-success' : 'badge-warning') },
+          todayClosed ? (today.noCount ? 'مُقفل بدون جرد' : 'مُقفل') : 'مفتوح'),
+      ]),
+      el('div', { class: 'stat-value' }, formatMoney(today.totalSalesMinor || 0)),
+      el('div', { class: 'stat-sub' },
+        (today.invoicesCount || 0) + ' فاتورة · المتوقع في الصندوق ' +
+        formatMoney(today.expectedCashMinor || 0)),
+      el('div', { class: 'day-home-actions' }, [
+        todayClosed
+          ? el('button', { class: 'btn btn-sm btn-secondary', onclick: () => openReport(today.date) }, 'تقرير اليوم')
+          : el('button', { class: 'btn btn-sm btn-success', onclick: () => openWizard(today.date) }, 'إغلاق اليوم'),
+      ]),
+    ]);
+
+    const yClosed = yesterday.status === 'closed';
+    const yUnclosed = unclosed.find(u => u.date === yesterday.date);
+    const yActions = el('div', { class: 'day-home-actions' }, []);
+    if (yClosed) {
+      yActions.appendChild(el('button', {
+        class: 'btn btn-sm btn-secondary',
+        onclick: () => openReport(yesterday.date),
+      }, 'تقرير أمس'));
+    } else if (yUnclosed) {
+      yActions.appendChild(el('button', {
+        class: 'btn btn-sm btn-warning',
+        onclick: () => openWizard(yesterday.date),
+      }, 'إقفال أمس'));
+      yActions.appendChild(el('button', {
+        class: 'btn btn-sm btn-secondary',
+        onclick: () => openReport(yesterday.date),
+      }, 'تقرير'));
+    } else {
+      yActions.appendChild(el('button', {
+        class: 'btn btn-sm btn-secondary',
+        onclick: () => openReport(yesterday.date),
+      }, 'تقرير أمس'));
+    }
+    const yDiff = yClosed ? Number(yesterday.differenceMinor) || 0 : null;
+    const yesterdayCard = el('div', {
+      class: 'card stat-card day-home-card' + (yClosed ? '' : ' day-home-missing'),
+    }, [
+      el('div', { class: 'day-home-head' }, [
+        el('div', { class: 'stat-title' }, 'أمس — ' + formatDate(yesterday.date)),
+        el('span', {
+          class: 'badge ' + (yClosed ? 'badge-success' : (yUnclosed ? 'badge-warning' : 'badge-muted')),
+        }, yClosed ? (yesterday.noCount ? 'مُقفل بدون جرد' : 'مُقفل') : (yUnclosed ? 'لم يُقفل' : 'لا نشاط')),
+      ]),
+      yClosed
+        ? el('div', {
+          class: 'stat-value' + (yDiff < 0 ? ' text-danger' : (yDiff > 0 ? ' cash-over' : '')),
+        }, signed(yDiff))
+        : el('div', { class: 'stat-value day-home-missing-value' },
+          yUnclosed ? formatMoney(yUnclosed.salesMinor) : '—'),
+      el('div', { class: 'stat-sub' }, yClosed
+        ? 'فرق الصندوق · المعدود ' + formatMoney(yesterday.countedCashMinor || 0)
+        : (yUnclosed
+          ? (yUnclosed.invoicesCount || 0) + ' فاتورة · ' + formatMoney(yUnclosed.expensesMinor || 0) + ' مصاريف'
+          : 'لا حركة مسجّلة')),
+      yActions,
+    ]);
+
+    container.appendChild(el('div', { class: 'day-home-section' }, [
+      el('div', { class: 'cards-grid day-home-grid' }, [todayCard, yesterdayCard]),
+    ]));
+
+    if (unclosed.length > 0) {
+      const list = el('div', { class: 'day-home-warning-list' });
+      for (const row of unclosed.slice(0, 5)) {
+        list.appendChild(el('div', { class: 'day-home-warning-row' }, [
+          el('span', { class: 'day-warning-date' }, formatDate(row.date)),
+          el('span', { class: 'form-hint' },
+            (row.invoicesCount || 0) + ' فاتورة · ' + formatMoney(row.salesMinor || 0)),
+          el('button', {
+            class: 'btn btn-sm btn-warning',
+            onclick: () => openWizard(row.date),
+          }, 'إقفال'),
+          el('button', {
+            class: 'btn btn-sm btn-secondary',
+            onclick: () => openReport(row.date),
+          }, 'تقرير'),
+        ]));
+      }
+      container.appendChild(el('div', { class: 'alert alert-warning day-home-warning' }, [
+        el('div', { class: 'day-home-warning-head' }, [
+          el('strong', {}, '⚠️ ' + unclosed.length + ' يوم نشاط لم يُقفل'),
+          el('button', {
+            class: 'btn btn-sm btn-secondary',
+            onclick: () => BeeStore.router.navigate('/days'),
+          }, 'كل الأيام'),
+        ]),
+        list,
+        unclosed.length > 5
+          ? el('p', { class: 'form-hint' }, 'تظهر الأحدث فقط — أقفل الأقدم أولاً من صفحة الأيام.')
+          : null,
+      ]));
+    }
   }
 
   // v2 §9.5: payroll status for the current month.

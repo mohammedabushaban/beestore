@@ -105,7 +105,9 @@
 
     async pay(data) {
       return this.repo.transaction(async (tx) => {
-        await BeeStore.periods.assertOpen(tx, data.date || BeeStore.dates.today());
+        const paymentDate = data.date || BeeStore.dates.today();
+        await BeeStore.periods.assertOpen(tx, paymentDate);
+        await BeeStore.periods.assertDayOpen(tx, paymentDate);
         const supplier = await tx.get('suppliers', data.supplierId);
         if (!supplier) throw BeeStore.errors.err('NOT_FOUND', 'المورد غير موجود');
         const settings = await tx.get('meta', 'settings') || {};

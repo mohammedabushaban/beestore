@@ -101,6 +101,7 @@
         // month never change (salary expense excludes advance repayments).
         const payDate = paidDate || BeeStore.dates.today();
         await BeeStore.periods.assertOpen(tx, payDate);
+        await BeeStore.periods.assertDayOpen(tx, payDate);
         const settings = await tx.get('meta', 'settings') || {};
         const resolvedAccountId = accountId || BeeStore.settings.resolvePaymentAccount(settings, method || 'cash');
 
@@ -182,7 +183,9 @@
      */
     async createAdvance(data) {
       return this.repo.transaction(async (tx) => {
-        await BeeStore.periods.assertOpen(tx, data.date || BeeStore.dates.today());
+        const advanceDate = data.date || BeeStore.dates.today();
+        await BeeStore.periods.assertOpen(tx, advanceDate);
+        await BeeStore.periods.assertDayOpen(tx, advanceDate);
         const advance = {
           id: BeeStore.ids.randomId('adv'),
           employeeId: data.employeeId,

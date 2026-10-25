@@ -17,7 +17,7 @@
         'settings', 'accounts', 'categories', 'products', 'variants', 'stock',
         'sales', 'returns', 'customers', 'suppliers', 'purchases', 'purchaseReturns',
         'expenses', 'employees', 'payroll', 'transactions', 'periods',
-        'reports', 'dashboard', 'backup', 'maintenance', 'audit',
+        'dailyClosing', 'reports', 'dashboard', 'backup', 'maintenance', 'audit',
       ];
       for (const name of services) {
         const svc = BeeStore[name];
@@ -193,7 +193,27 @@
     transactions = {
       ownerTransaction: async (data) => ok(await BeeStore.transactions.ownerTransaction(data)),
       transfer: async (data) => ok(await BeeStore.transactions.transfer(data)),
-      dailyClosing: async (data) => ok(await BeeStore.transactions.dailyClosing(data)),
+      // Legacy v1 shape: route through the full L4 closing so old callers
+      // cannot create a closing that bypasses the cash reconciliation.
+      dailyClosing: async (data) => ok(await BeeStore.dailyClosing.close({
+        date: data.date,
+        countedCashMinor: data.countedCashMinor,
+        noCount: data.noCount,
+        note: data.note,
+      })),
+    };
+
+    dailyClosings = {
+      preview: async (date) => ok(await BeeStore.dailyClosing.preview(date)),
+      close: async (data) => ok(await BeeStore.dailyClosing.close(data)),
+      get: async (date) => ok(await BeeStore.dailyClosing.get(date)),
+      list: async (from, to) => ok(await BeeStore.dailyClosing.list(from, to)),
+      reopen: async (date, options) => ok(await BeeStore.dailyClosing.reopen(date, options)),
+      daysInMonth: async (month) => ok(await BeeStore.dailyClosing.daysInMonth(month)),
+      unclosedDays: async (options) => ok(await BeeStore.dailyClosing.unclosedDays(options)),
+      status: async () => ok(await BeeStore.dailyClosing.status()),
+      report: async (date) => ok(await BeeStore.dailyClosing.report(date)),
+      textSummary: async (report) => ok(BeeStore.dailyClosing.buildTextSummary(report)),
     };
 
     periods = {

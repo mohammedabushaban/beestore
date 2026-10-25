@@ -46,7 +46,8 @@
 
 ## Pages
 
-- [ ] **Dashboard**: sales today, month totals, account balances, low stock count
+- [ ] **Dashboard**: sales today, month totals, account balances, low stock count, اليوم/أمس day cards + unclosed-day warnings
+- [ ] **Days (الأيام)**: month table, closing wizard, Day Report, reopen latest
 - [ ] **POS (New Invoice)**: scan barcode, add items, set discount, save with payment
 - [ ] **Invoices List**: search by number/customer, filter by status, view invoice, void invoice
 - [ ] **Returns**: create return for an invoice, verify stock is restored
@@ -68,7 +69,8 @@
 
 - [ ] Header shows ◀ current month ▶; switch months and confirm lists re-scope
 - [ ] "السنة كاملة" and "فترة مخصصة" modes scope the lists correctly
-- [ ] Refresh keeps the period; copy URL with `?m=`/`?y=` to a new tab and confirm it opens the same period
+- [ ] **Day mode** (`?d=YYYY-MM-DD`): pages scope to that day and a closed-day warning appears
+- [ ] Refresh keeps the period; copy URL with `?m=`/`?y=`/`?d=` to a new tab and confirm it opens the same period
 - [ ] Closed month shows 🔒 in header, scope bars, and statements
 - [ ] Close flow: generate recurring → prepare/pay payroll → checklist green → close → backup note
 - [ ] Posting dated in a closed month is rejected with an Arabic message
@@ -79,6 +81,25 @@
 - [ ] Entering `٢٥٠` (Eastern digits) in an amount field parses as 250
 - [ ] Settings → Maintenance → "فحص سلامة البيانات" runs and shows results
 - [ ] Month Review prints on A4 without cut tables; invoice prints on 80mm
+
+## Daily Closing (v3-Lite L4)
+
+- [ ] Settings → طرق الدفع: set the cash-drawer account, default bank, and denominations; reload and confirm they persist
+- [ ] Dashboard shows اليوم/أمس cards with status, expected cash, difference, and unclosed-day warnings
+- [ ] Open **الأيام** → **إغلاق اليوم**; confirm 4 steps: ملخص → جرد → إخراج النقد → تأكيد
+- [ ] Enter 2 of the largest denomination; the counted total and live difference update
+- [ ] Enable **بدون جرد**: the count field disables and the closing records `noCount`
+- [ ] Choose a bank deposit: a transfer from the drawer to the bank is created on close
+- [ ] Choose an owner withdrawal: an owner transaction from the drawer is created on close
+- [ ] Retained float = counted − taken out; the next day's opening equals it
+- [ ] Reference scenario: opening 200, cash sales 300, card 100, credit 50, collection 80, cash expense 25, cash refund 40 → expected **515**; count **510** → difference **−5**; take out **400** → retained **110**; P&L includes the −5
+- [ ] Day Report shows the full reconciliation, methods, collections, external differences, print A4/80mm and share
+- [ ] A closed day blocks sales, sale voids, returns, receipts/payments, cash expenses, transfers, withdrawals, and capital movements dated that day
+- [ ] Unpaid purchases, payroll accrual, and stock adjustments remain allowed on a closed day
+- [ ] Closing a later day before an earlier one is blocked; close the forgotten earlier day with **بدون جرد**, then close the later one
+- [ ] Reopen the latest closed day (month must be open): generated records are soft-voided with an audit entry; reopening a non-latest day is blocked
+- [ ] Month Review shows the days table, closed/unclosed counters, total differences, and signed cash-difference row in P&L
+- [ ] External totals (card/wallet) produce warnings only and never post ledger entries
 
 ## Camera Barcode Scanning (Android Chrome)
 
@@ -161,7 +182,7 @@ iOS 14.3+ exposes `getUserMedia` only in Safari (or a WebView with camera permis
 
 ## Performance (L2)
 
-> Automated reference (headless Chromium, 2026-10-25): 546 ms cold start, 19 ms save, 245 ms dashboard, 208 ms window month, 242 ms old month, 39.2 MB. Physical-phone verification is still required.
+> Automated reference (headless Chromium, re-run after L4 on 2026-10-25): 370 ms cold start, 30 ms save, 176 ms dashboard, 153 ms window month, 180 ms old month, 39.2 MB. Physical-phone verification is still required.
 
 - [x] Seed 50,000 invoices with `tests/perf.html` (headless or a desktop browser)
 - [x] Cold start ≤ 3 s; save invoice ≤ 100 ms; dashboard ≤ 1 s

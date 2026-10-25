@@ -184,6 +184,139 @@
     });
   }
 
-  BeeStore.print = { printInvoice, printLabelSheet, printDailyClosing, buildInvoiceHtml, buildLabelSheetHtml };
+  // v3-Lite §4.4: printable Day Report. Arabic is rendered by the browser's
+  // HTML engine (never by a PDF text API), so shaping and RTL are correct.
+  function buildDayReportHtml(report, settings, size) {
+    const esc = BeeStore.ui.escapeHtml;
+    const money = (v) => BeeStore.money.format(v || 0);
+    const is80 = size === '80mm';
+    const width = is80 ? '80mm' : '210mm';
+    const fontSize = is80 ? '10px' : '13px';
+    const s = settings || {};
+    const storeName = s.storeNameAr || s.storeName || 'Bee Store';
+    const methodLabel = (id) => (BeeStore.settings && BeeStore.settings.methodLabel)
+      ? BeeStore.settings.methodLabel(s, id) : id;
+    const dateLabel = BeeStore.dates.formatDate(report.date);
+
+    let html = '<html dir="rtl"><head><meta charset="UTF-8"><title>تقرير يوم ' + esc(dateLabel) + '</title>';
+    html += '<style>';
+    html += '@page { size: ' + width + ' auto; margin: ' + (is80 ? '3mm' : '10mm') + '; }';
+    html += 'body { font-family: "Cairo", Arial, sans-serif; font-size: ' + fontSize + '; margin: 0; color: #111; }';
+    html += '.header { text-align:center; border-bottom:2px solid #333; padding-bottom:8px; margin-bottom:10px; }';
+    html += '.store-name { font-size:' + (is80 ? '15px' : '21px') + '; font-weight:700; }';
+    html += '.store-info { font-size:' + (is80 ? '9px' : '11px') + '; color:#555; }';
+    html += '.report-title { font-size:' + (is80 ? '13px' : '17px') + '; font-weight:700; margin:8px 0; }';
+    html += '.status { display:inline-block; padding:2px 8px; border:1px solid #999; border-radius:10px; font-size:' + (is80 ? '9px' : '11px') + '; }';
+    html += 'h3 { font-size:' + (is80 ? '11px' : '13px') + '; margin:12px 0 4px; border-bottom:1px solid #ddd; padding-bottom:2px; }';
+    html += 'table { width:100%; border-collapse:collapse; margin:4px 0 8px; }';
+    html += 'th, td { border:1px solid #ddd; padding:' + (is80 ? '2px 3px' : '5px 6px') + '; text-align:right; vertical-align:top; }';
+    html += 'th { background:#f4f4f4; }';
+    html += '.num { font-variant-numeric: tabular-nums; white-space:nowrap; }';
+    html += '.short { color:#b91c1c; font-weight:700; } .over { color:#15803d; font-weight:700; }';
+    html += '.note { border:1px dashed #999; padding:6px; min-height:28px; }';
+    html += '.signature { display:flex; justify-content:space-between; gap:20px; margin-top:24px; font-size:' + (is80 ? '9px' : '11px') + '; }';
+    html += '.signature span { border-top:1px solid #333; padding-top:4px; min-width:45%; }';
+    html += '@media print { body { margin:0; } }';
+    html += '</style></head><body>';
+
+    html += '<div class="header">';
+    html += '<div class="store-name">' + esc(storeName) + '</div>';
+    if (s.phone) html += '<div class="store-info">هاتف: ' + esc(s.phone) + '</div>';
+    if (s.address) html += '<div class="store-info">' + esc(s.address) + '</div>';
+    html += '</div>';
+    html += '<div class="report-title">تقرير اليوم — ' + esc(dateLabel) + '</div>';
+    html += '<div class="status">' + (report.status === 'closed' ? 'مُقفل' : 'مفتوح')
+      + (report.noCount ? ' — بدون جرد نقدي' : '') + '</div>';
+    if (report.closedAt) html += '<div class="store-info">وقت الإقفال: ' + esc(BeeStore.dates.formatDateTime(report.closedAt)) + '</div>';
+
+    html += '<h3>المبيعات</h3>';
+    html += '<table><tbody>';
+    html += '<tr><td>عدد الفواتير</td><td class="num">' + esc(report.invoicesCount || 0) + '</td></tr>';
+    html += '<tr><td>إجمالي المبيعات</td><td class="num">' + esc(money(report.totalSalesMinor)) + '</td></tr>';
+    html += '<tr><td>متوسط الفاتورة</td><td class="num">' + esc(money(report.averageInvoiceMinor)) + '</td></tr>';
+    for (const [method, amount] of Object.entries(report.salesByMethod || {})) {
+      html += '<tr><td>مبيعات ' + esc(methodLabel(method)) + ' (صافي)</td><td class="num">' + esc(money(amount)) + '</td></tr>';
+    }
+    html += '<tr><td>مرتجعات نقدية</td><td class="num">' + esc(money(report.returnsCashRefundMinor)) + '</td></tr>';
+    html += '<tr><td>ديون جديدة اليوم</td><td class="num">' + esc(money(report.openCreditMinor)) + '</td></tr>';
+    html += '</tbody></table>';
+
+    if (report.expenses && report.expenses.length > 0) {
+      html += '<h3>المصاريف (' + esc(report.expenses.length) + ')</h3><table><thead><tr><th>البيان</th><th>المبلغ</th></tr></thead><tbody>';
+      for (const e of report.expenses) {
+        html += '<tr><td>' + esc(e.description) + '</td><td class="num">' + esc(money(e.amountMinor)) + '</td></tr>';
+      }
+      html += '</tbody></table>';
+    }
+
+    if (report.returns && report.returns.length > 0) {
+      html += '<h3>المرتجعات (' + esc(report.returns.length) + ')</h3><table><thead><tr><th>الرقم</th><th>المبلغ</th><th>السبب</th></tr></thead><tbody>';
+      for (const r of report.returns) {
+        html += '<tr><td>' + esc(r.number || '') + '</td><td class="num">' + esc(money(r.refundMinor)) + '</td><td>' + esc(r.reason || '') + '</td></tr>';
+      }
+      html += '</tbody></table>';
+    }
+
+    html += '<h3>مطابقة الصندوق</h3>';
+    html += '<table><tbody>';
+    html += '<tr><td>رصيد افتتاحي</td><td class="num">' + esc(money(report.openingCashMinor)) + '</td></tr>';
+    html += '<tr><td>+ مبيعات نقدية</td><td class="num">' + esc(money(report.cashSalesMinor)) + '</td></tr>';
+    html += '<tr><td>+ تحصيلات نقدية</td><td class="num">' + esc(money(report.customerCollectionsCashMinor)) + '</td></tr>';
+    html += '<tr><td>+ حركات نقدية أخرى</td><td class="num">' + esc(money(report.cashInOtherMinor)) + '</td></tr>';
+    html += '<tr><td>− مرتجعات من الصندوق</td><td class="num">' + esc(money(report.returnsCashRefundMinor)) + '</td></tr>';
+    html += '<tr><td>− مدفوعات موردين من الصندوق</td><td class="num">' + esc(money(report.supplierCashPaymentsMinor)) + '</td></tr>';
+    html += '<tr><td>− مصاريف من الصندوق</td><td class="num">' + esc(money(report.cashExpensesMinor)) + '</td></tr>';
+    html += '<tr><td>− حركات نقدية أخرى</td><td class="num">' + esc(money(report.cashOutOtherMinor)) + '</td></tr>';
+    html += '<tr><td><strong>المتوقع في الصندوق</strong></td><td class="num"><strong>' + esc(money(report.expectedCashMinor)) + '</strong></td></tr>';
+    if (report.status === 'closed' || report.countedCashMinor !== null && report.countedCashMinor !== undefined) {
+      html += '<tr><td>المعدود</td><td class="num">' + esc(money(report.countedCashMinor)) + '</td></tr>';
+      const diff = report.differenceMinor || 0;
+      html += '<tr><td>الفرق (معدود − متوقع)</td><td class="num ' + (diff < 0 ? 'short' : (diff > 0 ? 'over' : '')) + '">'
+        + esc(money(diff)) + '</td></tr>';
+      html += '<tr><td>المُخرج (بنك/سحب)</td><td class="num">' + esc(money(report.takenOutMinor)) + '</td></tr>';
+      html += '<tr><td><strong>الصندوق المتبقي</strong></td><td class="num"><strong>' + esc(money(report.retainedFloatMinor)) + '</strong></td></tr>';
+    }
+    html += '</tbody></table>';
+
+    if (report.externalWarnings && report.externalWarnings.length > 0) {
+      html += '<h3>تنبيهات الأجهزة الخارجية</h3><ul>';
+      for (const w of report.externalWarnings) {
+        html += '<li>' + esc(methodLabel(w.method)) + ': فرق ' + esc(money(w.differenceMinor)) + ' (لم يُسجّل أي قيد)</li>';
+      }
+      html += '</ul>';
+    }
+
+    if (report.topItems && report.topItems.length > 0) {
+      html += '<h3>أعلى الأصناف مبيعاً</h3><table><thead><tr><th>الصنف</th><th>الكمية</th><th>الإيراد</th></tr></thead><tbody>';
+      for (const item of report.topItems) {
+        html += '<tr><td>' + esc(item.productName || '') + ' ' + esc(item.size || '') + ' ' + esc(item.color || '')
+          + '</td><td class="num">' + esc(item.qty) + '</td><td class="num">' + esc(money(item.revenueMinor)) + '</td></tr>';
+      }
+      html += '</tbody></table>';
+    }
+
+    if (report.lowStock && report.lowStock.length > 0) {
+      html += '<h3>مخزون منخفض (أصناف بيعت اليوم)</h3><ul>';
+      for (const v of report.lowStock) {
+        html += '<li>' + esc(v.size || '') + ' / ' + esc(v.color || '') + ' — المتبقي: ' + esc(v.quantity) + '</li>';
+      }
+      html += '</ul>';
+    }
+
+    html += '<h3>ملاحظات</h3><div class="note">' + esc(report.note || '') + '</div>';
+    html += '<div class="signature"><span>توقيع المسؤول</span><span>التاريخ: ' + esc(dateLabel) + '</span></div>';
+    html += '</body></html>';
+    return html;
+  }
+
+  function printDayReport(report, settings, size) {
+    if (!report) { BeeStore.ui.toast('لا يوجد تقرير للطباعة', 'error'); return; }
+    openPrintWindow(buildDayReportHtml(report, settings, size), size || 'A4');
+  }
+
+  BeeStore.print = {
+    printInvoice, printLabelSheet, printDailyClosing, printDayReport,
+    buildInvoiceHtml, buildLabelSheetHtml, buildDayReportHtml,
+  };
   if (typeof module !== 'undefined') module.exports = BeeStore.print;
 })(typeof window !== 'undefined' ? window : globalThis);

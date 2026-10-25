@@ -47,7 +47,10 @@
      */
     async create(data) {
       return this.repo.transaction(async (tx) => {
-        await BeeStore.periods.assertOpen(tx, data.date || BeeStore.dates.today());
+        const returnDate = data.date || BeeStore.dates.today();
+        await BeeStore.periods.assertOpen(tx, returnDate);
+        // A payable reduction has no cash effect; a cash refund does.
+        if (data.mode === 'cash_refund') await BeeStore.periods.assertDayOpen(tx, returnDate);
         const purchase = await tx.get('purchases', data.purchaseId);
         if (!purchase) throw BeeStore.errors.err('NOT_FOUND', 'فاتورة المشتريات غير موجودة');
         if (purchase.status === 'void') throw BeeStore.errors.err('PURCHASE_VOID', 'لا يمكن إرجاع فاتورة ملغاة');

@@ -1,0 +1,277 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="UTF-8">
+  <title>BeeStore L4 UI Tests</title>
+  <style>
+    body { font-family: monospace; padding: 16px; }
+    .pass { color: #15803d; }
+    .fail { color: #b91c1c; white-space: pre-wrap; }
+    iframe { width: 1200px; height: 900px; border: 1px solid #ccc; margin-top: 12px; }
+  </style>
+</head>
+<body>
+  <h1>BeeStore L4 UI Tests (Days / Day Report / Settings)</h1>
+  <div id="results"></div>
+  <iframe id="app-frame" src="../index.html"></iframe>
+  <script>
+    const results = document.getElementById('results');
+    let passed = 0, failed = 0;
+    const pageErrors = [];
+
+    function report(ok, name, detail) {
+      const div = document.createElement('div');
+      div.className = ok ? 'pass' : 'fail';
+      div.textContent = (ok ? '✓ ' : '✗ ') + name + (detail ? ': ' + detail : '');
+      results.appendChild(div);
+      if (ok) passed++; else failed++;
+    }
+
+    async function test(name, fn) {
+      try {
+        await fn();
+        report(true, name);
+      } catch (e) {
+        report(false, name, (e && e.message) || String(e));
+      }
+    }
+
+    function wait(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+    async function waitFor(fn, label, timeout) {
+      const deadline = Date.now() + (timeout || 20000);
+      let lastError = null;
+      while (Date.now() < deadline) {
+        try {
+          const value = await fn();
+          if (value) return value;
+        } catch (e) { lastError = e; }
+        await wait(150);
+      }
+      throw new Error('انتهت المهلة: ' + label + (lastError ? ' — ' + lastError.message : ''));
+    }
+
+    function frame() { return document.getElementById('app-frame'); }
+    function w() { return frame().contentWindow; }
+    function d() { return frame().contentDocument; }
+
+    function byText(root, selector, text) {
+      return Array.from(root.querySelectorAll(selector))
+        .find(node => (node.textContent || '').trim().indexOf(text) >= 0);
+    }
+
+    async function clickText(selector, text, label) {
+      const btn = await waitFor(() => {
+        const root = d();
+        return root ? byText(root, selector, text) : null;
+      }, label || ('زر ' + text));
+      btn.click();
+      return btn;
+    }
+
+    async function route(path, readyText) {
+      w().BeeStore.router.navigate(path);
+      await waitFor(() => {
+        const root = d();
+        if (!root) return false;
+        const content = root.getElementById('page-content');
+        return content && (content.textContent || '').indexOf(readyText) >= 0;
+      }, 'الصفحة ' + path);
+    }
+
+    async function boot() {
+      const frameEl = frame();
+      if (frameEl.contentDocument && frameEl.contentDocument.readyState === 'complete' &&
+        frameEl.contentWindow && frameEl.contentWindow.BeeStore) {
+        // already loaded
+      } else {
+        await new Promise(resolve => { frameEl.addEventListener('load', resolve, { once: true }); });
+      }
+      const appWindow = w();
+      appWindow.addEventListener('error', e => pageErrors.push('error: ' + (e.message || '')));
+      appWindow.addEventListener('unhandledrejection', e => {
+        pageErrors.push('rejection: ' + ((e.reason && e.reason.message) || String(e.reason)));
+      });
+      await waitFor(() => appWindow.BeeStore && appWindow.BeeStore.repo && appWindow.BeeStore.repo.opened,
+        'فتح قاعدة البيانات');
+
+      const wizard = d().getElementById('first-run-wizard');
+      if (wizard && getComputedStyle(wizard).display !== 'none') {
+        d().getElementById('wizard-empty').click();
+      }
+      await waitFor(() => d().getElementById('app').style.display === 'block', 'بدء التطبيق');
+      await waitFor(() => d().querySelector('#page-content .page-title'), 'تحميل الصفحة الرئيسية');
+      await appWindow.BeeStore.settings.ensureDefaults();
+    }
+
+    (async function run() {
+      try {
+        await boot();
+        const appWindow = w();
+        const root = d();
+
+        await test('Dashboard shows today/yesterday cards', async () => {
+          await waitFor(() => (root.getElementById('page-content').textContent || '').indexOf('اليوم —') >= 0,
+            'بطاقة اليوم');
+          const text = root.getElementById('page-content').textContent;
+          if (text.indexOf('أمس —') < 0) throw new Error('بطاقة أمس غير ظاهرة');
+          if (text.indexOf('إغلاق اليوم') < 0) throw new Error('زر إغلاق اليوم غير ظاهر');
+        });
+
+        await test('Days page renders the month table', async () => {
+          const month = appWindow.BeeStore.dates.today().slice(0, 7);
+          await route('/days?m=' + month, 'جدول الأيام');
+          const text = root.getElementById('days-content').textContent;
+          if (text.indexOf('أيام ') < 0) throw new Error('عنوان الشهر غير ظاهر');
+          if (text.indexOf('إجمالي فروقات الصندوق') < 0) throw new Error('بطاقة الفروقات غير ظاهرة');
+          if (!root.querySelector('#days-content table')) throw new Error('جدول الأيام غير موجود');
+        });
+
+        await test('Closing wizard opens at step 1 with the summary', async () => {
+          await clickText('#page-content button', 'إغلاق اليوم', 'فتح معالج الإغلاق');
+          await waitFor(() => root.querySelector('.day-steps'), 'خطوات المعالج');
+          const bodyText = root.querySelector('.day-wizard-body').textContent;
+          if (bodyText.indexOf('ملخص يوم') < 0) throw new Error('ملخص اليوم غير ظاهر');
+          if (bodyText.indexOf('المتوقع في الصندوق') < 0) throw new Error('المتوقع غير ظاهر');
+          const steps = root.querySelectorAll('.day-step');
+          if (steps.length !== 4) throw new Error('عدد الخطوات ' + steps.length);
+        });
+
+        await test('Count step has denominations, difference and no-count option', async () => {
+          await clickText('.day-wizard-actions button', 'التالي: جرد النقد');
+          await waitFor(() => root.querySelector('.denom-grid'), 'شبكة الفئات');
+          const bodyText = root.querySelector('.day-wizard-body').textContent;
+          if (bodyText.indexOf('الفرق (معدود − متوقع)') < 0) throw new Error('الفرق الحي غير ظاهر');
+          if (!root.querySelector('#day-no-count')) throw new Error('خيار بدون جرد غير ظاهر');
+          if (root.querySelectorAll('.denom-row').length < 5) throw new Error('فئات النقد غير كافية');
+
+          // Use the denomination counter: 2 × the largest bill.
+          const denomInput = root.querySelector('.denom-row input');
+          const denomValue = Number(denomInput.parentElement.querySelector('.denom-label').textContent
+            .replace(/[^\d.]/g, ''));
+          denomInput.value = '2';
+          denomInput.dispatchEvent(new Event('input', { bubbles: true }));
+          const counted = root.querySelector('.day-wizard-body input[type="number"]');
+          const expectedCount = (denomValue * 2).toFixed(2).replace(/\.00$/, '');
+          if (Number(counted.value) !== Number(expectedCount)) {
+            throw new Error('عدّاد الفئات لم يحدّث المعدود: ' + counted.value + ' ≠ ' + expectedCount);
+          }
+
+          root.querySelector('#day-no-count').click();
+          if (!counted.disabled) throw new Error('حقل العد لم يُعطّل عند بدون جرد');
+        });
+
+        await test('Take-out step computes the retained float', async () => {
+          await clickText('.day-wizard-actions button', 'التالي: إخراج النقد');
+          await waitFor(() => root.querySelector('.day-retained'), 'الصندوق المتبقي');
+          const text = root.querySelector('.day-wizard-body').textContent;
+          if (text.indexOf('الصندوق المتبقي لليوم التالي') < 0) throw new Error('المتبقي غير ظاهر');
+        });
+
+        await test('Confirm step closes the day and shows the done screen', async () => {
+          await clickText('.day-wizard-actions button', 'التالي: التأكيد');
+          await waitFor(() => byText(root, '.day-wizard-actions button', 'تأكيد الإقفال'), 'زر التأكيد');
+          await clickText('.day-wizard-actions button', 'تأكيد الإقفال');
+          await waitFor(() => root.querySelector('.day-done'), 'شاشة النجاح');
+          const today = appWindow.BeeStore.dates.today();
+          const rec = await appWindow.BeeStore.dailyClosing.get(today);
+          if (!rec || rec.status !== 'closed') throw new Error('لم يُحفظ سجل الإقفال');
+          if (!rec.noCount) throw new Error('علم بدون جرد غير محفوظ');
+        });
+
+        await test('Days table refreshes to closed after the wizard finishes', async () => {
+          await clickText('.day-wizard-actions button', 'تم', 'إغلاق النافذة');
+          await waitFor(() => !root.querySelector('.dialog-overlay'), 'إغلاق النافذة');
+          await waitFor(() => {
+            const content = root.getElementById('days-content');
+            return content && content.textContent.indexOf('مُقفل') >= 0;
+          }, 'حالة اليوم بعد الإقفال');
+        });
+
+        await test('Day Report opens from the days table', async () => {
+          const today = appWindow.BeeStore.dates.today();
+          const rows = Array.from(root.querySelectorAll('#days-content tbody tr'));
+          const todayRow = rows.find(tr => tr.querySelector('td') &&
+            tr.querySelector('td').textContent.trim() === today);
+          if (!todayRow) throw new Error('صف اليوم غير موجود: ' + today);
+          const reportBtn = byText(todayRow, 'button', 'تقرير');
+          if (!reportBtn) throw new Error('زر تقرير اليوم غير موجود');
+          reportBtn.click();
+          await waitFor(() => root.querySelector('.day-report'), 'تقرير اليوم');
+          const text = root.querySelector('.dialog').textContent;
+          if (text.indexOf('تقرير يوم') < 0) throw new Error('عنوان التقرير غير ظاهر');
+          if (text.indexOf('مطابقة الصندوق') < 0) throw new Error('مطابقة الصندوق غير ظاهرة');
+          if (text.indexOf('بدون جرد') < 0) throw new Error('علامة بدون جرد غير ظاهرة: ' + text.slice(0, 400));
+
+          // Printable HTML must carry the Arabic status and reconciliation
+          // (browser print/PDF preserves shaping).
+          const reportToday = appWindow.BeeStore.dates.today();
+          const reportRes = await appWindow.BeeStore.api.dailyClosings.report(reportToday);
+          if (!reportRes.ok) throw new Error('فشل تحميل التقرير');
+          const settingsRes = await appWindow.BeeStore.api.settings.get();
+          const html = appWindow.BeeStore.print.buildDayReportHtml(
+            reportRes.data, settingsRes.ok ? settingsRes.data : {}, 'A4');
+          if (html.indexOf('بدون جرد') < 0) throw new Error('وسم بدون جرد غير موجود في الطباعة');
+          if (html.indexOf('المتوقع في الصندوق') < 0) throw new Error('مطابقة الصندوق غير موجودة في الطباعة');
+          if (html.indexOf('dir="rtl"') < 0) throw new Error('اتجاه RTL غير موجود في الطباعة');
+
+          root.querySelector('.dialog-header .btn-close').click();
+          await waitFor(() => !root.querySelector('.dialog-overlay'), 'إغلاق التقرير');
+        });
+
+        await test('Day mode scopes the page and marks the closed day', async () => {
+          const today = appWindow.BeeStore.dates.today();
+          await route('/days?d=' + today, 'جدول الأيام');
+          const bar = root.querySelector('.period-scope-bar');
+          if (!bar) throw new Error('شريط النطاق غير ظاهر');
+          if ((bar.textContent || '').indexOf('يوم ' + today) < 0) {
+            throw new Error('وضع اليوم غير ظاهر: ' + bar.textContent);
+          }
+          if ((bar.textContent || '').indexOf('مُقفل') < 0) {
+            throw new Error('شارة اليوم المُقفل غير ظاهرة');
+          }
+          const month = today.slice(0, 7);
+          await route('/reports?m=' + month, 'تقرير الشهر');
+        });
+
+        await test('Month Review shows the days table and cash differences', async () => {
+          await waitFor(() => (root.getElementById('reports-content').textContent || '').indexOf('أيام الشهر') >= 0,
+            'جدول أيام الشهر');
+          const text = root.getElementById('reports-content').textContent;
+          if (text.indexOf('فروقات الصندوق') < 0) throw new Error('بند فروقات الصندوق غير ظاهر');
+          if (text.indexOf('نشاط لم يُقفل') < 0) throw new Error('عدّاد الأيام غير ظاهر');
+        });
+
+        await test('Settings payments tab exposes cash-drawer controls', async () => {
+          await route('/settings', 'الإعدادات');
+          await clickText('.tabs .tab', 'طرق الدفع', 'تبويب طرق الدفع');
+          await waitFor(() => (root.getElementById('settings-content').textContent || '').indexOf('فئات النقد') >= 0,
+            'إعدادات الإغلاق');
+          const text = root.getElementById('settings-content').textContent;
+          if (text.indexOf('حساب الصندوق') < 0) throw new Error('حساب الصندوق غير ظاهر');
+          if (text.indexOf('الحساب البنكي الافتراضي') < 0) throw new Error('البنك الافتراضي غير ظاهر');
+        });
+
+        await test('Accounts closing tab delegates to the new wizard', async () => {
+          await route('/accounts', 'الحسابات');
+          await clickText('.tabs .tab', 'إغلاق اليوم', 'تبويب إغلاق اليوم');
+          await waitFor(() => (root.getElementById('accounts-content').textContent || '').indexOf('فتح معالج الإغلاق') >= 0,
+            'زر المعالج');
+        });
+
+        await test('No uncaught page errors during the flow', async () => {
+          if (pageErrors.length > 0) throw new Error(pageErrors.slice(0, 5).join(' | '));
+        });
+
+        results.appendChild(Object.assign(document.createElement('h2'), {
+          textContent: 'Results: ' + passed + ' passed, ' + failed + ' failed',
+        }));
+      } catch (e) {
+        report(false, 'fatal', (e && e.message) || String(e));
+      } finally {
+        window.__testResults = { passed, failed, errors: pageErrors.slice() };
+      }
+    })();
+  </script>
+</body>
+</html>

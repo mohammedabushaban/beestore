@@ -14,12 +14,13 @@
   // returned transiently in `days` (never persisted) so an as-of date inside
   // the current month can be computed from that month's documents without
   // scanning the whole history.
-  const VERSION = 2;
+  const VERSION = 3;
 
   const COLLECTIONS = [
     'accounts', 'sales', 'purchases', 'customerPayments', 'supplierPayments',
     'expenses', 'employeeAdvances', 'ownerTransactions', 'transfers',
     'salesReturns', 'purchaseReturns', 'payroll', 'stockMovements',
+    'cashAdjustments',
   ];
 
   function empty() {
@@ -51,6 +52,7 @@
         tax: 0,
         expensesTotal: 0,
         spreadExpenses: 0,
+        cashDifference: 0,
         expensesByCategory: {},
       },
     };
@@ -274,6 +276,8 @@
         account('advance', doc.accountId, -(Number(doc.amountMinor) || 0));
         break;
       case 'ownerTransactions': {
+        // Daily-closing records are soft-voided when a day is reopened.
+        if (doc.voided) break;
         const amount = Number(doc.amountMinor) || 0;
         const signed = doc.type === 'capital_in' ? amount : -amount;
         account('owner', doc.accountId, signed);
@@ -284,9 +288,20 @@
         break;
       }
       case 'transfers':
+        if (doc.voided) break;
         account('transfer_out', doc.fromAccountId, -(Number(doc.amountMinor) || 0));
         account('transfer_in', doc.toAccountId, Number(doc.amountMinor) || 0);
         break;
+      case 'cashAdjustments': {
+        // v3-Lite §4.3: a shortage is an expense, a surplus is income. The
+        // account entry and the P&L line have the same signed amount so the
+        // balance snapshot stays balanced.
+        if (doc.voided) break;
+        const amount = Number(doc.amountMinor) || 0;
+        account('cash_difference', doc.accountId, amount);
+        if (monthBucket) monthBucket.pnl.cashDifference += amount;
+        break;
+      }
       case 'salesReturns': {
         const amount = Number(doc.refundMinor) || 0;
         if (doc.refundMode === 'cash_refund') {
@@ -350,7 +365,7 @@
     if (bucket.capitalIn || bucket.withdrawals || bucket.openingInventory) return false;
     const pnl = bucket.pnl;
     for (const key of ['netSales', 'cogs', 'salaryExpense', 'stockLosses', 'tax',
-      'expensesTotal', 'spreadExpenses']) {
+      'expensesTotal', 'spreadExpenses', 'cashDifference']) {
       if (pnl[key]) return false;
     }
     return Object.keys(pnl.expensesByCategory).length === 0;
@@ -395,7 +410,7 @@
       applyNumeric(bucket.suppliers, source.suppliers, sign);
       applyNumeric(bucket.pnl.expensesByCategory, source.pnl.expensesByCategory, sign);
       for (const key of ['netSales', 'cogs', 'salaryExpense', 'stockLosses', 'tax',
-        'expensesTotal', 'spreadExpenses']) {
+        'expensesTotal', 'spreadExpenses', 'cashDifference']) {
         bucket.pnl[key] += sign * (Number(source.pnl[key]) || 0);
       }
       bucket.capitalIn += sign * (Number(source.capitalIn) || 0);
@@ -471,7 +486,8 @@
    * mirrors ReportsService.profitAndLoss for a full-month range.
    */
   function pnlRange(summary, fromMonth, toMonth) {
-    let netSales = 0, cogs = 0, salaryExpense = 0, stockLosses = 0, expensesTotal = 0;
+    let netSales = 0, cogs = 0, salaryExpense = 0, stockLosses = 0;
+    let expensesTotal = 0, cashDifference = 0;
     const expensesByCategory = {};
     for (const month of monthKeys(summary)) {
       if (month < fromMonth || month > toMonth) continue;
@@ -481,16 +497,20 @@
       salaryExpense += pnl.salaryExpense || 0;
       stockLosses += pnl.stockLosses || 0;
       expensesTotal += pnl.expensesTotal || 0;
+      cashDifference += pnl.cashDifference || 0;
       for (const key of Object.keys(pnl.expensesByCategory || {})) {
         expensesByCategory[key] = (expensesByCategory[key] || 0) + pnl.expensesByCategory[key];
       }
     }
     const grossProfit = netSales - cogs;
-    const operatingExpenses = expensesTotal + salaryExpense + stockLosses;
+    // Shortage (negative) increases operating expenses; surplus (positive)
+    // reduces them. `cashDifference` keeps its signed form for the report.
+    const operatingExpenses = expensesTotal + salaryExpense + stockLosses - cashDifference;
     return {
       netSales, cogs, grossProfit,
       margin: netSales > 0 ? (grossProfit / netSales * 100).toFixed(1) : '0.0',
-      operatingExpenses, salaryExpense, stockLosses, expensesByCategory,
+      operatingExpenses, salaryExpense, stockLosses, cashDifference,
+      expensesByCategory,
       netProfit: grossProfit - operatingExpenses,
     };
   }

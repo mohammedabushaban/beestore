@@ -42,7 +42,15 @@
      */
     async create(data) {
       return this.repo.transaction(async (tx) => {
-        await BeeStore.periods.assertOpen(tx, data.date || BeeStore.dates.today());
+        const purchaseDate = data.date || BeeStore.dates.today();
+        await BeeStore.periods.assertOpen(tx, purchaseDate);
+        // v3-Lite §4.5: an unpaid purchase and its stock movement are allowed
+        // on a closed day; only the payment/receipt side is day-locked.
+        const paymentDates = new Set();
+        for (const p of (data.payments || [])) {
+          paymentDates.add(p.date || purchaseDate);
+        }
+        for (const d of paymentDates) await BeeStore.periods.assertDayOpen(tx, d);
         const settings = await tx.get('meta', 'settings') || {};
         const number = (settings.purchasePrefix || 'PUR') + '-' + String(await tx.nextCounter('purchase')).padStart(6, '0');
 
@@ -166,6 +174,10 @@
         }
         await BeeStore.periods.assertOpen(tx, p.date);
         await BeeStore.periods.assertOpen(tx, BeeStore.dates.today());
+        // Unpaid purchase voids only move stock; paid ones reverse a payment.
+        for (const pay of (p.payments || [])) {
+          await BeeStore.periods.assertDayOpen(tx, pay.date || p.date);
+        }
 
         for (const line of p.lines) {
           const variant = await tx.get('variants', line.variantId);

@@ -19,13 +19,15 @@
     return (MONTH_NAMES[parts[1]] || parts[1]) + ' ' + parts[0];
   }
 
-  // v2 §3: selection shapes — { mode:'month', month } (default),
-  // { mode:'year', year }, { mode:'custom', from, to }.
+  // v2 §3 + v3-Lite §4.6: selection shapes — { mode:'day', date },
+  // { mode:'month', month } (default), { mode:'year', year },
+  // { mode:'custom', from, to }.
   const YEAR_RE = /^\d{4}$/;
   const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
   function _valid(sel) {
     if (!sel || typeof sel !== 'object') return null;
+    if (sel.mode === 'day' && DATE_RE.test(sel.date)) return { mode: 'day', date: sel.date };
     if (sel.mode === 'year' && YEAR_RE.test(sel.year)) return { mode: 'year', year: sel.year };
     if (sel.mode === 'custom' && DATE_RE.test(sel.from) && DATE_RE.test(sel.to) && sel.from <= sel.to) {
       return { mode: 'custom', from: sel.from, to: sel.to };
@@ -57,11 +59,14 @@
   // Anchor month for month-picking UIs when the selection isn't a month.
   function selMonth() {
     const sel = get();
-    return sel.mode === 'month' ? sel.month : currentMonth();
+    if (sel.mode === 'month') return sel.month;
+    if (sel.mode === 'day') return sel.date.slice(0, 7);
+    return currentMonth();
   }
 
   function label(sel) {
     const s = sel || get();
+    if (s.mode === 'day') return 'يوم ' + s.date;
     if (s.mode === 'year') return 'سنة ' + s.year;
     if (s.mode === 'custom') return s.from + ' ← ' + s.to;
     return monthLabel(s.month);
@@ -75,6 +80,13 @@
   function set(month) {
     if (!MONTH_RE.test(month)) return;
     _store({ mode: 'month', month });
+    renderHeader();
+    _rerender();
+  }
+
+  function setDay(date) {
+    if (!DATE_RE.test(String(date))) return;
+    _store({ mode: 'day', date: String(date) });
     renderHeader();
     _rerender();
   }
@@ -111,6 +123,7 @@
 
   function toQuery(sel) {
     const s = sel || get();
+    if (s.mode === 'day') return 'd=' + s.date;
     if (s.mode === 'year') return 'y=' + s.year;
     if (s.mode === 'custom') return 'from=' + s.from + '&to=' + s.to;
     return 'm=' + s.month;
@@ -128,21 +141,34 @@
 
   function shift(delta) {
     const sel = get();
+    if (sel.mode === 'day') {
+      setDay(BeeStore.dates.addDays(sel.date, delta));
+      return;
+    }
     if (sel.mode !== 'month') return;
     set(BeeStore.dates.addMonths(sel.month, delta));
   }
 
   function getRange() {
     const sel = get();
+    if (sel.mode === 'day') return { from: sel.date, to: sel.date };
     if (sel.mode === 'year') return { from: sel.year + '-01-01', to: sel.year + '-12-31' };
     if (sel.mode === 'custom') return { from: sel.from, to: sel.to };
     return BeeStore.dates.monthRange(sel.month);
   }
 
   async function isClosed(month) {
-    if (!BeeStore.api) return false;
+    if (!BeeStore.api || !MONTH_RE.test(String(month || ''))) return false;
     try {
-      const res = await BeeStore.api.periods.get(month || get().month);
+      const res = await BeeStore.api.periods.get(month);
+      return !!(res.ok && res.data && res.data.status === 'closed');
+    } catch (e) { return false; }
+  }
+
+  async function isDayClosed(date) {
+    if (!BeeStore.api || !DATE_RE.test(String(date || ''))) return false;
+    try {
+      const res = await BeeStore.api.dailyClosings.get(date);
       return !!(res.ok && res.data && res.data.status === 'closed');
     } catch (e) { return false; }
   }
@@ -160,9 +186,9 @@
     return Array.from(out).sort().reverse();
   }
 
-  // v2 §3: default date for new entries — today if today is in the selected
-  // range, otherwise the end of the range (never in the future). Closed
-  // months report blocked:true; the service still enforces.
+  // v2 §3 + v3-Lite §4.6: default date for new entries — today if today is in
+  // the selected range, otherwise the end of the range (never in the future).
+  // Closed months/days report blocked:true; the services still enforce.
   async function defaultDateForNew() {
     const sel = get();
     const today = BeeStore.dates.today();
@@ -173,7 +199,13 @@
     if (await isClosed(month)) {
       return { date, blocked: true, notice: 'شهر ' + monthLabel(month) + ' مُقفل — اختر شهراً مفتوحاً' };
     }
-    const inSel = sel.mode !== 'month' || month === sel.month;
+    if (await isDayClosed(date)) {
+      return { date, blocked: true, notice: 'يوم ' + date + ' مُقفل — أعد فتح اليوم أو سجّل التصحيح بتاريخ اليوم' };
+    }
+    const inSel = (sel.mode === 'day' && date === sel.date) ||
+      (sel.mode === 'month' && month === sel.month) ||
+      (sel.mode === 'year' && date.slice(0, 4) === sel.year) ||
+      (sel.mode === 'custom' && date >= sel.from && date <= sel.to);
     return {
       date,
       blocked: false,
@@ -193,7 +225,7 @@
     return d;
   }
 
-  // "يعرض: <النطاق>" scope label + 🔒 badge for closed months (v2 §3).
+  // "يعرض: <النطاق>" scope label + 🔒 badge for closed days/months (v2 §3).
   async function scopeBar(container, month) {
     const sel = get();
     const m = month || (sel.mode === 'month' ? sel.month : null);
@@ -204,7 +236,9 @@
     ]);
     container.appendChild(bar);
     const lockEl = bar.querySelector('.period-scope-lock');
-    if (m && await isClosed(m)) lockEl.style.display = 'inline';
+    const locked = (sel.mode === 'day' && await isDayClosed(sel.date)) ||
+      (m && await isClosed(m));
+    if (locked) lockEl.style.display = 'inline';
     return bar;
   }
 
@@ -216,14 +250,14 @@
     const sel = get();
     host.innerHTML = '';
 
-    const showArrows = sel.mode === 'month';
+    const showArrows = sel.mode === 'month' || sel.mode === 'day';
     const prevBtn = el('button', {
-      class: 'period-nav-btn', 'aria-label': 'الشهر السابق',
+      class: 'period-nav-btn', 'aria-label': sel.mode === 'day' ? 'اليوم السابق' : 'الشهر السابق',
       style: showArrows ? '' : 'display:none',
       onclick: () => shift(-1),
     }, '▶');
     const nextBtn = el('button', {
-      class: 'period-nav-btn', 'aria-label': 'الشهر التالي',
+      class: 'period-nav-btn', 'aria-label': sel.mode === 'day' ? 'اليوم التالي' : 'الشهر التالي',
       style: showArrows ? '' : 'display:none',
       onclick: () => shift(1),
     }, '◀');
@@ -244,6 +278,10 @@
       isClosed(sel.month).then(closed => {
         if (closed) lockBadge.style.display = 'inline';
       });
+    } else if (sel.mode === 'day') {
+      Promise.all([isDayClosed(sel.date), isClosed(sel.date.slice(0, 7))]).then(([day, month]) => {
+        if (day || month) lockBadge.style.display = 'inline';
+      });
     }
     _fillPanel(panel, host);
   }
@@ -252,6 +290,13 @@
     const { el } = BeeStore.ui;
     const { input } = BeeStore.dialogs;
     panel.innerHTML = '';
+    // v3-Lite §4.6: day mode — every period-scoped page shows just this day.
+    const dayInput = input('date', get().mode === 'day' ? get().date : BeeStore.dates.today());
+    const dayBtn = el('button', {
+      class: 'btn btn-sm btn-secondary',
+      onclick: () => { if (DATE_RE.test(dayInput.value)) { setDay(dayInput.value); _hidePanel(host); } },
+    }, 'يوم واحد');
+    panel.appendChild(el('div', { class: 'period-panel-row' }, [dayInput, dayBtn]));
     const monthInput = input('month', selMonth());
     const goBtn = el('button', {
       class: 'btn btn-sm btn-primary',
@@ -326,9 +371,9 @@
   }
 
   BeeStore.period = {
-    get, set, setYear, setCustom, init, toQuery, shift, getRange,
+    get, set, setDay, setYear, setCustom, init, toQuery, shift, getRange,
     monthLabel, label, selMonth, currentMonth,
-    isClosed, monthsWithData, defaultDateForNew, applyDefaultDate,
+    isClosed, isDayClosed, monthsWithData, defaultDateForNew, applyDefaultDate,
     scopeBar, renderHeader,
   };
   if (typeof module !== 'undefined') module.exports = BeeStore.period;

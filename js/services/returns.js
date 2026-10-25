@@ -50,7 +50,9 @@
      */
     async create(data) {
       const ret = await this.repo.transaction(async (tx) => {
-        await BeeStore.periods.assertOpen(tx, data.date || BeeStore.dates.today());
+        const returnDate = data.date || BeeStore.dates.today();
+        await BeeStore.periods.assertOpen(tx, returnDate);
+        await BeeStore.periods.assertDayOpen(tx, returnDate);
         const sale = await tx.get('sales', data.saleId);
         if (!sale) throw BeeStore.errors.err('NOT_FOUND', 'الفاتورة غير موجودة');
         if (sale.status === 'void') throw BeeStore.errors.err('SALE_VOID', 'لا يمكن إرجاع فاتورة ملغاة');

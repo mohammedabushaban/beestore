@@ -169,6 +169,53 @@
         }, 'حفظ'),
       ]),
     ]));
+
+    // v3-Lite §4.1: cash-drawer/default-bank/denominations settings.
+    const cashAccounts = accounts.filter(a => a.type === 'cash' && a.active !== false);
+    const bankAccounts = accounts.filter(a => a.type === 'bank' && a.active !== false);
+    const drawerOptions = [{ value: '', label: '— تلقائي (أول حساب صندوق) —' }]
+      .concat(cashAccounts.map(a => ({ value: a.id, label: a.name })));
+    const bankOptions = [{ value: '', label: '— بدون افتراضي —' }]
+      .concat(bankAccounts.map(a => ({ value: a.id, label: a.name })));
+    const drawerSelect = select(drawerOptions, s.cashDrawerAccountId || '');
+    const bankSelect = select(bankOptions, s.defaultBankAccountId || '');
+    const denoms = (Array.isArray(s.cashDenominations) && s.cashDenominations.length)
+      ? s.cashDenominations : [200, 100, 50, 20, 10, 5, 2, 1, 0.5, 0.1];
+    const denomInput = input('text', denoms.join(', '));
+
+    container.appendChild(el('div', { class: 'card' }, [
+      el('h3', {}, 'إغلاق اليوم'),
+      el('p', { class: 'form-hint' },
+        'حساب الصندوق هو الحساب الذي تتم مطابقته في إغلاق اليوم. الحساب البنكي الافتراضي يُقترح عند إيداع نقد الإغلاق. فئات النقد تُستخدم في عدّاد الجرد.'),
+      formField('حساب الصندوق', drawerSelect),
+      formField('الحساب البنكي الافتراضي', bankSelect),
+      formField('فئات النقد', denomInput),
+      el('p', { class: 'form-hint' }, 'اكتب الفئات مفصولة بفاصلة، مثال: 200, 100, 50, 20, 10, 5, 2, 1, 0.5, 0.1'),
+      cashAccounts.length === 0
+        ? el('p', { class: 'alert alert-warning' }, 'لا يوجد حساب صندوق. أضف حساباً من صفحة الحسابات أولاً.')
+        : null,
+      el('button', {
+        class: 'btn btn-primary',
+        onclick: async () => {
+          const list = String(denomInput.value || '').split(/[,،]/)
+            .map(v => BeeStore.money.parseDecimal(v.trim()))
+            .filter(v => v > 0);
+          const unique = Array.from(new Set(list.map(v => Math.round(v * 10000) / 10000)))
+            .sort((a, b) => b - a);
+          if (unique.length === 0) {
+            toast('أدخل فئة نقدية واحدة على الأقل', 'error');
+            return;
+          }
+          const saveRes = await BeeStore.api.settings.update({
+            cashDrawerAccountId: drawerSelect.value || null,
+            defaultBankAccountId: bankSelect.value || null,
+            cashDenominations: unique,
+          });
+          if (saveRes.ok) toast('تم الحفظ');
+          else toast(saveRes.error.message, 'error');
+        },
+      }, 'حفظ إعدادات الإغلاق'),
+    ]));
   }
 
   /**

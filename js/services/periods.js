@@ -44,6 +44,66 @@
     }
 
     /**
+     * v3-Lite §4.5 day lock. Must run inside every posting transaction that
+     * creates a sale, return, receipt/payment, cash expense, transfer,
+     * withdrawal or capital movement dated that day.
+     * @param {object} tx active repository transaction
+     * @param {string} date business date YYYY-MM-DD
+     * @returns {Promise<true>}
+     * @throws {BeeError} DAY_CLOSED when that day has a closed record
+     */
+    async assertDayOpen(tx, date) {
+      const d = String(date || BeeStore.dates.today());
+      const rows = await tx.list('dailyClosings',
+        c => c.date === d && c.status === 'closed');
+      if (rows.length > 0) {
+        throw BeeStore.errors.err('DAY_CLOSED',
+          'يوم ' + d + ' مُقفل — أعد فتح اليوم من صفحة الأيام أو سجّل التصحيح بتاريخ اليوم');
+      }
+      return true;
+    }
+
+    /**
+     * Resolves the configured cash-drawer account, falling back to the first
+     * active cash account for installs created before L4.
+     * @param {object} [reader] repo or transaction
+     * @returns {Promise<string|null>} account id
+     */
+    async cashDrawerAccountId(reader) {
+      const r = reader || this.repo;
+      const settings = (await r.get('meta', 'settings')) || {};
+      if (settings.cashDrawerAccountId) return settings.cashDrawerAccountId;
+      const accounts = await r.list('accounts');
+      const cash = accounts.find(a => a.type === 'cash' && a.active !== false) ||
+        accounts.find(a => a.type === 'cash') || accounts[0];
+      return cash ? cash.id : null;
+    }
+
+    /**
+     * Only cash-drawer expenses are blocked by the day lock. Non-cash accrual
+     * and bank expenses may still be recorded on a closed day.
+     * @param {object} tx active transaction
+     * @param {string} date business date
+     * @param {string|null} accountId expense account
+     * @returns {Promise<true>}
+     */
+    async assertCashDayOpen(tx, date, accountId) {
+      const drawer = await this.cashDrawerAccountId(tx);
+      if (drawer && accountId === drawer) return this.assertDayOpen(tx, date);
+      return true;
+    }
+
+    /**
+     * @param {string} date YYYY-MM-DD
+     * @returns {Promise<boolean>} true when the day is closed
+     */
+    async isDayClosed(date) {
+      const rows = await this.repo.list('dailyClosings',
+        c => c.date === date && c.status === 'closed');
+      return rows.length > 0;
+    }
+
+    /**
      * @param {string} month YYYY-MM
      * @returns {Promise<boolean>} true when the month is locked
      */
@@ -97,7 +157,8 @@
       const add = (date) => { if (date && /^\d{4}-\d{2}/.test(date)) months.add(_monthOf(date)); };
       for (const coll of ['sales', 'salesReturns', 'purchases', 'purchaseReturns',
         'customerPayments', 'supplierPayments', 'expenses', 'stockMovements',
-        'ownerTransactions', 'transfers', 'dailyClosings', 'employeeAdvances']) {
+        'ownerTransactions', 'transfers', 'dailyClosings', 'cashAdjustments',
+        'employeeAdvances']) {
         const rows = await tx.list(coll);
         for (const r of rows) add(r.date);
       }
@@ -177,7 +238,7 @@
       if (lastCounted) {
         const elapsed = BeeStore.dates.diffDays(from, lastCounted) + 1;
         const done = await this.repo.list('dailyClosings',
-          d => d.date >= from && d.date <= lastCounted);
+          d => d.date >= from && d.date <= lastCounted && d.status === 'closed');
         missingClosings = Math.max(0, elapsed - done.length);
       }
       push('warning', missingClosings === 0,

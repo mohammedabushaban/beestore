@@ -26,6 +26,8 @@
       const stockMovements = await this.repo.listRange('stockMovements', from, to, m =>
         (m.type === 'adjustment' || m.type === 'stocktake' || m.type === 'sale_return')
       );
+      const cashAdjustments = await this.repo.listRange('cashAdjustments', from, to,
+        a => !a.voided);
 
       let netSales = 0;
       let cogs = 0;
@@ -88,13 +90,17 @@
         }
       }
 
-      const operatingExpenses = singleTotal + salaryExpense + stockLosses;
+      let cashDifference = 0;
+      for (const a of cashAdjustments) cashDifference += Number(a.amountMinor) || 0;
+      // v3-Lite §4.3: shortages increase operating expenses, surpluses reduce
+      // them. The signed line is returned for the Day/Period reports.
+      const operatingExpenses = singleTotal + salaryExpense + stockLosses - cashDifference;
       const netProfit = grossProfit - operatingExpenses;
 
       return {
         from, to,
         netSales, cogs, grossProfit, margin,
-        operatingExpenses, salaryExpense, stockLosses,
+        operatingExpenses, salaryExpense, stockLosses, cashDifference,
         expensesByCategory,
         netProfit,
       };

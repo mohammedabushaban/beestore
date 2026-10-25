@@ -131,7 +131,10 @@
         for (const c of categories) catMap[c.id] = c.name;
         const method = data.method || 'cash';
         const date = data.date || BeeStore.dates.today();
+        const accountId = data.accountId || BeeStore.settings.resolvePaymentAccount(settings, method);
         await BeeStore.periods.assertOpen(tx, date);
+        // v3-Lite §4.5: cash expenses are day-locked; non-cash accruals are not.
+        await BeeStore.periods.assertCashDayOpen(tx, date, accountId);
         // v2 §6.3 spread: one payment covering N months.
         let allocation = { mode: 'single' };
         let month = date.slice(0, 7);
@@ -153,7 +156,7 @@
           categoryName: data.categoryName || (data.categoryId ? (catMap[data.categoryId] || '') : '') || 'أخرى',
           amountMinor,
           method,
-          accountId: data.accountId || BeeStore.settings.resolvePaymentAccount(settings, method),
+          accountId,
           description: data.description || '',
           recurringId: data.recurringId || null,
           allocation,
@@ -180,6 +183,11 @@
         if (e.voided) throw BeeStore.errors.err('ALREADY_VOID', 'المصروف ملغي — لا يمكن تعديله');
         await BeeStore.periods.assertOpen(tx, e.date);
         if (patch.date) await BeeStore.periods.assertOpen(tx, patch.date);
+        await BeeStore.periods.assertCashDayOpen(tx, e.date, e.accountId);
+        if (patch.date || patch.accountId) {
+          await BeeStore.periods.assertCashDayOpen(tx, patch.date || e.date,
+            patch.accountId !== undefined ? patch.accountId : e.accountId);
+        }
         // v2 §6.3: a spread expense can change only while ALL its months open.
         if ((e.allocation || {}).mode === 'spread') {
           await BeeStore.periods.assertMonthsOpen(tx, this.spreadMonths(e));
@@ -211,6 +219,7 @@
           throw BeeStore.errors.err('VALIDATION', 'سبب الإلغاء مطلوب');
         }
         await BeeStore.periods.assertOpen(tx, e.date);
+        await BeeStore.periods.assertCashDayOpen(tx, e.date, e.accountId);
         if ((e.allocation || {}).mode === 'spread') {
           await BeeStore.periods.assertMonthsOpen(tx, this.spreadMonths(e));
         }
@@ -331,8 +340,10 @@
           if (!this._recurringApplies(r, ym)) continue;
           const day = r.dayOfMonth === 'last' ? dim : Math.min(Number(r.dayOfMonth) || 1, dim);
           const date = ym + '-' + String(day).padStart(2, '0');
-          await BeeStore.periods.assertOpen(tx, date);
           const method = r.method || 'cash';
+          const accountId = r.accountId || BeeStore.settings.resolvePaymentAccount(settings, method);
+          await BeeStore.periods.assertOpen(tx, date);
+          await BeeStore.periods.assertCashDayOpen(tx, date, accountId);
           const expense = {
             id: BeeStore.ids.randomId('exp'),
             date,
@@ -341,7 +352,7 @@
             categoryName: (r.categoryId ? catMap[r.categoryId] : '') || r.description || 'دوري',
             amountMinor: r.amountMinor,
             method,
-            accountId: r.accountId || BeeStore.settings.resolvePaymentAccount(settings, method),
+            accountId,
             description: r.description || '',
             recurringId: r.id,
             allocation: { mode: 'single' },

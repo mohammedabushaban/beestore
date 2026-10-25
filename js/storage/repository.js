@@ -8,8 +8,8 @@
     'suppliers', 'purchases', 'purchaseReturns', 'supplierPayments',
     'expenseCategories', 'expenses', 'recurringExpenses',
     'employees', 'payroll', 'employeeAdvances',
-    'ownerTransactions', 'transfers', 'dailyClosings', 'auditLog', 'meta',
-    'periodClosings', 'errorLog',
+    'ownerTransactions', 'transfers', 'dailyClosings', 'cashAdjustments',
+    'auditLog', 'meta', 'periodClosings', 'errorLog',
   ];
 
   // v3-Lite §5: only master data plus recent documents stay in memory. Every
@@ -35,6 +35,7 @@
     ownerTransactions: 'date',
     transfers: 'date',
     dailyClosings: 'date',
+    cashAdjustments: 'date',
     auditLog: 'timestamp',
   };
 
@@ -57,7 +58,8 @@
     employeeAdvances: [['date', 'date'], ['employeeId', 'employeeId'], ['accountId', 'accountId']],
     ownerTransactions: [['date', 'date'], ['accountId', 'accountId']],
     transfers: [['date', 'date'], ['fromAccountId', 'fromAccountId'], ['toAccountId', 'toAccountId']],
-    dailyClosings: [['date', 'date']],
+    dailyClosings: [['date', 'date'], ['status', 'status']],
+    cashAdjustments: [['date', 'date'], ['accountId', 'accountId'], ['closingId', 'closingId']],
     auditLog: [['timestamp', 'timestamp']],
     variants: [['barcode', 'barcode'], ['productId', 'productId']],
     products: [['categoryId', 'categoryId']],

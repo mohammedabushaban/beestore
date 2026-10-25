@@ -90,7 +90,7 @@
       const BeeStore = window.BeeStore;
       await del(DB);
       BeeStore.config.dbName = DB;
-      BeeStore.config.dbVersion = 5;
+      BeeStore.config.dbVersion = 6;
       BeeStore.config.memoryWindowMonths = 2;
       BeeStore.dates.setClock(() => '2026-10-25');
 

@@ -24,6 +24,8 @@
     _selFromQuery(query) {
       try {
         const params = new URLSearchParams(query);
+        const d = params.get('d');
+        if (d && /^\d{4}-\d{2}-\d{2}$/.test(d)) return { mode: 'day', date: d };
         const m = params.get('m');
         if (m && MONTH_RE.test(m)) return { mode: 'month', month: m };
         const y = params.get('y');

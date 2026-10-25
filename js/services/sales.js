@@ -85,7 +85,13 @@
      */
     async create(data) {
       return this.repo.transaction(async (tx) => {
-        await BeeStore.periods.assertOpen(tx, data.date || BeeStore.dates.today());
+        const saleDate = data.date || BeeStore.dates.today();
+        await BeeStore.periods.assertOpen(tx, saleDate);
+        await BeeStore.periods.assertDayOpen(tx, saleDate);
+        // A payment row may be dated differently from its invoice.
+        for (const p of (data.payments || [])) {
+          if (p.date && p.date !== saleDate) await BeeStore.periods.assertDayOpen(tx, p.date);
+        }
         // v2 §12.1.3 double-submit: a clientKey identifies one user intent.
         // A repeated create with the same key returns the original invoice
         // instead of posting twice (checked inside the same transaction).
@@ -311,9 +317,10 @@
         if (s.returnStatus !== 'none') {
           throw BeeStore.errors.err('HAS_RETURNS', 'لا يمكن إلغاء فاتورة لها مرتجعات. قم بإلغاء المرتجعات أولاً');
         }
-        // Voiding a closed-month invoice is forbidden — use a return dated today.
+        // Voiding a closed-month/day invoice is forbidden — use a return dated today.
         await BeeStore.periods.assertOpen(tx, s.date);
         await BeeStore.periods.assertOpen(tx, BeeStore.dates.today());
+        await BeeStore.periods.assertDayOpen(tx, s.date);
 
         for (const line of s.lines) {
           const variant = await tx.get('variants', line.variantId);

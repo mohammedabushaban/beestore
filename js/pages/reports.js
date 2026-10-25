@@ -62,7 +62,10 @@
     async function load() {
       const m = mInput.value;
       if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(m)) { toast('اختر شهراً صحيحاً', 'error'); return; }
-      const res = await BeeStore.api.reports.monthReview(m);
+      const [res, daysRes] = await Promise.all([
+        BeeStore.api.reports.monthReview(m),
+        BeeStore.api.dailyClosings.daysInMonth(m),
+      ]);
       if (!res.ok) { toast(res.error.message, 'error'); return; }
       const d = res.data;
       const k = d.kpis;
@@ -82,6 +85,68 @@
         _stat('متوسط الفاتورة', formatMoney(k.avgInvoice)),
         _stat('الوحدات المباعة', String(k.units)),
       ]));
+
+      // v3-Lite §4.6: days table + closed/unclosed counts + total differences.
+      if (daysRes.ok) {
+        const dd = daysRes.data;
+        const diffLine = dd.totalDifferenceMinor < 0
+          ? 'عجز ' + formatMoney(-dd.totalDifferenceMinor)
+          : (dd.totalDifferenceMinor > 0
+            ? 'زيادة ' + formatMoney(dd.totalDifferenceMinor)
+            : formatMoney(0));
+        const dayRows = dd.days.filter(row => row.activity || row.status === 'closed').map(row => {
+          const status = row.status === 'closed'
+            ? (row.noCount ? 'مُقفل بدون جرد' : 'مُقفل') : 'مفتوح';
+          const diff = row.status === 'closed'
+            ? (row.differenceMinor < 0 ? '−' + formatMoney(-row.differenceMinor)
+              : (row.differenceMinor > 0 ? '+' + formatMoney(row.differenceMinor) : formatMoney(0)))
+            : '—';
+          const tr = el('tr', { style: 'cursor: pointer;' }, [
+            el('td', { style: 'font-weight:700;' }, row.date),
+            el('td', {}, formatMoney(row.salesMinor)),
+            el('td', {}, String(row.invoicesCount)),
+            el('td', {}, formatMoney(row.returnsMinor)),
+            el('td', {}, formatMoney(row.expensesMinor)),
+            el('td', {}, formatMoney(row.netCashMinor)),
+            el('td', {}, status),
+            el('td', {
+              class: row.differenceMinor < 0 ? 'text-danger' : (row.differenceMinor > 0 ? 'cash-over' : ''),
+              style: 'font-weight:700;',
+            }, diff),
+          ]);
+          tr.onclick = () => {
+            if (BeeStore.pages.days && BeeStore.pages.days.openReport) {
+              BeeStore.pages.days.openReport(row.date, load);
+            } else {
+              BeeStore.router.navigate('/days');
+            }
+          };
+          return tr;
+        });
+        out.appendChild(el('div', { class: 'card' }, [
+          el('div', { class: 'day-home-head' }, [
+            el('h4', {}, 'أيام الشهر'),
+            el('button', {
+              class: 'btn btn-sm btn-secondary',
+              onclick: () => BeeStore.router.navigate('/days'),
+            }, 'صفحة الأيام'),
+          ]),
+          el('p', { class: 'form-hint' },
+            'مقفلة: ' + dd.counts.closed + ' · نشاط لم يُقفل: ' + dd.counts.unclosedActive +
+            ' · إجمالي فروقات الصندوق: ' + diffLine),
+          dayRows.length === 0
+            ? el('p', { class: 'empty-state' }, 'لا أيام بها نشاط في هذا الشهر')
+            : el('div', { class: 'table-wrapper' }, el('table', { class: 'data-table' }, [
+              el('thead', {}, el('tr', {}, [
+                el('th', {}, 'اليوم'), el('th', {}, 'المبيعات'), el('th', {}, 'فواتير'),
+                el('th', {}, 'مرتجعات'), el('th', {}, 'مصاريف'), el('th', {}, 'صافي النقد'),
+                el('th', {}, 'الحالة'), el('th', {}, 'الفرق'),
+              ])),
+              el('tbody', {}, dayRows),
+            ])),
+        ]));
+      }
+
       const pct = (v) => (v === null || v === undefined) ? '—' : (v > 0 ? '+' : '') + v + '%';
       const pnlRow = (label, cur, prev, ly, ch) => el('tr', {}, [
         el('td', {}, label), el('td', {}, formatMoney(cur)),
@@ -98,6 +163,7 @@
             pnlRow('صافي المبيعات', d.pnl.current.netSales, d.pnl.previous.netSales, d.pnl.lastYear.netSales, d.pnl.changePct.netSales),
             pnlRow('تكلفة البضاعة', d.pnl.current.cogs, d.pnl.previous.cogs, d.pnl.lastYear.cogs, null),
             pnlRow('المصاريف التشغيلية', d.pnl.current.operatingExpenses, d.pnl.previous.operatingExpenses, d.pnl.lastYear.operatingExpenses, d.pnl.changePct.expenses),
+            pnlRow('  منها فروقات الصندوق', d.pnl.current.cashDifference, d.pnl.previous.cashDifference, d.pnl.lastYear.cashDifference, null),
             pnlRow('صافي الربح', d.pnl.current.netProfit, d.pnl.previous.netProfit, d.pnl.lastYear.netProfit, d.pnl.changePct.netProfit),
           ]),
         ])),
@@ -164,6 +230,15 @@
       el('div', { class: 'stat-title' }, title),
       el('div', { class: 'stat-value' }, value),
     ]);
+  }
+
+  // v3-Lite §4.3: shortage increases operating expenses, surplus decreases
+  // them. Negative cashDifference = عجز, positive = زيادة.
+  function _cashDiffText(v) {
+    const n = Number(v) || 0;
+    if (n < 0) return 'عجز ' + formatMoney(-n);
+    if (n > 0) return 'زيادة ' + formatMoney(n);
+    return formatMoney(0);
   }
 
   // v2 §9.3 Profit ⇄ Cash reconciliation.
@@ -318,6 +393,7 @@
             el('tr', {}, [el('td', {}, 'المصاريف التشغيلية'), el('td', {}, '(' + formatMoney(d.operatingExpenses) + ')')]),
             el('tr', {}, [el('td', {}, '  - الرواتب'), el('td', {}, '(' + formatMoney(d.salaryExpense) + ')')]),
             el('tr', {}, [el('td', {}, '  - خسائر المخزون'), el('td', {}, '(' + formatMoney(d.stockLosses) + ')')]),
+            el('tr', {}, [el('td', {}, '  - فروقات الصندوق (عجز/زيادة)'), el('td', {}, _cashDiffText(d.cashDifference))]),
             el('tr', { class: 'total-row' }, [el('td', {}, 'صافي الربح'), el('td', {}, formatMoney(d.netProfit))]),
           ]),
         ]),

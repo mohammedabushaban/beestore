@@ -110,7 +110,7 @@
       const names = [
         'sales', 'customerPayments', 'supplierPayments', 'purchases', 'expenses',
         'employeeAdvances', 'ownerTransactions', 'transfers', 'salesReturns',
-        'purchaseReturns',
+        'purchaseReturns', 'cashAdjustments',
       ];
       const totals = { accounts: {}, customers: {}, suppliers: {}, tax: 0 };
       const add = (target, source) => {
@@ -217,6 +217,7 @@
       }
       const ownerTx = await fetch('ownerTransactions');
       for (const t of ownerTx) {
+        if (t.voided) continue;
         if (t.accountId === accountId) {
           if (range && t.date < range.from) continue;
           if (range && t.date > range.to) continue;
@@ -225,6 +226,7 @@
       }
       const transfers = await fetch('transfers');
       for (const t of transfers) {
+        if (t.voided) continue;
         if (t.fromAccountId === accountId) {
           if (range && t.date < range.from) continue;
           if (range && t.date > range.to) continue;
@@ -251,6 +253,20 @@
           if (range && r.date > range.to) continue;
           movements.push({ date: r.date, amountMinor: r.totalMinor, type: 'purchase_return_refund', refId: r.id, refNumber: r.number, description: 'استرداد مرتجع مشتريات ' + r.number });
         }
+      }
+      const adjustments = await fetch('cashAdjustments');
+      for (const a of adjustments) {
+        if (a.voided) continue;
+        if (a.accountId !== accountId) continue;
+        if (range && a.date < range.from) continue;
+        if (range && a.date > range.to) continue;
+        movements.push({
+          date: a.date,
+          amountMinor: a.amountMinor,
+          type: 'cash_difference',
+          refId: a.id,
+          description: a.amountMinor < 0 ? 'نقص في الصندوق' : 'زيادة في الصندوق',
+        });
       }
       movements.sort((a, b) => a.date.localeCompare(b.date));
       let running = 0;

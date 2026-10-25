@@ -77,6 +77,26 @@ test('V2 month review is internally consistent', async () => {
   assert.strictEqual(locked.closed, true);
 });
 
+// L2 §5: the materialized whole-month P&L must equal the direct scan.
+test('L2 monthly summary P&L matches direct computation', async () => {
+  const api = await freshApi();
+  await buildScenario(api);
+  for (const month of ['2026-09', '2026-10', '2026-11', '2026-12', '2027-01']) {
+    const range = BeeStore.dates.monthRange(month);
+    const fast = (await api.reports.profitAndLoss(range.from, range.to)).data;
+    const direct = (await api.reports.profitAndLoss(range.from, range.to, { legacy: true })).data;
+    assert.deepStrictEqual(fast, direct, 'P&L mismatch in ' + month);
+  }
+  // Multi-month whole ranges sum the same buckets.
+  const multi = (await api.reports.profitAndLoss('2026-10-01', '2026-12-31')).data;
+  const multiDirect = (await api.reports.profitAndLoss('2026-10-01', '2026-12-31', { legacy: true })).data;
+  assert.deepStrictEqual(multi, multiDirect, 'multi-month P&L mismatch');
+  // An arbitrary partial range must still use the direct scan.
+  const partial = (await api.reports.profitAndLoss('2026-10-05', '2026-10-10')).data;
+  assert.strictEqual(partial.netSales, 110000);
+  assert.strictEqual(partial.netProfit, 15000);
+});
+
 // v2 §9.3 + §13.1.8: reconciliation equals actual cash change.
 test('V2 profit-cash reconciliation ties out', async () => {
   const api = await freshApi();

@@ -13,14 +13,18 @@
      * @returns {Promise<object[]>} returns sorted newest-first
      */
     async list(filters) {
-      let returns = await this.repo.list('salesReturns');
-      if (filters) {
-        if (filters.from) returns = returns.filter(r => r.date >= filters.from);
-        if (filters.to) returns = returns.filter(r => r.date <= filters.to);
-      }
-      const sales = await this.repo.list('sales');
-      const saleMap = new Map(sales.map(s => [s.id, s]));
+      const from = filters && filters.from;
+      const to = filters && filters.to;
+      const returns = (from || to)
+        ? await this.repo.listRange('salesReturns', from, to)
+        : await this.repo.list('salesReturns');
+      // Only the small set of referenced sales is fetched (lazily for months
+      // older than the memory window) instead of loading every invoice.
+      const saleMap = new Map();
       for (const r of returns) {
+        if (!saleMap.has(r.saleId)) {
+          saleMap.set(r.saleId, await this.repo.get('sales', r.saleId));
+        }
         const sale = saleMap.get(r.saleId);
         r.saleNumber = sale ? sale.number : '';
         r.customerName = sale ? (sale.customerName || '') : '';

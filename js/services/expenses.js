@@ -105,11 +105,13 @@
      * @returns {Promise<Array>} matching expenses
      */
     async list(filters) {
-      let expenses = await this.repo.list('expenses');
-      if (filters) {
-        if (filters.from) expenses = expenses.filter(e => e.date >= filters.from);
-        if (filters.to) expenses = expenses.filter(e => e.date <= filters.to);
-        if (filters.categoryId) expenses = expenses.filter(e => e.categoryId === filters.categoryId);
+      const from = filters && filters.from;
+      const to = filters && filters.to;
+      let expenses = (from || to)
+        ? await this.repo.listRange('expenses', from, to)
+        : await this.repo.list('expenses');
+      if (filters && filters.categoryId) {
+        expenses = expenses.filter(e => e.categoryId === filters.categoryId);
       }
       if (!filters || !filters.includeVoided) expenses = expenses.filter(e => !e.voided);
       expenses.sort((a, b) => b.date.localeCompare(a.date));

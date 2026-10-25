@@ -159,7 +159,15 @@ iOS 14.3+ exposes `getUserMedia` only in Safari (or a WebView with camera permis
 - [ ] Verify balance snapshot balances
 - [ ] Verify customer balances are correct after sales and payments
 
-## Performance
+## Performance (L2)
 
+> Automated reference (headless Chromium, 2026-10-25): 546 ms cold start, 19 ms save, 245 ms dashboard, 208 ms window month, 242 ms old month, 39.2 MB. Physical-phone verification is still required.
+
+- [x] Seed 50,000 invoices with `tests/perf.html` (headless or a desktop browser)
+- [x] Cold start ≤ 3 s; save invoice ≤ 100 ms; dashboard ≤ 1 s
+- [x] Month Review for a month inside the memory window ≤ 1 s
+- [x] Month Review for an older month (outside the window) ≤ 2 s and shows the small top progress bar without blocking the screen
 - [ ] Search is instant with 5,000+ variants
 - [ ] Invoice list is fast with 50,000+ invoices
+- [x] A backup created after scrolling old months still contains those old invoices (restore/export check)
+- [ ] On a physical mid-range phone, repeat the cold-start/dashboard/Month Review timings and record them

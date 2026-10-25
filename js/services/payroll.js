@@ -51,9 +51,11 @@
      * @returns {Promise<Array>} matching payroll records
      */
     async list(filters) {
-      let payroll = await this.repo.list('payroll');
+      const month = filters && filters.month;
+      let payroll = month
+        ? await this.repo.listRange('payroll', month, month)
+        : await this.repo.list('payroll');
       if (filters) {
-        if (filters.month) payroll = payroll.filter(p => p.month === filters.month);
         if (filters.employeeId) payroll = payroll.filter(p => p.employeeId === filters.employeeId);
         if (filters.status) payroll = payroll.filter(p => p.status === filters.status);
       }

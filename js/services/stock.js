@@ -143,16 +143,13 @@
     // v2 §8: inventory at cost as of a date = Σ (last balanceAfter ≤ date
     // × its avgCostAfterMinor) per variant.
     async valueAsOf(date) {
-      const movements = await this.repo.list('stockMovements', m => m.date <= date);
-      const last = {};
-      for (const m of movements) {
-        if (!m.variantId) continue;
-        const prev = last[m.variantId];
-        if (!prev || String(m.date) > String(prev.date) ||
-          (m.date === prev.date && String(m.createdAt || '') >= String(prev.createdAt || ''))) {
-          last[m.variantId] = m;
-        }
-      }
+      // L2 §5: valuation needs only the LAST movement per variant before the
+      // date, not every movement. The compound [variantId, date] index answers
+      // that with one backwards cursor per variant.
+      const variants = await this.repo.list('variants');
+      const last = await this.repo.lastManyByIndex(
+        'stockMovements', 'variantDate', 'variantId',
+        variants.map(v => v.id), 'date', date);
       let totalCost = 0;
       const lines = [];
       for (const vid of Object.keys(last)) {

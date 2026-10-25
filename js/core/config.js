@@ -3,7 +3,9 @@
   const BeeStore = root.BeeStore || (root.BeeStore = {});
   BeeStore.config = {
     dbName: 'beestore-db',
-    dbVersion: 3,
+    dbVersion: 5,
+    // L2 §5: keep the current month plus this many previous months in memory.
+    memoryWindowMonths: 2,
     fileName: 'db.json',
     backupDir: 'backups',
     backupPrefix: 'db-',

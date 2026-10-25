@@ -13,11 +13,13 @@
      * @returns {Promise<object[]>} purchases sorted newest-first
      */
     async list(filters) {
-      let purchases = await this.repo.list('purchases');
-      if (filters) {
-        if (filters.from) purchases = purchases.filter(p => p.date >= filters.from);
-        if (filters.to) purchases = purchases.filter(p => p.date <= filters.to);
-        if (filters.supplierId) purchases = purchases.filter(p => p.supplierId === filters.supplierId);
+      const from = filters && filters.from;
+      const to = filters && filters.to;
+      let purchases = (from || to)
+        ? await this.repo.listRange('purchases', from, to)
+        : await this.repo.list('purchases');
+      if (filters && filters.supplierId) {
+        purchases = purchases.filter(p => p.supplierId === filters.supplierId);
       }
       purchases.sort((a, b) => (b.date + b.number).localeCompare(a.date + a.number));
       return purchases;

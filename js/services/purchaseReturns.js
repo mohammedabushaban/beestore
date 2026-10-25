@@ -21,11 +21,11 @@
      * @returns {Promise<object[]>} returns sorted newest-first
      */
     async list(filters) {
-      let rows = await this.repo.list('purchaseReturns');
-      if (filters) {
-        if (filters.from) rows = rows.filter(r => r.date >= filters.from);
-        if (filters.to) rows = rows.filter(r => r.date <= filters.to);
-      }
+      const from = filters && filters.from;
+      const to = filters && filters.to;
+      const rows = (from || to)
+        ? await this.repo.listRange('purchaseReturns', from, to)
+        : await this.repo.list('purchaseReturns');
       rows.sort((a, b) => (b.date + b.number).localeCompare(a.date + a.number));
       return rows;
     }

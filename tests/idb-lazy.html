@@ -1,0 +1,413 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="UTF-8">
+  <title>BeeStore L2 IndexedDB lazy-loading tests</title>
+  <style>
+    body { font-family: monospace; padding: 20px; }
+    .pass { color: green; }
+    .fail { color: red; }
+  </style>
+</head>
+<body>
+  <h1>BeeStore L2 IndexedDB tests</h1>
+  <div id="results"></div>
+  <script src="../js/core/namespace.js"></script>
+  <script src="../js/core/config.js"></script>
+  <script src="../js/core/money.js"></script>
+  <script src="../js/core/dates.js"></script>
+  <script src="../js/core/ids.js"></script>
+  <script src="../js/core/validate.js"></script>
+  <script src="../js/core/errors.js"></script>
+  <script src="../js/storage/repository.js"></script>
+  <script src="../js/storage/summary.js"></script>
+  <script src="../js/storage/idbRepository.js"></script>
+  <script>
+    const results = document.getElementById('results');
+    const failures = [];
+    let passed = 0;
+
+    async function test(name, fn) {
+      try {
+        await fn();
+        results.innerHTML += '<div class="pass">✓ ' + name + '</div>';
+        passed++;
+      } catch (e) {
+        const message = name + ': ' + (e && e.message ? e.message : e);
+        results.innerHTML += '<div class="fail">✗ ' + message + '</div>';
+        failures.push(message);
+      }
+    }
+
+    function assert(cond, msg) {
+      if (!cond) throw new Error(msg || 'Assertion failed');
+    }
+
+    function eq(actual, expected, msg) {
+      if (actual !== expected) {
+        throw new Error((msg || 'not equal') + ': expected ' + JSON.stringify(expected) +
+          ', got ' + JSON.stringify(actual));
+      }
+    }
+
+    function del(name) {
+      return new Promise((resolve) => {
+        const req = indexedDB.deleteDatabase(name);
+        req.onsuccess = () => resolve();
+        req.onerror = () => resolve();
+        req.onblocked = () => resolve();
+      });
+    }
+
+    function rawOpen(name, version, setup) {
+      return new Promise((resolve, reject) => {
+        const req = indexedDB.open(name, version);
+        req.onupgradeneeded = (e) => {
+          const db = e.target.result;
+          if (setup) setup(db, e.target.transaction);
+        };
+        req.onsuccess = () => resolve(req.result);
+        req.onerror = () => reject(req.error);
+      });
+    }
+
+    function rawPut(db, store, doc) {
+      return new Promise((resolve, reject) => {
+        const tx = db.transaction(store, 'readwrite');
+        tx.objectStore(store).put(doc);
+        tx.oncomplete = () => resolve();
+        tx.onerror = () => reject(tx.error);
+      });
+    }
+
+    async function run() {
+      const BeeStore = window.BeeStore;
+      BeeStore.dates.setClock(() => '2026-10-25');
+      const DB = 'beestore-lazy-test';
+      const UPGRADE_DB = 'beestore-lazy-upgrade-test';
+
+      await del(DB);
+      await del(UPGRADE_DB);
+      BeeStore.config.dbName = DB;
+      BeeStore.config.dbVersion = 5;
+
+      const sales = [
+        { id: 'sale_jul', date: '2026-07-20', number: 'INV-1', status: 'paid', totalMinor: 100, dueMinor: 0, clientKey: 'key-jul' },
+        { id: 'sale_aug', date: '2026-08-01', number: 'INV-2', status: 'paid', totalMinor: 200, dueMinor: 0, clientKey: 'key-aug' },
+        { id: 'sale_sep', date: '2026-09-30', number: 'INV-3', status: 'paid', totalMinor: 300, dueMinor: 0, clientKey: 'key-sep' },
+        { id: 'sale_oct', date: '2026-10-25', number: 'INV-4', status: 'paid', totalMinor: 400, dueMinor: 0, clientKey: 'key-oct' },
+      ];
+
+      let repo = new BeeStore.IdbRepository();
+      await repo.open();
+
+      await test('fresh database opens on dbVersion 5 with date/field indexes', async () => {
+        assert(repo.opened, 'repository not opened');
+        eq(repo.db.version, 5, 'IndexedDB version');
+        const stores = repo.db.objectStoreNames;
+        assert(stores.contains('sales'), 'sales store missing');
+        const tx = repo.db.transaction(['sales', 'stockMovements'], 'readonly');
+        const store = tx.objectStore('sales');
+        assert(store.indexNames.contains('date'), 'sales.date index missing');
+        assert(store.indexNames.contains('clientKey'), 'sales.clientKey index missing');
+        assert(store.indexNames.contains('customerId'), 'sales.customerId index missing');
+        const movements = tx.objectStore('stockMovements');
+        assert(movements.indexNames.contains('variantDate'), 'variantDate compound index missing');
+      });
+
+      await repo.transaction(async (tx) => {
+        for (const s of sales) tx.put('sales', s);
+        tx.put('payroll', { id: 'pay_jul', month: '2026-07', baseMinor: 7000 });
+        tx.put('payroll', { id: 'pay_oct', month: '2026-10', baseMinor: 10000 });
+        tx.put('auditLog', { id: 'aud_old', timestamp: '2026-07-01T10:00:00.000Z', action: 'old' });
+        tx.put('auditLog', { id: 'aud_new', timestamp: '2026-10-01T10:00:00.000Z', action: 'new' });
+        tx.put('products', { id: 'prod_1', name: 'P', defaultCostMinor: 100, defaultPriceMinor: 200 });
+        // Stock history for two variants across lazy and window months.
+        tx.put('stockMovements', { id: 'mv_jul', variantId: 'v1', date: '2026-07-10', balanceAfter: 4, avgCostAfterMinor: 100, createdAt: '2026-07-10T09:00:00.000Z' });
+        tx.put('stockMovements', { id: 'mv_sep_a', variantId: 'v1', date: '2026-09-10', balanceAfter: 6, avgCostAfterMinor: 110, createdAt: '2026-09-10T09:00:00.000Z' });
+        tx.put('stockMovements', { id: 'mv_sep_b', variantId: 'v1', date: '2026-09-10', balanceAfter: 7, avgCostAfterMinor: 120, createdAt: '2026-09-10T10:00:00.000Z' });
+        tx.put('stockMovements', { id: 'mv_oct', variantId: 'v1', date: '2026-10-10', balanceAfter: 5, avgCostAfterMinor: 130, createdAt: '2026-10-10T09:00:00.000Z' });
+        tx.put('stockMovements', { id: 'mv_old', variantId: 'v2', date: '2026-07-15', balanceAfter: 2, avgCostAfterMinor: 90, createdAt: '2026-07-15T09:00:00.000Z' });
+      });
+      // Staged inserts from a transaction are written to both memory and IDB.
+      eq(repo.data.sales.size, 4, 'all writes visible in the writing session');
+
+      // Simulate a cold start.
+      repo.db.close();
+      repo.opened = false;
+      const repo2 = new BeeStore.IdbRepository();
+      await repo2.open();
+      repo = repo2;
+
+      const windowStart = BeeStore.storagePolicy.windowBounds('2026-10-25', 2);
+      await test('cold start keeps only master data + the memory window', async () => {
+        eq(windowStart.startDate, '2026-08-01', 'window start');
+        assert(repo.data.sales.has('sale_aug'), 'August should be in memory');
+        assert(repo.data.sales.has('sale_sep'), 'September should be in memory');
+        assert(repo.data.sales.has('sale_oct'), 'October should be in memory');
+        assert(!repo.data.sales.has('sale_jul'), 'July must be lazy');
+        eq(repo.data.sales.size, 3, 'in-memory sales count');
+        assert(repo.data.products.has('prod_1'), 'master data must stay in memory');
+        eq(repo.data.payroll.size, 1, 'only the October payroll row is in memory');
+        assert(repo.data.payroll.has('pay_oct'), 'October payroll missing');
+        assert(!repo.data.payroll.has('pay_jul'), 'July payroll must be lazy (month field)');
+        eq(repo.data.auditLog.size, 1, 'only the recent audit row is in memory');
+      });
+
+      await test('list() still returns the complete collection', async () => {
+        const rows = await repo.list('sales');
+        eq(rows.length, 4, 'complete sales list');
+        assert(rows.some(s => s.id === 'sale_jul'), 'old sale missing from list');
+      });
+
+      await test('get() lazily reads an old document and caches it', async () => {
+        eq(repo._cache.size, 0, 'cache starts empty');
+        const doc = await repo.get('sales', 'sale_jul');
+        assert(doc && doc.id === 'sale_jul', 'old sale not read');
+        eq(repo._cache.size, 1, 'old sale cached');
+        const again = await repo.get('sales', 'sale_jul');
+        eq(again.totalMinor, 100, 'cached sale value');
+      });
+
+      await test('count() counts IndexedDB, not memory', async () => {
+        eq(await repo.count('sales'), 4, 'sales count');
+        eq(await repo.count('products'), 1, 'products count');
+      });
+
+      await test('query() uses the IndexedDB index for old docs', async () => {
+        const rows = await repo.query('sales', 'clientKey', 'key-jul');
+        eq(rows.length, 1, 'clientKey query');
+        eq(rows[0].id, 'sale_jul', 'clientKey query result');
+        const ranged = await repo.query('sales', 'date', { gte: '2026-09-01', lte: '2026-09-30' });
+        eq(ranged.length, 1, 'date range query');
+        eq(ranged[0].id, 'sale_sep', 'date range query result');
+      });
+
+      await test('listRange() reads window and older months through indexes', async () => {
+        const sep = await repo.listRange('sales', '2026-09-01', '2026-09-30');
+        eq(sep.length, 1, 'September rows');
+        eq(sep[0].id, 'sale_sep', 'September row id');
+        const jul = await repo.listRange('sales', '2026-07-01', '2026-07-31');
+        eq(jul.length, 1, 'July rows (older month)');
+        eq(jul[0].id, 'sale_jul', 'July row id');
+        const pay = await repo.listRange('payroll', '2026-07', '2026-07');
+        eq(pay.length, 1, 'payroll month rows');
+        eq(pay[0].id, 'pay_jul', 'payroll month row id');
+        const aud = await repo.listRange('auditLog', '2026-07-01', '2026-07-31');
+        eq(aud.length, 1, 'audit timestamp rows');
+        const filtered = await repo.listRange('sales', '2026-08-01', '2026-10-31', s => s.totalMinor >= 300);
+        eq(filtered.length, 2, 'predicate filtering');
+      });
+
+      await test('lastManyByIndex() resolves the latest movement per variant', async () => {
+        // Window-only lookup: same-day rows must tie-break on createdAt.
+        const oct = await repo.lastManyByIndex('stockMovements', 'variantDate', 'variantId',
+          ['v1'], 'date', '2026-10-10');
+        eq(oct.v1.id, 'mv_oct', 'latest October movement');
+        // asOf September must ignore October and pick the later same-day row.
+        const sep = await repo.lastManyByIndex('stockMovements', 'variantDate', 'variantId',
+          ['v1'], 'date', '2026-09-30');
+        eq(sep.v1.id, 'mv_sep_b', 'same-day tie-break');
+        // Older (lazy) months are read through the compound index as well.
+        const jul = await repo.lastManyByIndex('stockMovements', 'variantDate', 'variantId',
+          ['v1', 'v2'], 'date', '2026-07-31');
+        eq(jul.v1.id, 'mv_jul', 'lazy v1 movement');
+        eq(jul.v2.id, 'mv_old', 'lazy v2 movement');
+        eq(await repo.count('stockMovements'), 5, 'movements stored');
+      });
+
+      await test('older months show lazy progress, window reads do not', async () => {
+        const events = [];
+        repo.onLazyRead = (state) => events.push(state.active);
+        await repo.listRange('sales', '2026-09-01', '2026-09-30');
+        eq(events.length, 0, 'window month must not show progress');
+        await repo.listRange('sales', '2026-07-01', '2026-07-31');
+        eq(events.length, 2, 'old month start/end events');
+        eq(events[0], true, 'old month starts progress');
+        eq(events[1], false, 'old month clears progress');
+        await repo.list('sales');
+        eq(events.length, 4, 'full lazy list start/end events');
+        eq(events[2], true, 'full list starts progress');
+        eq(events[3], false, 'full list clears progress');
+        await repo.query('sales', 'clientKey', 'key-jul');
+        eq(events.length, 6, 'lazy query start/end events');
+        eq(events[4], true, 'lazy query starts progress');
+        eq(events[5], false, 'lazy query clears progress');
+        repo.onLazyRead = null;
+      });
+
+      await test('exportAll() includes old documents from IndexedDB', async () => {
+        const dump = await repo.exportAll();
+        eq(dump.collections.sales.length, 4, 'exported sales');
+        assert(dump.collections.sales.some(s => s.id === 'sale_jul'), 'old sale missing from export');
+      });
+
+      await test('exportAllStreamed() is byte-identical to exportAll()', async () => {
+        const dump = await repo.exportAll();
+        const streamed = await repo.exportAllStreamed();
+        const text = await streamed.blob.text();
+        eq(text, JSON.stringify(dump), 'streamed JSON mismatch');
+        eq(streamed.counts.sales, 4, 'streamed sales count');
+        eq(streamed.counts.payroll, 2, 'streamed payroll count');
+      });
+
+      await test('transactions can update an old lazy document', async () => {
+        await repo.transaction(async (tx) => {
+          const old = await tx.get('sales', 'sale_jul');
+          eq(old.totalMinor, 100, 'old sale read inside tx');
+          old.totalMinor = 111;
+          tx.put('sales', old);
+          const inTx = await tx.get('sales', 'sale_jul');
+          eq(inTx.totalMinor, 111, 'staged update visible in tx');
+        });
+        eq(repo.data.sales.get('sale_jul').totalMinor, 111, 'updated old doc visible in memory');
+        const jul = await repo.listRange('sales', '2026-07-01', '2026-07-31');
+        eq(jul[0].totalMinor, 111, 'update persisted to IndexedDB');
+      });
+
+      await test('tx.query() sees staged updates without duplicates', async () => {
+        await repo.transaction(async (tx) => {
+          const old = await tx.get('sales', 'sale_jul');
+          old.clientKey = 'key-jul-renamed';
+          tx.put('sales', old);
+          const renamed = await tx.query('sales', 'clientKey', 'key-jul-renamed');
+          eq(renamed.length, 1, 'renamed key result count');
+          const stale = await tx.query('sales', 'clientKey', 'key-jul');
+          eq(stale.length, 0, 'old index key must not return the stale doc');
+        });
+        eq((await repo.query('sales', 'clientKey', 'key-jul')).length, 0, 'stale key persisted');
+        eq((await repo.query('sales', 'clientKey', 'key-jul-renamed')).length, 1, 'renamed key persisted');
+      });
+
+      await test('materialized summary updates with every transaction', async () => {
+        const check = async () => {
+          const dump = await repo.exportAll();
+          const expected = BeeStore.summary.compute(dump.collections);
+          const actual = await repo.getSummary();
+          eq(actual.receivablesMinor, expected.receivablesMinor, 'receivables');
+          eq(actual.payablesMinor, expected.payablesMinor, 'payables');
+          const keys = new Set(Object.keys(actual.accountBalances)
+            .concat(Object.keys(expected.accountBalances)));
+          for (const key of keys) {
+            eq(actual.accountBalances[key] || 0, expected.accountBalances[key] || 0, 'account ' + key);
+          }
+          const sortInst = (rows) => rows.slice().sort((a, b) =>
+            (a.saleId + a.dueDate).localeCompare(b.saleId + b.dueDate));
+          eq(JSON.stringify(sortInst(actual.installments)), JSON.stringify(sortInst(expected.installments)), 'installments');
+        };
+        await check();
+
+        await repo.transaction(async (tx) => {
+          tx.put('accounts', { id: 'acc_test', name: 'Cash', openingBalanceMinor: 100 });
+          tx.put('customers', { id: 'cus_test', name: 'C' });
+          tx.put('sales', {
+            id: 'sale_inst', date: '2026-09-15', number: 'INV-9', status: 'partial',
+            customerId: 'cus_test', totalMinor: 500, dueMinor: 500,
+            payments: [{ accountId: 'acc_test', amountMinor: 200 }],
+            installmentPlan: { schedule: [
+              { dueDate: '2026-09-20', amountMinor: 500, paidMinor: 0, status: 'pending' },
+            ] },
+          });
+        });
+        let s = await repo.getSummary();
+        eq(s.receivablesMinor, 500, 'new sale receivable');
+        eq(s.accountBalances.acc_test, 300, 'opening + payment');
+        eq(s.installments.length, 1, 'installment captured');
+        await check();
+
+        await repo.transaction(async (tx) => {
+          const sale = await tx.get('sales', 'sale_inst');
+          sale.dueMinor = 250;
+          sale.payments.push({ accountId: 'acc_test', amountMinor: 100 });
+          sale.installmentPlan.schedule[0].paidMinor = 250;
+          sale.installmentPlan.schedule[0].status = 'paid';
+          tx.put('sales', sale);
+          tx.put('expenses', { id: 'exp_test', accountId: 'acc_test', amountMinor: 50 });
+        });
+        s = await repo.getSummary();
+        eq(s.receivablesMinor, 250, 'edited sale receivable');
+        eq(s.accountBalances.acc_test, 350, 'payment - expense');
+        eq(s.installments.length, 0, 'paid installment removed');
+        await check();
+
+        await repo.transaction(async (tx) => {
+          const sale = await tx.get('sales', 'sale_inst');
+          sale.status = 'void';
+          tx.put('sales', sale);
+        });
+        s = await repo.getSummary();
+        eq(s.receivablesMinor, 0, 'void sale removed');
+        eq(s.accountBalances.acc_test, 50, 'void sale payments removed, expense kept');
+        await check();
+      });
+
+      await test('importAll() persists everything then enforces the window', async () => {
+        const dump = await repo.exportAll();
+        const extra = { id: 'sale_jun', date: '2026-06-15', number: 'INV-0', status: 'paid', totalMinor: 50, dueMinor: 0 };
+        dump.collections.sales.push(extra);
+        dump.meta.summary.receivablesMinor = 999999;
+        await repo.importAll(JSON.parse(JSON.stringify(dump)));
+        eq(await repo.count('sales'), 6, 'imported count');
+        assert(!repo.data.sales.has('sale_jun'), 'old imported sale must be lazy');
+        const doc = await repo.get('sales', 'sale_jun');
+        assert(doc && doc.totalMinor === 50, 'old imported sale readable');
+        const restored = await repo.getSummary();
+        const expected = BeeStore.summary.compute(dump.collections);
+        eq(restored.receivablesMinor, expected.receivablesMinor, 'restored summary is rebuilt');
+        assert(restored.receivablesMinor !== 999999, 'tampered summary must not survive import');
+        const dump2 = await repo.exportAll();
+        eq(dump2.collections.sales.length, 6, 'import/export roundtrip');
+      });
+
+      await test('clearAll() empties IndexedDB', async () => {
+        await repo.clearAll();
+        eq(await repo.count('sales'), 0, 'sales after clear');
+        eq((await repo.list('sales')).length, 0, 'list after clear');
+      });
+
+      repo.db.close();
+      await del(DB);
+
+      // Upgrade path: a v3 database with rows must gain indexes on open.
+      const raw = await rawOpen(UPGRADE_DB, 3, (db) => {
+        const store = db.createObjectStore('sales', { keyPath: 'id' });
+        db.createObjectStore('products', { keyPath: 'id' });
+        db.createObjectStore('meta', { keyPath: 'id' });
+      });
+      await rawPut(raw, 'sales', { id: 'old_sale', date: '2026-09-10', number: 'OLD-1', status: 'paid', totalMinor: 1, dueMinor: 0 });
+      raw.close();
+
+      BeeStore.config.dbName = UPGRADE_DB;
+      const upgraded = new BeeStore.IdbRepository();
+      await upgraded.open();
+
+      await test('v3 → v5 upgrade adds indexes without losing rows', async () => {
+        eq(upgraded.db.version, 5, 'upgraded IndexedDB version');
+        const tx = upgraded.db.transaction(['sales', 'stockMovements'], 'readonly');
+        const store = tx.objectStore('sales');
+        assert(store.indexNames.contains('date'), 'date index missing after upgrade');
+        assert(store.indexNames.contains('clientKey'), 'clientKey index missing after upgrade');
+        assert(tx.objectStore('stockMovements').indexNames.contains('variantDate'),
+          'variantDate index missing after upgrade');
+        const rows = await upgraded.list('sales');
+        eq(rows.length, 1, 'row survived upgrade');
+        eq(rows[0].id, 'old_sale', 'row id after upgrade');
+        const ranged = await upgraded.listRange('sales', '2026-09-01', '2026-09-30');
+        eq(ranged.length, 1, 'range query after upgrade');
+      });
+
+      upgraded.db.close();
+      await del(UPGRADE_DB);
+
+      results.innerHTML += '<h2 id="summary">Results: ' + passed + ' passed, ' +
+        failures.length + ' failed</h2>';
+      window.__testResults = { passed, failed: failures.length, failures };
+    }
+
+    run().catch(e => {
+      results.innerHTML += '<div class="fail">Fatal: ' + e.message + '</div>';
+      window.__testResults = { passed, failed: failures.length + 1, failures: failures.concat('fatal: ' + e.message) };
+    });
+  </script>
+</body>
+</html>

@@ -1,0 +1,274 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="UTF-8">
+  <title>BeeStore L2 performance seed (50,000 invoices)</title>
+  <style>
+    body { font-family: monospace; padding: 20px; }
+    .ok { color: green; }
+    .bad { color: #b00; }
+  </style>
+</head>
+<body>
+  <h1>BeeStore L2 performance (50,000 invoices)</h1>
+  <div id="results"></div>
+  <script src="../js/core/namespace.js"></script>
+  <script src="../js/core/config.js"></script>
+  <script src="../js/core/money.js"></script>
+  <script src="../js/core/dates.js"></script>
+  <script src="../js/core/ids.js"></script>
+  <script src="../js/core/validate.js"></script>
+  <script src="../js/core/errors.js"></script>
+  <script src="../js/storage/repository.js"></script>
+  <script src="../js/storage/summary.js"></script>
+  <script src="../js/storage/memoryRepository.js"></script>
+  <script src="../js/storage/idbRepository.js"></script>
+  <script src="../js/storage/migrations.js"></script>
+  <script src="../js/storage/fileSync.js"></script>
+  <script src="../js/services/settings.js"></script>
+  <script src="../js/services/audit.js"></script>
+  <script src="../js/services/accounts.js"></script>
+  <script src="../js/services/categories.js"></script>
+  <script src="../js/services/products.js"></script>
+  <script src="../js/services/variants.js"></script>
+  <script src="../js/services/stock.js"></script>
+  <script src="../js/services/sales.js"></script>
+  <script src="../js/services/returns.js"></script>
+  <script src="../js/services/customers.js"></script>
+  <script src="../js/services/purchases.js"></script>
+  <script src="../js/services/purchaseReturns.js"></script>
+  <script src="../js/services/suppliers.js"></script>
+  <script src="../js/services/expenses.js"></script>
+  <script src="../js/services/payroll.js"></script>
+  <script src="../js/services/employees.js"></script>
+  <script src="../js/services/transactions.js"></script>
+  <script src="../js/services/periods.js"></script>
+  <script src="../js/services/reports.js"></script>
+  <script src="../js/services/dashboard.js"></script>
+  <script src="../js/services/backup.js"></script>
+  <script src="../js/services/maintenance.js"></script>
+  <script src="../js/api/api.js"></script>
+  <script>
+    const out = document.getElementById('results');
+    const INVOICES = 50000;
+    const DB = 'beestore-perf-test';
+    const BATCH = 1000;
+    const timings = {};
+    let repo = null;
+    let api = null;
+    let variantId = null;
+    let accountId = null;
+
+    function line(label, ms, target) {
+      const ok = ms <= target;
+      out.innerHTML += '<div class="' + (ok ? 'ok' : 'bad') + '">' +
+        (ok ? '✓' : '✗') + ' ' + label + ': ' + ms.toFixed(0) + ' ms (target ' + target + ' ms)</div>';
+      timings[label] = Math.round(ms);
+    }
+
+    function del(name) {
+      return new Promise((resolve) => {
+        const req = indexedDB.deleteDatabase(name);
+        req.onsuccess = () => resolve();
+        req.onerror = () => resolve();
+        req.onblocked = () => resolve();
+      });
+    }
+
+    function rawBulk(storeName, docs) {
+      return new Promise((resolve, reject) => {
+        const tx = repo.db.transaction(storeName, 'readwrite');
+        const store = tx.objectStore(storeName);
+        for (const d of docs) store.put(d);
+        tx.oncomplete = () => resolve();
+        tx.onerror = () => reject(tx.error);
+        tx.onabort = () => reject(tx.error || new Error('aborted'));
+      });
+    }
+
+    async function seed() {
+      const BeeStore = window.BeeStore;
+      await del(DB);
+      BeeStore.config.dbName = DB;
+      BeeStore.config.dbVersion = 5;
+      BeeStore.config.memoryWindowMonths = 2;
+      BeeStore.dates.setClock(() => '2026-10-25');
+
+      repo = new BeeStore.IdbRepository();
+      await repo.open();
+      api = new BeeStore.Api(repo);
+
+      const settings = (await api.settings.save({
+        systemStartDate: '2024-11-01',
+        businessName: 'متجر الأداء',
+        currency: 'د.ل',
+      })).data;
+
+      const account = (await api.accounts.create({
+        name: 'Cash', type: 'cash', openingBalanceMinor: 0,
+      })).data;
+      accountId = account.id;
+
+      const customer = (await api.customers.create({
+        name: 'Customer A', phone: '0910000000',
+      })).data;
+
+      const product = (await api.products.create({
+        name: 'Performance Product', defaultCostMinor: 400, defaultPriceMinor: 1000,
+      })).data;
+
+      const variant = (await api.variants.create({
+        productId: product.id, size: 'M', color: 'Blue',
+        barcode: 'PERF-1', costMinor: 400, priceMinor: 1000,
+        quantity: 2000000000, date: '2024-11-01',
+      })).data;
+      variantId = variant.id;
+
+      const months = [];
+      let y = 2024, m = 11;
+      for (let i = 0; i < 24; i++) {
+        months.push(y + '-' + String(m).padStart(2, '0'));
+        m++;
+        if (m > 12) { m = 1; y++; }
+      }
+
+      const started = performance.now();
+      let docs = [];
+      let moves = [];
+      for (let i = 0; i < INVOICES; i++) {
+        const month = months[Math.floor(i / Math.ceil(INVOICES / months.length)) % months.length];
+        const day = String((i % 28) + 1).padStart(2, '0');
+        const date = month + '-' + day;
+        const unpaid = i % 10 === 0;
+        const paid = unpaid ? 0 : 1000;
+        docs.push({
+          id: 'sal_perf_' + i,
+          number: 'PERF-' + String(i).padStart(7, '0'),
+          date,
+          customerId: customer.id,
+          customerName: customer.name,
+          lines: [{
+            variantId, productName: product.name, size: 'M', color: 'Blue',
+            barcode: 'PERF-1', qty: 1, unitPriceMinor: 1000, unitCostMinor: 400,
+            lineDiscountMinor: 0, lineTotalMinor: 1000, returnedQty: 0,
+          }],
+          subtotalMinor: 1000, discountMinor: 0, taxMinor: 0, totalMinor: 1000,
+          paidMinor: paid, dueMinor: 1000 - paid,
+          status: unpaid ? 'unpaid' : 'paid',
+          returnStatus: 'none',
+          payments: paid ? [{ method: 'cash', accountId, amountMinor: paid, date }] : [],
+          soldByEmployeeId: null,
+          createdAt: date + 'T09:00:00.000Z',
+          updatedAt: date + 'T09:00:00.000Z',
+        });
+        // A realistic sale also writes a stock movement. This exercises
+        // stock.valueAsOf / inventory snapshots through the date index.
+        moves.push({
+          id: 'mov_perf_' + i,
+          variantId,
+          type: 'sale',
+          refId: 'sal_perf_' + i,
+          date,
+          qtyChange: -1,
+          balanceAfter: 2000000000 - (i + 1),
+          unitCostMinor: 400,
+          avgCostAfterMinor: 400,
+          createdAt: date + 'T09:00:01.000Z',
+        });
+        if (docs.length >= BATCH || i === INVOICES - 1) {
+          await rawBulk('sales', docs);
+          await rawBulk('stockMovements', moves);
+          docs = [];
+          moves = [];
+        }
+      }
+      // Raw writes bypass the repository, so the materialized summary must be
+      // built explicitly before the cold-start measurement reads it.
+      await repo._rebuildSummary();
+      timings.seed = Math.round(performance.now() - started);
+      out.innerHTML += '<div>Seeded ' + INVOICES + ' invoices in ' + timings.seed + ' ms; ' +
+        'settings ' + (settings.businessName || '') + '</div>';
+    }
+
+    async function measure() {
+      const BeeStore = window.BeeStore;
+      repo.db.close();
+      repo.opened = false;
+
+      let t = performance.now();
+      const cold = new BeeStore.IdbRepository();
+      api = new BeeStore.Api(cold);
+      await cold.open();
+      repo = cold;
+      line('cold start (window + masters)', performance.now() - t, 3000);
+      timings.memorySales = repo.data.sales.size;
+      timings.lazy = !!repo._lazy.sales;
+
+      t = performance.now();
+      const dash = (await api.dashboard.get()).data;
+      line('dashboard', performance.now() - t, 1000);
+      timings.dashboardInvoices = dash.today.invoiceCount + '/' + dash.recentInvoices.length;
+
+      // Official Month Review targets are measured before the diagnostic
+      // component timings, so nothing on this path is already warm.
+      t = performance.now();
+      const windowReview = (await api.reports.monthReview('2026-10')).data;
+      line('Month Review (window month 2026-10)', performance.now() - t, 1000);
+      timings.windowRows = windowReview.kpis.invoices;
+
+      t = performance.now();
+      const oldReview = (await api.reports.monthReview('2025-03')).data;
+      line('Month Review (older month 2025-03)', performance.now() - t, 2000);
+      timings.oldRows = oldReview.kpis.invoices;
+
+      t = performance.now();
+      const invoice = await api.sales.create({
+        date: '2026-10-25',
+        customerId: null,
+        lines: [{ variantId, qty: 1, unitPriceMinor: 1000 }],
+        payments: [{ method: 'cash', accountId, amountMinor: 1000, date: '2026-10-25' }],
+        clientKey: 'perf-save-' + Date.now(),
+      });
+      line('save invoice', performance.now() - t, 100);
+      timings.saveOk = invoice.ok;
+
+      // Component timings to locate Month Review hot spots (diagnostic only).
+      const timeIt = async (name, fn) => {
+        const started = performance.now();
+        const value = await fn();
+        timings['component:' + name] = Math.round(performance.now() - started);
+        return value;
+      };
+      await timeIt('repo.list(sales)', () => repo.list('sales'));
+      await timeIt('listRange(month)', () => repo.listRange('sales', '2026-10-01', '2026-10-31'));
+      await timeIt('pnl(month)', () => api.reports.profitAndLoss('2026-10-01', '2026-10-31'));
+      await timeIt('pnl(cumulative)', () => api.reports.profitAndLoss('2024-11-01', '2026-10-31'));
+      await timeIt('balanceAsOf', () => api.accounts.balanceAsOf(accountId, '2026-10-31'));
+      await timeIt('ledger(month)', () => api.accounts.ledger(accountId, { from: '2026-10-01', to: '2026-10-31' }));
+      await timeIt('balanceSnapshot', () => api.reports.balanceSnapshot('2026-10-31'));
+      await timeIt('overdue', () => BeeStore.customers.getOverdueInstallments());
+      await timeIt('monthReview', () => api.reports.monthReview('2026-10'));
+
+      const estimate = navigator.storage && navigator.storage.estimate
+        ? await navigator.storage.estimate() : {};
+      timings.usageMB = estimate.usage ? +(estimate.usage / 1048576).toFixed(1) : null;
+
+      const summary = { timings, dashboard: {
+        todayInvoices: dash.today.invoiceCount,
+        receivables: dash.receivablesTotal,
+        accountBalances: dash.balances,
+      } };
+      out.innerHTML += '<h2 id="summary">' + JSON.stringify(summary) + '</h2>';
+      window.__perfResults = timings;
+    }
+
+    (async () => {
+      await seed();
+      await measure();
+    })().catch((e) => {
+      out.innerHTML += '<div class="bad">Fatal: ' + (e && e.message ? e.message : e) + '</div>';
+      window.__perfResults = { fatal: String(e && e.stack || e) };
+    });
+  </script>
+</body>
+</html>

@@ -64,30 +64,32 @@
       if (!customer) return 0;
       if (!asOf) {
         let balance = customer.openingBalanceMinor || 0;
-        const sales = await this.repo.list('sales', s => s.customerId === customerId && s.status !== 'void');
+        // Indexed by customerId, so old invoices do not require a full scan.
+        const sales = (await this.repo.query('sales', 'customerId', customerId))
+          .filter(s => s.status !== 'void');
         for (const s of sales) {
           balance += s.dueMinor;
         }
-        const returns = await this.repo.list('salesReturns', r => r.customerId === customerId);
+        const returns = await this.repo.query('salesReturns', 'customerId', customerId);
         for (const r of returns) {
           if (r.refundMode === 'customer_credit') balance -= r.refundMinor;
         }
         return balance;
       }
       let balance = customer.openingBalanceMinor || 0;
-      const sales = await this.repo.list('sales',
-        s => s.customerId === customerId && s.status !== 'void' && s.date <= asOf);
+      const sales = (await this.repo.query('sales', 'customerId', customerId))
+        .filter(s => s.status !== 'void' && s.date <= asOf);
       for (const s of sales) {
         balance += s.totalMinor;
         for (const p of (s.payments || [])) {
           if ((p.date || s.date) <= asOf) balance -= p.amountMinor;
         }
       }
-      const payments = await this.repo.list('customerPayments',
-        p => p.customerId === customerId && p.date <= asOf);
+      const payments = (await this.repo.query('customerPayments', 'customerId', customerId))
+        .filter(p => p.date <= asOf);
       for (const p of payments) balance -= p.amountMinor;
-      const returns = await this.repo.list('salesReturns',
-        r => r.customerId === customerId && r.date <= asOf);
+      const returns = (await this.repo.query('salesReturns', 'customerId', customerId))
+        .filter(r => r.date <= asOf);
       for (const r of returns) {
         if (r.refundMode === 'customer_credit') balance -= r.refundMinor;
       }
@@ -100,9 +102,10 @@
     async statement(customerId) {
       const customer = await this.repo.get('customers', customerId);
       if (!customer) return null;
-      const sales = await this.repo.list('sales', s => s.customerId === customerId && s.status !== 'void');
-      const payments = await this.repo.list('customerPayments', p => p.customerId === customerId);
-      const returns = await this.repo.list('salesReturns', r => r.customerId === customerId);
+      const sales = (await this.repo.query('sales', 'customerId', customerId))
+        .filter(s => s.status !== 'void');
+      const payments = await this.repo.query('customerPayments', 'customerId', customerId);
+      const returns = await this.repo.query('salesReturns', 'customerId', customerId);
       sales.sort((a, b) => a.date.localeCompare(b.date));
       payments.sort((a, b) => a.date.localeCompare(b.date));
       return { customer, sales, payments, returns, balance: await this.balance(customerId) };
@@ -131,9 +134,10 @@
         tx.put('customerPayments', payment);
 
         if (!data.saleId) {
-          const sales = await tx.list('sales', s =>
-            s.customerId === data.customerId && s.status !== 'void' && s.dueMinor > 0
-          );
+          // Indexed by customerId: allocating a payment must not scan old
+          // invoices that live outside the memory window.
+          const sales = (await tx.query('sales', 'customerId', data.customerId))
+            .filter(s => s.status !== 'void' && s.dueMinor > 0);
           sales.sort((a, b) => a.date.localeCompare(b.date));
           let remaining = payment.amountMinor;
           for (const s of sales) {
@@ -185,27 +189,29 @@
      * @returns {Promise<Array>} Overdue installment rows. */
     async getOverdueInstallments() {
       const today = BeeStore.dates.today();
-      const sales = await this.repo.list('sales', s =>
-        s.status !== 'void' && s.installmentPlan && s.customerId
-      );
+      // The repository summary keeps only unpaid installments, so this no
+      // longer scans 50k invoices on the dashboard / Month Review path.
+      const summary = await this.repo.getSummary();
+      const rows = BeeStore.summary.overdue(summary, today);
+      const customers = {};
       const overdue = [];
-      for (const s of sales) {
-        for (const inst of (s.installmentPlan.schedule || [])) {
-          if (inst.status !== 'paid' && inst.dueDate < today) {
-            const customer = await this.repo.get('customers', s.customerId);
-            overdue.push({
-              saleId: s.id,
-              saleNumber: s.number,
-              customerId: s.customerId,
-              customerName: customer ? customer.name : '',
-              customerPhone: customer ? customer.phone : '',
-              dueDate: inst.dueDate,
-              amountMinor: inst.amountMinor,
-              paidMinor: inst.paidMinor,
-              remainingMinor: inst.amountMinor - inst.paidMinor,
-            });
-          }
+      for (const inst of rows) {
+        if (!inst.customerId) continue;
+        if (!Object.prototype.hasOwnProperty.call(customers, inst.customerId)) {
+          customers[inst.customerId] = await this.repo.get('customers', inst.customerId);
         }
+        const customer = customers[inst.customerId];
+        overdue.push({
+          saleId: inst.saleId,
+          saleNumber: inst.saleNumber,
+          customerId: inst.customerId,
+          customerName: customer ? customer.name : '',
+          customerPhone: customer ? customer.phone : '',
+          dueDate: inst.dueDate,
+          amountMinor: inst.amountMinor,
+          paidMinor: inst.paidMinor,
+          remainingMinor: inst.amountMinor - inst.paidMinor,
+        });
       }
       return overdue;
     }

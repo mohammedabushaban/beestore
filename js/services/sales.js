@@ -13,12 +13,17 @@
      * @returns {Promise<object[]>} sales sorted newest-first
      */
     async list(filters) {
-      let sales = await this.repo.list('sales');
+      // L2 §5: month-scoped pages must not read years of invoices into memory.
+      // listRange uses the IndexedDB date index for documents outside the
+      // memory window; the memory repository filters the same way.
+      const from = filters && filters.from;
+      const to = filters && filters.to;
+      let sales = (from || to)
+        ? await this.repo.listRange('sales', from, to)
+        : await this.repo.list('sales');
       if (filters) {
         if (filters.status) sales = sales.filter(s => s.status === filters.status);
         if (filters.customerId) sales = sales.filter(s => s.customerId === filters.customerId);
-        if (filters.from) sales = sales.filter(s => s.date >= filters.from);
-        if (filters.to) sales = sales.filter(s => s.date <= filters.to);
         if (filters.search) {
           const q = filters.search.toLowerCase();
           sales = sales.filter(s => s.number.toLowerCase().includes(q) ||
@@ -85,8 +90,10 @@
         // A repeated create with the same key returns the original invoice
         // instead of posting twice (checked inside the same transaction).
         if (data.clientKey) {
-          const dup = await tx.list('sales',
-            s => s.clientKey === data.clientKey && s.status !== 'void');
+          // Indexed lookup instead of scanning every invoice: saving must stay
+          // under the L2 100 ms budget even with 50k historical invoices.
+          const dup = (await tx.query('sales', 'clientKey', data.clientKey))
+            .filter(s => s.status !== 'void');
           if (dup.length > 0) return { ...dup[0], duplicate: true };
         }
         const settings = await tx.get('meta', 'settings') || {};

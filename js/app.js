@@ -15,6 +15,7 @@
     }
 
     BeeStore.repo = new BeeStore.IdbRepository();
+    _setupLazyProgress(BeeStore.repo);
     try {
       // A file:// page has no usable IndexedDB: open() may hang forever.
       await _openRepoWithTimeout(BeeStore.repo, 5000);
@@ -82,6 +83,37 @@
     }
 
     if (BeeStore.pwa) BeeStore.pwa.register();
+  }
+
+  // v3-Lite §5: a small, non-blocking notice while older months are fetched
+  // from IndexedDB. The short delay avoids flicker for fast cached reads.
+  function _setupLazyProgress(repo) {
+    const box = document.getElementById('lazy-progress');
+    const text = document.getElementById('lazy-progress-text');
+    let pending = 0;
+    let showTimer = null;
+    repo.onLazyRead = function (state) {
+      if (!box) return;
+      if (state.active) {
+        pending++;
+        if (text && state.label) text.textContent = state.label;
+        if (pending === 1 && !showTimer) {
+          showTimer = setTimeout(function () {
+            showTimer = null;
+            if (pending > 0) box.style.display = 'flex';
+          }, 150);
+        }
+        return;
+      }
+      pending = Math.max(0, pending - 1);
+      if (pending === 0) {
+        if (showTimer) {
+          clearTimeout(showTimer);
+          showTimer = null;
+        }
+        box.style.display = 'none';
+      }
+    };
   }
 
   function _openRepoWithTimeout(repo, ms) {

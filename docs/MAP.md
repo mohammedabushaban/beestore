@@ -14,9 +14,10 @@
 ## Storage (js/storage/)
 | File | Responsibility | Exports | Depends On |
 |------|---------------|---------|------------|
-| `repository.js` | Repository interface contract + collection list | `BeeStore.RepositoryInterface`, `BeeStore.COLLECTIONS` | `namespace.js` |
-| `memoryRepository.js` | In-memory repo (tests), serialized tx, once-per-commit index rebuild; streamed export + counts | `BeeStore.MemoryRepository` | `repository.js`, `core/*` |
-| `idbRepository.js` | IndexedDB repo, load-to-memory + indexes, serialized tx, once-per-commit index rebuild; reports the **stored** `schemaVersion` so startup migrations are not skipped; streamed export + counts | `BeeStore.IdbRepository` | `repository.js`, `core/*` |
+| `repository.js` | Repository interface contract + collection list + **storage policy** (master vs dated collections, `memoryWindowMonths`, `windowBounds`, `inMemoryWindow`, `inRange`, index definitions) | `BeeStore.RepositoryInterface`, `BeeStore.COLLECTIONS`, `BeeStore.storagePolicy` | `namespace.js`, `core/*` |
+| `summary.js` | Pure v2 materialized summary: all-time receivables/payables/account balances/unpaid installments + monthly buckets (P&L, flows, customers/suppliers, tax, capital, opening inventory) + transient day deltas for as-of dates; `apply`/`compute`/`pnlRange`/`accountBalanceAt`/`customerTotals`/`supplierTotals`/`overdue` | `BeeStore.summary` | `namespace.js`, `core/dates.js` |
+| `memoryRepository.js` | In-memory repo (tests) under the same window policy, serialized tx, once-per-commit index rebuild, cached `getSummary()` invalidated on commit; streamed export + counts | `BeeStore.MemoryRepository` | `repository.js`, `summary.js`, `core/*` |
+| `idbRepository.js` | IndexedDB repo: window load + lazy indexed reads (`listRange/get/query/latest/count/list`), 300-doc LRU, `onLazyRead` progress hook, materialized summary persisted in `meta` and updated inside each transaction, v5 indexes (date/field + compound `variantDate`), serialized tx; reports the **stored** `schemaVersion` so startup migrations are not skipped; streamed export/import + counts | `BeeStore.IdbRepository` | `repository.js`, `summary.js`, `core/*` |
 | `migrations.js` | Schema version upgrades | `BeeStore.migrations.{migrate,migrations}` | `namespace.js` |
 | `fileSync.js` | Folder handle, db.json mirror, dated backups, status + file info (name/size/lastModified) and folder/file path metadata | `BeeStore.FileSync` | `core/*`, `config.js` |
 
@@ -108,4 +109,13 @@
 ## App Bootstrap (js/app.js)
 | File | Responsibility | Exports | Depends On |
 |------|---------------|---------|------------|
-| `app.js` | Init repo, pre-migration snapshot, fileSync, api, wizard or start, single-tab lock, delegated `[data-route]` navigation, hamburger sidebar, save-status, PWA register/app-ready | `BeeStore._setupRouter`, `BeeStore._setupSaveStatus`, `BeeStore._setupVisibilityHandlers`, `BeeStore._setupSidebar` | All layers, `pwa.js`, `snapshots.js` |
+| `app.js` | Init repo, lazy-load progress bar (`onLazyRead`, 150 ms delay + counter), pre-migration snapshot, fileSync, api, wizard or start, single-tab lock, delegated `[data-route]` navigation, hamburger sidebar, save-status, PWA register/app-ready | `BeeStore._setupRouter`, `BeeStore._setupSaveStatus`, `BeeStore._setupVisibilityHandlers`, `BeeStore._setupSidebar` | All layers, `pwa.js`, `snapshots.js` |
+
+## Tests (tests/)
+| File | Responsibility |
+|------|---------------|
+| `test-storage-policy.js` | Window bounds, in-memory ranges, date fields, index definitions, `lastManyByIndex` (7 tests) |
+| `test-summary.js` | Summary totals, dated customer/supplier payments, reversible updates, installments, MemoryRepository cache (6 tests) |
+| `idb-lazy.html` | Browser: v5 indexes + compound `variantDate`, window-only memory, lazy `get/list/listRange/query`, progress events, `lastManyByIndex`, streamed export byte-equality, summary update/rebuild on import, v3→v5 upgrade (17 tests) |
+| `perf.html` | Seeds 50,000 invoices + 50,000 stock movements, rebuilds the summary, measures cold start, dashboard, Month Review (window/old), save invoice, and diagnostic components |
+| `test-reports.js`, `test-asof.js` | Summary-vs-legacy P&L and balance-snapshot parity, plus v2 report/as-of suite |

@@ -62,7 +62,8 @@
       if (!supplier) return 0;
       if (!asOf) {
         let balance = supplier.openingBalanceMinor || 0;
-        const purchases = await this.repo.list('purchases', p => p.supplierId === supplierId && p.status !== 'void');
+        const purchases = (await this.repo.query('purchases', 'supplierId', supplierId))
+          .filter(p => p.status !== 'void');
         for (const p of purchases) {
           balance += p.dueMinor;
         }
@@ -70,19 +71,19 @@
       }
       // v2 §8: opening + invoiced − paid − returned (both modes cut the payable).
       let balance = supplier.openingBalanceMinor || 0;
-      const purchases = await this.repo.list('purchases',
-        p => p.supplierId === supplierId && p.status !== 'void' && p.date <= asOf);
+      const purchases = (await this.repo.query('purchases', 'supplierId', supplierId))
+        .filter(p => p.status !== 'void' && p.date <= asOf);
       for (const p of purchases) {
         balance += p.totalMinor;
         for (const pay of (p.payments || [])) {
           if ((pay.date || p.date) <= asOf) balance -= pay.amountMinor;
         }
       }
-      const payments = await this.repo.list('supplierPayments',
-        p => p.supplierId === supplierId && p.date <= asOf);
+      const payments = (await this.repo.query('supplierPayments', 'supplierId', supplierId))
+        .filter(p => p.date <= asOf);
       for (const p of payments) balance -= p.amountMinor;
-      const returns = await this.repo.list('purchaseReturns',
-        r => r.supplierId === supplierId && r.date <= asOf);
+      const returns = (await this.repo.query('purchaseReturns', 'supplierId', supplierId))
+        .filter(r => r.date <= asOf);
       for (const r of returns) balance -= r.totalMinor;
       return balance;
     }
@@ -93,10 +94,10 @@
     async statement(supplierId) {
       const supplier = await this.repo.get('suppliers', supplierId);
       if (!supplier) return null;
-      const purchases = await this.repo.list('purchases',
-        p => p.supplierId === supplierId && p.status !== 'void');
-      const payments = await this.repo.list('supplierPayments', p => p.supplierId === supplierId);
-      const returns = await this.repo.list('purchaseReturns', r => r.supplierId === supplierId);
+      const purchases = (await this.repo.query('purchases', 'supplierId', supplierId))
+        .filter(p => p.status !== 'void');
+      const payments = await this.repo.query('supplierPayments', 'supplierId', supplierId);
+      const returns = await this.repo.query('purchaseReturns', 'supplierId', supplierId);
       purchases.sort((a, b) => a.date.localeCompare(b.date));
       payments.sort((a, b) => a.date.localeCompare(b.date));
       return { supplier, purchases, payments, returns, balance: await this.balance(supplierId) };
@@ -125,9 +126,9 @@
         tx.put('supplierPayments', payment);
 
         if (!data.purchaseId) {
-          const purchases = await tx.list('purchases', p =>
-            p.supplierId === data.supplierId && p.status !== 'void' && p.dueMinor > 0
-          );
+          // Indexed by supplierId: no full scan of old purchases.
+          const purchases = (await tx.query('purchases', 'supplierId', data.supplierId))
+            .filter(p => p.status !== 'void' && p.dueMinor > 0);
           purchases.sort((a, b) => a.date.localeCompare(b.date));
           let remaining = payment.amountMinor;
           for (const p of purchases) {

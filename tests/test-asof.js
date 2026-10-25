@@ -83,6 +83,26 @@ test('V2 account balance as of dates', async () => {
   assert.strictEqual((await api.accounts.balanceAsOf(acc.id, '2026-10-31')).data, 327000);
 });
 
+test('L2 materialized account balance matches the dated ledger', async () => {
+  useClock('2026-10-31');
+  const api = await freshApi();
+  await buildScenario(api);
+  const opening = (await api.accounts.create({
+    name: 'Opening', type: 'cash', openingBalanceMinor: 7000,
+  })).data;
+  assert.strictEqual((await api.accounts.balance(opening.id)).data, 7000,
+    'opening balance missing from the summary');
+  const accounts = (await api.accounts.list()).data;
+  for (const acc of accounts) {
+    const ledger = (await api.accounts.ledger(acc.id)).data;
+    const expected = ledger.length
+      ? ledger[ledger.length - 1].balanceAfter
+      : (acc.openingBalanceMinor || 0);
+    assert.strictEqual((await api.accounts.balance(acc.id)).data, expected,
+      'summary balance mismatch for ' + acc.name);
+  }
+});
+
 test('V2 customer/supplier balances as of dates', async () => {
   useClock('2026-10-31');
   const api = await freshApi();
@@ -118,6 +138,18 @@ test('V2 paying October payroll in November clears accrual, keeps October P&L', 
   assert.strictEqual(pnlOct.salaryExpense, 10000, 'October expense unchanged by November payment');
   const pnlNov = (await api.reports.profitAndLoss('2026-11-01', '2026-11-30')).data;
   assert.strictEqual(pnlNov.salaryExpense, 0, 'no November salary expense');
+});
+
+test('L2 month-end snapshot equals the legacy direct computation', async () => {
+  useClock('2026-10-31');
+  const api = await freshApi();
+  await buildScenario(api);
+  const fast = (await api.reports.balanceSnapshot('2026-10-31')).data;
+  const legacy = (await api.reports.balanceSnapshot('2026-10-31', { legacy: true })).data;
+  assert.deepStrictEqual(fast, legacy);
+  const nov = (await api.reports.balanceSnapshot('2026-11-30', { legacy: true })).data;
+  const novFast = (await api.reports.balanceSnapshot('2026-11-30')).data;
+  assert.deepStrictEqual(novFast, nov);
 });
 
 test('V2 balance snapshot balances with v2 equation', async () => {

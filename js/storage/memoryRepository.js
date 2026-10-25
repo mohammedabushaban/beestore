@@ -1,6 +1,7 @@
 (function (root) {
   'use strict';
   const BeeStore = root.BeeStore || (root.BeeStore = {});
+  if (!BeeStore.summary && typeof require !== 'undefined') require('./summary.js');
   const { COLLECTIONS, RepositoryInterface } = BeeStore;
 
   class MemoryRepository extends RepositoryInterface {
@@ -17,6 +18,7 @@
     }
 
     _initData() {
+      this._summaryCache = null;
       for (const c of COLLECTIONS) {
         this.data[c] = new Map();
         this.indexes[c] = {};
@@ -74,6 +76,57 @@
       return this.data[collection] ? this.data[collection].size : 0;
     }
 
+    async getSummary() {
+      // The repository is the single writer, so caching until the next commit
+      // keeps the memory backend's cost close to IndexedDB's materialized
+      // summary (Month Review reads it several times).
+      if (this._summaryCache) return this._summaryCache;
+      const collections = {};
+      for (const c of BeeStore.summary.COLLECTIONS) {
+        collections[c] = await this.list(c);
+      }
+      this._summaryCache = BeeStore.summary.compute(collections);
+      return this._summaryCache;
+    }
+
+    async listRange(collection, from, to, predicate) {
+      const field = BeeStore.storagePolicy && BeeStore.storagePolicy.dateFieldFor(collection);
+      let docs = Array.from(this.data[collection] ? this.data[collection].values() : []);
+      if (field) docs = docs.filter(d => BeeStore.storagePolicy.inRange(d, field, from, to));
+      if (predicate) docs = docs.filter(predicate);
+      return docs;
+    }
+
+    async latest(collection, limit) {
+      const field = BeeStore.storagePolicy && BeeStore.storagePolicy.dateFieldFor(collection);
+      const docs = Array.from(this.data[collection] ? this.data[collection].values() : []);
+      if (field) {
+        docs.sort((a, b) => String(b[field] || '').localeCompare(String(a[field] || '')));
+      }
+      return docs.slice(0, Math.max(0, Number(limit) || 0));
+    }
+
+    /**
+     * Last document per key with `dateField <= toDate`. Mirrors the browser
+     * repository's compound index read (used by stock valuation).
+     */
+    async lastManyByIndex(collection, indexName, keyField, keys, dateField, toDate) {
+      const out = {};
+      const wanted = new Set((keys || []).filter(Boolean));
+      for (const doc of (this.data[collection] ? this.data[collection].values() : [])) {
+        const key = doc[keyField];
+        if (!wanted.has(key)) continue;
+        if (toDate && String(doc[dateField] || '') > String(toDate)) continue;
+        const current = out[key];
+        if (!current || String(doc[dateField] || '') > String(current[dateField] || '') ||
+          (doc[dateField] === current[dateField] &&
+            String(doc.createdAt || '') >= String(current.createdAt || ''))) {
+          out[key] = doc;
+        }
+      }
+      return out;
+    }
+
     async query(collection, indexName, valueOrRange) {
       const idx = this._ensureIndex(collection, indexName);
       if (valueOrRange && typeof valueOrRange === 'object' && !(valueOrRange instanceof Date)) {
@@ -124,6 +177,7 @@
     }
 
     _commit(staged) {
+      this._summaryCache = null;
       for (const p of staged.puts) {
         this.data[p.collection].set(p.doc.id, JSON.parse(JSON.stringify(p.doc)));
       }
@@ -159,6 +213,7 @@
     }
 
     _restore(snap) {
+      this._summaryCache = null;
       for (const c of COLLECTIONS) {
         this.data[c] = new Map(snap[c]);
         this.indexes[c] = {};
@@ -188,6 +243,13 @@
           const merged = all.filter(d => !removedIds.has(d.id) && !stagedIds.has(d.id)).concat(stagedDocs);
           if (predicate) return merged.filter(predicate);
           return merged;
+        },
+        async listRange(collection, from, to, predicate) {
+          const merged = await tx.list(collection);
+          const field = BeeStore.storagePolicy && BeeStore.storagePolicy.dateFieldFor(collection);
+          let docs = field ? merged.filter(d => BeeStore.storagePolicy.inRange(d, field, from, to)) : merged;
+          if (predicate) docs = docs.filter(predicate);
+          return docs;
         },
         async query(collection, indexName, valueOrRange) {
           const all = await tx.list(collection);

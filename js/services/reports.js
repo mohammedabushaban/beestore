@@ -7,14 +7,24 @@
       this.repo = repo;
     }
 
-    async profitAndLoss(from, to) {
-      const sales = await this.repo.list('sales', s => s.status !== 'void' && s.date >= from && s.date <= to);
-      const salesReturns = await this.repo.list('salesReturns', r => r.date >= from && r.date <= to);
+    async profitAndLoss(from, to, options) {
+      // L2 §5: whole-month ranges are served from the materialized monthly
+      // P&L buckets. This is what makes Month Review O(months) instead of
+      // O(invoices). Arbitrary day ranges still use indexed range reads;
+      // options.legacy forces the direct scan for validation/tests.
+      if (!(options && options.legacy) &&
+        from === BeeStore.dates.startOfMonth(from) && to === BeeStore.dates.endOfMonth(to)) {
+        const summary = await this.repo.getSummary();
+        const totals = BeeStore.summary.pnlRange(summary, from.slice(0, 7), to.slice(0, 7));
+        return { from, to, ...totals };
+      }
+      const sales = await this.repo.listRange('sales', from, to, s => s.status !== 'void');
+      const salesReturns = await this.repo.listRange('salesReturns', from, to);
       const expenses = await this.repo.list('expenses', e => !e.voided && e.categoryName !== 'رواتب');
-      const payroll = await this.repo.list('payroll');
+      const payroll = await this.repo.listRange('payroll', from.slice(0, 7), to.slice(0, 7));
       const expenseCategories = await this.repo.list('expenseCategories');
-      const stockMovements = await this.repo.list('stockMovements', m =>
-        (m.type === 'adjustment' || m.type === 'stocktake' || m.type === 'sale_return') && m.date >= from && m.date <= to
+      const stockMovements = await this.repo.listRange('stockMovements', from, to, m =>
+        (m.type === 'adjustment' || m.type === 'stocktake' || m.type === 'sale_return')
       );
 
       let netSales = 0;
@@ -91,8 +101,8 @@
     }
 
     async salesReport(from, to, groupBy) {
-      const sales = await this.repo.list('sales', s => s.status !== 'void' && s.date >= from && s.date <= to);
-      const returns = await this.repo.list('salesReturns', r => r.date >= from && r.date <= to);
+      const sales = await this.repo.listRange('sales', from, to, s => s.status !== 'void');
+      const returns = await this.repo.listRange('salesReturns', from, to);
       const saleById = {};
       for (const s of sales) saleById[s.id] = s;
       const groups = {};
@@ -150,7 +160,9 @@
       const today = BeeStore.dates.today();
       const result = [];
       for (const c of customers) {
-        const sales = await this.repo.list('sales', s => s.customerId === c.id && s.status !== 'void' && s.dueMinor > 0);
+        // Indexed customer lookup: no full-invoice scan per customer.
+        const sales = (await this.repo.query('sales', 'customerId', c.id))
+          .filter(s => s.status !== 'void' && s.dueMinor > 0);
         const buckets = { '0-30': 0, '31-60': 0, '61-90': 0, '90+': 0 };
         for (const s of sales) {
           const days = BeeStore.dates.diffDays(s.date, today);
@@ -172,7 +184,8 @@
       const today = BeeStore.dates.today();
       const result = [];
       for (const s of suppliers) {
-        const purchases = await this.repo.list('purchases', p => p.supplierId === s.id && p.status !== 'void' && p.dueMinor > 0);
+        const purchases = (await this.repo.query('purchases', 'supplierId', s.id))
+          .filter(p => p.status !== 'void' && p.dueMinor > 0);
         const buckets = { '0-30': 0, '31-60': 0, '61-90': 0, '90+': 0 };
         for (const p of purchases) {
           const days = BeeStore.dates.diffDays(p.date, today);
@@ -201,7 +214,7 @@
         month.slice(0, 4) - 1 + month.slice(4) + '-' + String(BeeStore.dates.daysInMonth(month)).padStart(2, '0'));
       const pct = (cur, base) => base ? +(((cur - base) / Math.abs(base)) * 100).toFixed(1) : null;
 
-      const sales = await this.repo.list('sales', s => s.status !== 'void' && s.date >= from && s.date <= to);
+      const sales = await this.repo.listRange('sales', from, to, s => s.status !== 'void');
       let units = 0, paidAtSale = 0;
       const byDay = {}, byPayment = {}, byEmployee = {}, byProduct = {};
       for (const s of sales) {
@@ -247,22 +260,22 @@
         }
       }
 
-      // Cash flow from per-account ledgers (cash basis, this month).
+      // Cash flow from the materialized month buckets (cash basis, this month).
+      const summary = await this.repo.getSummary();
       const accounts = await this.repo.list('accounts');
       const cashflow = { opening: {}, inflows: {}, outflows: {}, closing: {} };
       let cfOpen = 0, cfClose = 0;
       for (const a of accounts) {
-        const open = await BeeStore.accounts.balanceAsOf(a.id, BeeStore.dates.addDays(from, -1));
-        const close = await BeeStore.accounts.balanceAsOf(a.id, to);
+        const open = BeeStore.summary.accountBalanceAt(summary, a, month, true);
+        const close = BeeStore.summary.accountBalanceAt(summary, a, month, false);
         cashflow.opening[a.name] = open;
         cashflow.closing[a.name] = close;
         cfOpen += open; cfClose += close;
-        const moves = await BeeStore.accounts.getLedger(a.id, { from, to });
-        for (const m of moves) {
-          const bucket = m.amountMinor >= 0 ? cashflow.inflows : cashflow.outflows;
-          const key = m.type;
-          bucket[key] = (bucket[key] || 0) + m.amountMinor;
-        }
+      }
+      const flowTypes = BeeStore.summary.accountFlowTypes(summary, month);
+      for (const key of Object.keys(flowTypes)) {
+        if (flowTypes[key].in) cashflow.inflows[key] = flowTypes[key].in;
+        if (flowTypes[key].out) cashflow.outflows[key] = flowTypes[key].out;
       }
 
       // Balances opening → closing.
@@ -278,7 +291,7 @@
       };
 
       // Inventory movement in units and cost.
-      const moves = await this.repo.list('stockMovements', m => m.date >= from && m.date <= to);
+      const moves = await this.repo.listRange('stockMovements', from, to);
       const inv = { purchasedUnits: 0, purchasedValue: 0, soldUnits: 0, soldCost: 0, adjustedUnits: 0, adjustedCost: 0 };
       for (const m of moves) {
         const q = m.qtyChange || 0;
@@ -291,13 +304,13 @@
       // Customers: new credit, collections, overdue.
       let newCredit = 0;
       for (const s of sales) newCredit += s.dueMinor;
-      const collections = await this.repo.list('customerPayments', p => p.date >= from && p.date <= to);
+      const collections = await this.repo.listRange('customerPayments', from, to);
       let collected = 0;
       for (const p of collections) collected += p.amountMinor;
       const overdue = await BeeStore.customers.getOverdueInstallments();
 
       // Payroll rows for the month.
-      const payroll = await this.repo.list('payroll', p => p.month === month);
+      const payroll = await this.repo.listRange('payroll', month, month);
 
       const closed = await BeeStore.periods.isClosed(month);
       return {
@@ -328,35 +341,56 @@
     // receivables + prepaid + advances. Liabilities = payables + customer
     // credits + accrued salaries (+ tax). Equity = opening equity + capital
     // in − withdrawals + cumulative net profit. Must balance.
-    async balanceSnapshot(asOf) {
+    async balanceSnapshot(asOf, options) {
       const settings = await this.repo.get('meta', 'settings') || {};
       const startDate = settings.systemStartDate || '0000-01-01';
-      const ownerTx = await this.repo.list('ownerTransactions', t => t.date <= asOf);
       const accounts = await this.repo.list('accounts');
       const customers = await this.repo.list('customers');
       const suppliers = await this.repo.list('suppliers');
+      const summary = await this.repo.getSummary();
+      const month = String(asOf).slice(0, 7);
+      const monthEnd = BeeStore.dates.endOfMonth(asOf) === asOf;
+      const useSummary = monthEnd && !(options && options.legacy);
 
       let cashBalance = 0;
       const cashByAccount = {};
-      for (const a of accounts) {
-        const bal = await BeeStore.accounts.balanceAsOf(a.id, asOf);
-        cashByAccount[a.id] = bal;
-        cashBalance += bal;
+      if (useSummary) {
+        for (const a of accounts) {
+          const bal = BeeStore.summary.accountBalanceAt(summary, a, month, false);
+          cashByAccount[a.id] = bal;
+          cashBalance += bal;
+        }
+      } else {
+        for (const a of accounts) {
+          const bal = await BeeStore.accounts.balanceAsOf(a.id, asOf);
+          cashByAccount[a.id] = bal;
+          cashBalance += bal;
+        }
       }
 
       const inventory = await BeeStore.stock.valueAsOf(asOf);
       const inventoryValue = inventory.totalCost;
 
       let receivables = 0, customerCredits = 0;
-      for (const c of customers) {
-        const b = await BeeStore.customers.balance(c.id, asOf);
-        if (b >= 0) receivables += b;
-        else customerCredits += -b;
+      if (useSummary) {
+        const totals = BeeStore.summary.customerTotals(summary, customers, month);
+        receivables = totals.receivables;
+        customerCredits = totals.credits;
+      } else {
+        for (const c of customers) {
+          const b = await BeeStore.customers.balance(c.id, asOf);
+          if (b >= 0) receivables += b;
+          else customerCredits += -b;
+        }
       }
 
       let payables = 0;
-      for (const s of suppliers) {
-        payables += await BeeStore.suppliers.balance(s.id, asOf);
+      if (useSummary) {
+        payables = BeeStore.summary.supplierTotals(summary, suppliers, month).payables;
+      } else {
+        for (const s of suppliers) {
+          payables += await BeeStore.suppliers.balance(s.id, asOf);
+        }
       }
 
       const prepaid = await BeeStore.expenses.prepaidAsOf(asOf);
@@ -365,14 +399,25 @@
 
       let taxPayable = 0;
       if (settings.taxEnabled) {
-        const sales = await this.repo.list('sales', s => s.status !== 'void' && s.date <= asOf);
-        for (const s of sales) taxPayable += s.taxMinor || 0;
+        if (useSummary) {
+          taxPayable = BeeStore.summary.taxThrough(summary, month);
+        } else {
+          const sales = await this.repo.listRange('sales', '0000-01-01', asOf, s => s.status !== 'void');
+          for (const s of sales) taxPayable += s.taxMinor || 0;
+        }
       }
 
       let capitalIn = 0, withdrawals = 0;
-      for (const t of ownerTx) {
-        if (t.type === 'capital_in') capitalIn += t.amountMinor;
-        else withdrawals += t.amountMinor;
+      if (useSummary) {
+        const capital = BeeStore.summary.capitalThrough(summary, month);
+        capitalIn = capital.capitalIn;
+        withdrawals = capital.withdrawals;
+      } else {
+        const ownerTx = await this.repo.listRange('ownerTransactions', '0000-01-01', asOf);
+        for (const t of ownerTx) {
+          if (t.type === 'capital_in') capitalIn += t.amountMinor;
+          else withdrawals += t.amountMinor;
+        }
       }
 
       // Opening equity (v2 §8): static opening balances (never period flows)
@@ -385,18 +430,28 @@
       for (const c of customers) openReceivables += c.openingBalanceMinor || 0;
       let openPayables = 0;
       for (const s of suppliers) openPayables += s.openingBalanceMinor || 0;
-      const openMoves = await this.repo.list('stockMovements',
-        m => m.type === 'opening' && m.date <= asOf);
       let openInventory = 0;
-      for (const m of openMoves) {
-        openInventory += (Number(m.qtyChange) || 0) *
-          (m.avgCostAfterMinor != null ? m.avgCostAfterMinor : (m.unitCostMinor || 0));
+      if (useSummary) {
+        openInventory = BeeStore.summary.openingInventoryThrough(summary, month);
+      } else {
+        const openMoves = await this.repo.listRange('stockMovements', '0000-01-01', asOf,
+          m => m.type === 'opening');
+        for (const m of openMoves) {
+          openInventory += (Number(m.qtyChange) || 0) *
+            (m.avgCostAfterMinor != null ? m.avgCostAfterMinor : (m.unitCostMinor || 0));
+        }
       }
       const openingEquity = (openingCash + openReceivables + openInventory) - openPayables;
 
       // Cumulative net profit from the start date through asOf.
-      const pnl = await this.profitAndLoss(startDate, asOf);
-      const cumulativeProfit = pnl.netProfit;
+      let cumulativeProfit;
+      if (useSummary) {
+        cumulativeProfit = BeeStore.summary.pnlRange(
+          summary, String(startDate).slice(0, 7), month).netProfit;
+      } else {
+        const pnl = await this.profitAndLoss(startDate, asOf, { legacy: true });
+        cumulativeProfit = pnl.netProfit;
+      }
 
       const assets = cashBalance + inventoryValue + receivables + prepaid.total + advancesOutstanding;
       const liabilities = payables + customerCredits + accrued.total + taxPayable;
@@ -494,9 +549,10 @@
     }
 
     async dailyClosing(date) {
-      const sales = await this.repo.list('sales', s => s.status !== 'void' && s.date === date);
-      const expenses = await this.repo.list('expenses', e => !e.voided && e.date === date);
-      const refunds = await this.repo.list('salesReturns', r => r.date === date && r.refundMode === 'cash_refund');
+      const sales = await this.repo.listRange('sales', date, date, s => s.status !== 'void');
+      const expenses = await this.repo.listRange('expenses', date, date, e => !e.voided);
+      const refunds = await this.repo.listRange('salesReturns', date, date,
+        r => r.refundMode === 'cash_refund');
       const salesByMethod = {};
       let totalSales = 0;
       let refundMinor = 0;

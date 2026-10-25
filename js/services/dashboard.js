@@ -15,18 +15,30 @@
       const monthStart = BeeStore.dates.startOfMonth(today);
       const settings = await this.repo.get('meta', 'settings') || {};
 
-      const sales = await this.repo.list('sales', s => s.status !== 'void');
-      const todaySales = sales.filter(s => s.date === today);
-      const monthSales = sales.filter(s => s.date >= monthStart && s.date <= today);
+      // L2 §5: all-time totals (receivables, payables, account balances,
+      // overdue installments) come from the small materialized summary; only
+      // the current month and the 30-day chart range are read from IndexedDB.
+      const summary = await this.repo.getSummary();
+      const thirtyStart = BeeStore.dates.addDays(today, -29);
+      const rangeStart = monthStart < thirtyStart ? monthStart : thirtyStart;
+      const recentSales = await this.repo.listRange('sales', rangeStart, today,
+        s => s.status !== 'void');
+      const recentReturns = await this.repo.listRange('salesReturns', rangeStart, today);
+      const todaySales = recentSales.filter(s => s.date === today);
+      const monthSales = recentSales.filter(s => s.date >= monthStart);
+
+      // Newest invoices are read backwards through the date index.
+      const latestSales = await this.repo.latest('sales', 30);
+      const recentInvoices = latestSales
+        .filter(s => s.status !== 'void')
+        .slice(0, 10);
 
       const variants = await this.repo.list('variants');
       const accounts = await this.repo.list('accounts');
-      const customers = await this.repo.list('customers');
-      const suppliers = await this.repo.list('suppliers');
 
       // Net of returns, mirroring the accrual P&L: a returned sale still shows in
       // the gross invoice list, but today's revenue/profit deduct today's returns.
-      const todayReturns = await this.repo.list('salesReturns', r => r.date === today);
+      const todayReturns = recentReturns.filter(r => r.date === today);
       const todayReturnsMinor = BeeStore.money.sum(todayReturns.map(r => r.refundMinor));
       const todayGross = BeeStore.money.sum(todaySales.map(s => s.totalMinor));
       const todayRevenue = todayGross - todayReturnsMinor;
@@ -57,59 +69,32 @@
         return v.quantity <= t;
       }).length;
 
-      let receivablesTotal = 0;
-      for (const c of customers) {
-        const cSales = sales.filter(s => s.customerId === c.id);
-        for (const s of cSales) receivablesTotal += s.dueMinor;
-      }
-
-      let payablesTotal = 0;
-      for (const s of suppliers) {
-        const purchases = await this.repo.list('purchases', p => p.supplierId === s.id && p.status !== 'void');
-        for (const p of purchases) payablesTotal += p.dueMinor;
-      }
-
+      const receivablesTotal = summary.receivablesMinor || 0;
+      const payablesTotal = summary.payablesMinor || 0;
       const accountBalances = {};
       for (const a of accounts) {
-        accountBalances[a.name] = await BeeStore.accounts.balance(a.id);
+        accountBalances[a.name] = BeeStore.summary.balance(summary, a.id);
       }
-
-      const recentInvoices = sales.slice(-10).reverse();
 
       const salesByDay = {};
       for (let i = 29; i >= 0; i--) {
         const d = BeeStore.dates.addDays(today, -i);
         salesByDay[d] = 0;
       }
-      for (const s of sales) {
+      for (const s of recentSales) {
         if (salesByDay[s.date] !== undefined) {
           salesByDay[s.date] += s.totalMinor;
         }
       }
-      const windowReturns = await this.repo.list('salesReturns',
-        r => salesByDay[r.date] !== undefined);
-      for (const r of windowReturns) {
-        salesByDay[r.date] -= r.refundMinor;
-      }
-
-      const overdueInstallments = [];
-      for (const s of sales) {
-        if (s.installmentPlan && s.status !== 'void') {
-          for (const inst of (s.installmentPlan.schedule || [])) {
-            if (inst.status !== 'paid' && inst.dueDate < today) {
-              const customer = await this.repo.get('customers', s.customerId);
-              overdueInstallments.push({
-                customerName: customer ? customer.name : '',
-                customerPhone: customer ? customer.phone : '',
-                dueDate: inst.dueDate,
-                amountMinor: inst.amountMinor,
-              });
-            }
-          }
+      for (const r of recentReturns) {
+        if (salesByDay[r.date] !== undefined) {
+          salesByDay[r.date] -= r.refundMinor;
         }
       }
 
-      // Top products by revenue
+      const overdueInstallments = BeeStore.summary.overdue(summary, today);
+
+      // Top products by revenue (current month only).
       const productRevenue = {};
       for (const s of monthSales) {
         for (const line of s.lines) {

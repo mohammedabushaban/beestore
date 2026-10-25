@@ -20,6 +20,7 @@
   <script src="../js/core/validate.js"></script>
   <script src="../js/core/errors.js"></script>
   <script src="../js/storage/repository.js"></script>
+  <script src="../js/storage/summary.js"></script>
   <script src="../js/storage/idbRepository.js"></script>
   <script src="../js/services/settings.js"></script>
   <script src="../js/services/audit.js"></script>
@@ -42,6 +43,7 @@
   <script>
     const results = document.getElementById('results');
     let passed = 0, failed = 0;
+    let productId = null;
 
     async function test(name, fn) {
       try {
@@ -85,6 +87,7 @@
           });
           const fetched = await tx.get('products', p.id);
           assert(fetched.name === 'Test', 'Product not found');
+          productId = p.id;
         });
       });
 
@@ -95,12 +98,18 @@
 
       await test('Stock movements work', async () => {
         await repo.transaction(async (tx) => {
+          // A movement must belong to a real variant, otherwise inventory
+          // valuation cannot see it and the balance snapshot is unbalanced.
+          const v = tx.put('variants', {
+            productId, size: 'M', color: 'أحمر', quantity: 10, active: true,
+            createdAt: BeeStore.dates.now(),
+          });
           tx.put('stockMovements', {
-            variantId: 'test', date: BeeStore.dates.today(), type: 'opening',
+            variantId: v.id, date: BeeStore.dates.today(), type: 'opening',
             qtyChange: 10, unitCostMinor: 5000, balanceAfter: 10,
             createdAt: BeeStore.dates.now()
           });
-          const movements = await tx.list('stockMovements', m => m.variantId === 'test');
+          const movements = await tx.list('stockMovements', m => m.variantId === v.id);
           assert(movements.length === 1, 'Movement not found');
         });
       });

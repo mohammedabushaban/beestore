@@ -47,17 +47,24 @@
 | `dashboard.js` | Dashboard KPIs (today + month from accrual P&L), charts data, recent invoices, L4 day status | `BeeStore.dashboard`, `BeeStore.DashboardService` | `core/*`, `storage/*`, `sales.js`, `expenses.js`, `accounts.js`, `reports.js`, `dailyClosing.js` |
 | `backup.js` | Backup orchestration: file-sync create/list, streamed payload + checksum/encryption, share/download, inspect/summary, safe restore with pre-restore snapshot, reminder status | `BeeStore.backup`, `BeeStore.BackupService` | `storage/*`, `fileSync.js`, `backupFile.js`, `snapshots.js`, `migrations.js` |
 | `backupFile.js` | Pure backup-file helpers: SHA-256 integrity, AES-GCM/PBKDF2 encryption, filename, summary/warnings, backup freshness status, share-sheet + download fallback | `BeeStore.backupFile.{addIntegrity,verifyIntegrity,encryptBytes,decryptEnvelope,openBackup,backupFileName,summarizeBackup,inspectBackup,backupStatus,shareOrDownload}` | `core/*` |
-| `maintenance.js` | Recalculate stock, Data Integrity Checker (9 checks), reset all, check empty | `BeeStore.maintenance`, `BeeStore.MaintenanceService` | `storage/*`, `stock.js` |
+| `maintenance.js` | Recalculate stock, Data Integrity Checker (**16 checks**: 9 base + closed-day recomputation, drawer balance, `cash_difference` adjustments, stale unclosed days, backup/off-site freshness, storage, clock), reset all, check empty | `BeeStore.maintenance`, `BeeStore.MaintenanceService` | `storage/*`, `stock.js`, `dailyClosing.js`, `backupFile.js`, `pwa.js`, `clockGuard.js` |
 | `barcode.js` | JsBarcode wrapper (canvas/SVG) | `BeeStore.barcode`, `BeeStore.BarcodeService` | `vendor/jsbarcode` |
 | `scan.js` | Scan → variant lookup (exact barcode, then search), POS cart add (stock limits, qty+1), price-check lookup | `BeeStore.scanning.{lookupVariant,addToCart,priceCheck,normalizeCode}` | `scanner.js` (normalize), `api.variants` |
 | `csv.js` | CSV import (products, digit-normalized) + export (formula-guarded, BOM) | `BeeStore.csv`, `BeeStore.CsvService` | `core/*`, `storage/*`, `products.js`, `variants.js` |
 | `pwa.js` | Browser-only PWA manager: SW registration, update detection/banner, safe-update gate (POS cart/saving/visible dialog/closing), install prompt + Arabic Android/iPhone guide, persistence status, cache version, off-device backup reminder banner | `BeeStore.pwa.{register,checkForUpdate,applyUpdate,getState,onAppReady,getCacheVersion,isStandalone,isSafeToUpdate,collectAppState,storageStatus,requestPersistence,showInstallGuide,install}` | `components.js`, `dialogs.js`, `pos.js`, `backup.js` |
 | `snapshots.js` | Separate IndexedDB `beestore-snapshots` for pre-migration safety snapshots; metadata + data stores, newest-10 pruning, download | `BeeStore.SnapshotService`, `BeeStore.snapshots` | `namespace.js`, `config.js` |
+| `auth.js` | v3-Lite L5 local profiles: PIN set/verify (PBKDF2-SHA256 210k, 16-byte salt, 4–6 digits), 5-attempt exponential lockout, auto-lock/background lock state, safe profile/PIN stripping (`authUtils`) | `BeeStore.auth`, `BeeStore.authUtils` | `core/*`, `storage/*` |
+| `clockGuard.js` | v3-Lite L5/L8 clock anomaly guard: backward >1 day vs latest commit, forward >30 days vs last seen day, per-day owner confirmation | `BeeStore.clockGuard` | `core/*`, `storage/*` |
+| `zip.js` | Dependency-free store-only ZIP writer/reader (UTF-8 names, CRC32) used by the accountant package | `BeeStore.zip` | `namespace.js` |
+| `xlsx.js` | Dependency-free OOXML XLSX writer (inline strings, styled headers, money formats, frozen panes) | `BeeStore.xlsx` | `namespace.js` |
+| `monthReviewPdf.js` | Arabic-safe Month Review PDF: canvas pages → JPEG → minimal PDF; open-month watermark; browser renderer injectable for tests | `BeeStore.monthReviewPdf` | `namespace.js`, `dates.js`, `money.js` |
+| `cloudTarget.js` | Shared delivery for backups/packages: `ShareSheetTarget` (`navigator.share({files})`), `DownloadTarget`, `shareOrDownload` with fallback | `BeeStore.cloudTarget` | `namespace.js` |
+| `accountingPackage.js` | v3-Lite L7 read-only accountant package: 18 XLSX sheets, BOM CSV folder, bilingual README, Arabic Month Review PDF, manifest SHA-256/checksums, cross-checks, info/build/share/download | `BeeStore.accountingPackage` | `reports.js`, `zip.js`, `xlsx.js`, `monthReviewPdf.js`, `cloudTarget.js` |
 
 ## API Facade (js/api/)
 | File | Responsibility | Exports | Depends On |
 |------|---------------|---------|------------|
-| `api.js` | Facade `BeeStore.api.<ns>.<method>` → `{ok,data\|error}` (never rejects; `_wrapAll` envelope) | `BeeStore.Api` | All services |
+| `api.js` | Facade `BeeStore.api.<ns>.<method>` → `{ok,data\|error}` (never rejects; `_wrapAll` envelope); central L5 cashier allow-list, cost/profit stripping, PIN/profile stripping, clock posting block, cashier discount/return limits, cashier dashboard substitution, `security` namespace, L7 `accountingPackage` (read-only/clock-exempt) | `BeeStore.Api` | All services |
 
 ## UI (js/ui/)
 | File | Responsibility | Exports | Depends On |
@@ -71,11 +78,12 @@
 | `period.js` | v2 global period store: month/year/custom/**day** selection (localStorage + URL hash + memory fallback), header selector, scope bar, `defaultDateForNew`/`applyDefaultDate`, day-mode warning | `BeeStore.period.{get,set,setDay,setYear,setCustom,init,toQuery,shift,getRange,monthLabel,label,selMonth,currentMonth,isClosed,isDayClosed,monthsWithData,defaultDateForNew,applyDefaultDate,scopeBar,renderHeader}` | `components.js`, `dialogs.js`, `dates.js`, `api.periods`, `api.dailyClosings` |
 | `errorLog.js` | v2 §12.3 global error capture (last 200 in IDB `errorLog`), Arabic dialog + copy, diagnostics download | `BeeStore.errorLog.{repo,install,capture,list,clear,diagnostics}` | `components.js`, `ids.js` |
 | `scanner.js` | Camera barcode scanner: full-screen overlay, rear camera, torch, camera switch, BarcodeDetector + vendored ZXing fallback, continuous mode with 1.5 s repeat filter, beep/vibrate/flash, manual entry, Arabic errors | `BeeStore.scanner.{open,scan,scanButton,closeCurrent,isSupported,unsupportedReason,reasonMessage,normalizeCode,createRepeatFilter,REASONS,PREFERRED_FORMATS}` | `components.js`, `vendor/zxing` |
+| `lock.js` | v3-Lite L5 lock screen and profile switch: PIN entry, attempt countdown, profile chip, manual lock, re-render on profile change, auto-lock/background hooks | `BeeStore.AppLock` | `components.js`, `api.security` |
 
 ## Pages (js/pages/)
 | File | Responsibility | Exports | Depends On |
 |------|---------------|---------|------------|
-| `dashboard.js` | Dashboard page (cards, charts, recent invoices, L4 today/yesterday day cards + unclosed-day warnings, last-backup status + “نسخ الآن”) | `BeeStore.pages.dashboard` | `ui/*`, `api.dashboard`, `api.reports`, `api.dailyClosings`, `api.backup` |
+| `dashboard.js` | Dashboard page (cards, charts, recent invoices, L4 today/yesterday day cards + unclosed-day warnings, last-backup status + “نسخ الآن”, L5 cashier own-day summary) | `BeeStore.pages.dashboard` | `ui/*`, `api.dashboard`, `api.reports`, `api.dailyClosings`, `api.backup` |
 | `pos.js` | POS page (camera + USB barcode scan, continuous scanning, unknown-barcode create action, cart, discount, payments, save w/ clientKey + in-flight guard); exposes cart/saving state for the safe-update gate | `BeeStore.pages.pos.{render,getCartCount,isSaving,hasUnsavedWork}` | `ui/*`, `scanner.js`, `scan.js`, `api.products`, `api.variants`, `api.sales`, `api.customers`, `api.settings` |
 | `invoices.js` | Invoice list (period-scoped + show-all, search, filter, view, print, void) | `BeeStore.pages.invoices` | `ui/*`, `api.sales`, `print.js` |
 | `returns.js` | Returns & exchanges list (period-scoped) + create | `BeeStore.pages.returns` | `ui/*`, `api.returns`, `api.sales`, `api.customers`, `api.variants` |
@@ -91,8 +99,8 @@
 | `accounts.js` | Accounts, ledger, transfers, owner tx; closing tab delegates to the L4 wizard/Days page | `BeeStore.pages.accounts` | `ui/*`, `api.accounts`, `api.transactions`, `api.reports`, `pages/days.js` |
 | `reports.js` | All reports (P&L, sales, inventory, aging, balance, daily) + v2 tabs (Month Review, Profit⇄Cash, Compare, Year Overview) + L4 days table and signed cash-difference rows | `BeeStore.pages.reports` | `ui/*`, `ui/period.js`, `api.reports`, `api.dailyClosings` |
 | `days.js` | v3-Lite L4 Days page: month table (all days), closed/unclosed counters, cross-month warnings, 4-step closing wizard with denominations/no-count, take-out, Day Report (print/share/reopen/next-prev) | `BeeStore.pages.days.{render,openWizard,openReport}` | `ui/*`, `ui/period.js`, `ui/print.js`, `api.dailyClosings`, `api.settings`, `api.backup` |
-| `periods.js` | v2 month-closing page: months table, live checklist, KPIs, close/reopen/integrity/print | `BeeStore.pages.periods` | `ui/*`, `ui/period.js`, `api.periods`, `api.reports`, `api.maintenance`, `api.backup` |
-| `settings.js` | Settings page (store info, tax, invoice, sizes/colors, payment methods, off-device backup card + encryption/share/download/restore + storage-path card, **البيانات** tab: persistence/install/offline/update/cache version/snapshots + record counts/usage/year estimate/70–90% warnings, audit, maintenance + integrity check + error log) | `BeeStore.pages.settings` | `ui/*`, `api.settings`, `api.backup`, `api.maintenance`, `api.audit`, `backupUI.js`, `fileSync.js`, `pwa.js`, `snapshots.js` |
+| `periods.js` | v2 month-closing page: months table, live checklist (16-check integrity incl. L8 drawer/clock/backup), KPIs, close/reopen/integrity/print, L7 package + PDF share/download with open/closed hint | `BeeStore.pages.periods` | `ui/*`, `ui/period.js`, `api.periods`, `api.reports`, `api.maintenance`, `api.backup`, `api.accountingPackage` |
+| `settings.js` | Settings page (store info, tax, invoice, sizes/colors, payment methods, off-device backup card + encryption/share/download/restore + storage-path card, **الأمان** tab: owner/cashier PIN, limits, auto-lock, **البيانات** tab: persistence/install/offline/update/cache version/snapshots + record counts/usage/year estimate/70–90% warnings, audit, maintenance + 16-check integrity + error log, large font) | `BeeStore.pages.settings` | `ui/*`, `api.settings`, `api.backup`, `api.maintenance`, `api.audit`, `api.security`, `backupUI.js`, `fileSync.js`, `pwa.js`, `snapshots.js` |
 
 ## Demo (js/demo/)
 | File | Responsibility | Exports | Depends On |
@@ -119,7 +127,13 @@
 | `test-storage-policy.js` | Window bounds, in-memory ranges, date fields, index definitions, `lastManyByIndex` (7 tests) |
 | `test-summary.js` | Summary totals, dated customer/supplier payments, reversible updates, installments, MemoryRepository cache (6 tests) |
 | `test-daily-closing.js` | L4 reference scenario (515 expected / 510 counted / −5 difference / 110 retained), day locks + allowed postings, close ordering + no-count catch-up, external totals warn only (4 tests) |
+| `test-auth.js` | L5 PIN hashing/verification, lockout, cashier discount/return limits, allow-list, sensitive-field stripping, cashier summary (8 tests) |
+| `test-accounting-package.js` | L7 SHA-256 vectors, package contents/checksums/BOM/formula guard/manifest/open→closed status, share/download/cashier denial (3 tests) |
+| `test-integrity-l8.js` | L8 clean closed-day recomputation + drawer/stale/backup/storage, tamper detection, adjustment void/amount tamper, reopen/re-close, clock anomaly (3 tests) |
+| `ui-package.html` | Browser L7/L8: open→closed package, Arabic Canvas PDF, 21 files/18 BOM CSVs, manifest checksums, share/download, cashier denial, 16-check integrity (11 tests) |
 | `idb-lazy.html` | Browser: v6 indexes + `cashAdjustments` + compound `variantDate`, window-only memory, lazy `get/list/listRange/query`, progress events, `lastManyByIndex`, streamed export byte-equality, summary update/rebuild on import, v3→v6 upgrade (17 tests) |
 | `ui-days.html` | Browser L4: dashboard day cards, Days table, wizard steps, denomination counter, no-count close, Day Report + print HTML, Day mode, Month Review, settings, accounts delegation, zero page errors (13 tests) |
+| `smoke.html` | Browser IndexedDB smoke: repository open, dbVersion upgrade, product/variant/stock, export, month lock/reopen, integrity, Month Review, clear (10 tests) |
+| `verify-offline.py` | L10 CDP offline check: SW controls the page, 97 cached files, offline shell start, IndexedDB reads, offline invoice, survives a second reload (10 checks; requires ChromeDriver) |
 | `perf.html` | Seeds 50,000 invoices + 50,000 stock movements, rebuilds the summary, measures cold start, dashboard, Month Review (window/old), save invoice, and diagnostic components |
 | `test-reports.js`, `test-asof.js` | Summary-vs-legacy P&L and balance-snapshot parity, plus v2 report/as-of suite |

@@ -1,0 +1,297 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="UTF-8">
+  <title>BeeStore L7/L8 Browser Tests</title>
+  <style>
+    body { font-family: monospace; padding: 20px; }
+    .pass { color: green; }
+    .fail { color: red; }
+  </style>
+</head>
+<body>
+  <h1>BeeStore L7/L8 Browser Tests (MemoryRepository + real Canvas/Blob)</h1>
+  <div id="results"></div>
+  <script src="../js/core/namespace.js"></script>
+  <script src="../js/core/config.js"></script>
+  <script src="../js/core/money.js"></script>
+  <script src="../js/core/dates.js"></script>
+  <script src="../js/core/ids.js"></script>
+  <script src="../js/core/validate.js"></script>
+  <script src="../js/core/errors.js"></script>
+  <script src="../js/storage/repository.js"></script>
+  <script src="../js/storage/summary.js"></script>
+  <script src="../js/storage/memoryRepository.js"></script>
+  <script src="../js/services/settings.js"></script>
+  <script src="../js/services/auth.js"></script>
+  <script src="../js/services/clockGuard.js"></script>
+  <script src="../js/services/audit.js"></script>
+  <script src="../js/services/accounts.js"></script>
+  <script src="../js/services/categories.js"></script>
+  <script src="../js/services/products.js"></script>
+  <script src="../js/services/variants.js"></script>
+  <script src="../js/services/stock.js"></script>
+  <script src="../js/services/sales.js"></script>
+  <script src="../js/services/customers.js"></script>
+  <script src="../js/services/returns.js"></script>
+  <script src="../js/services/purchases.js"></script>
+  <script src="../js/services/purchaseReturns.js"></script>
+  <script src="../js/services/suppliers.js"></script>
+  <script src="../js/services/expenses.js"></script>
+  <script src="../js/services/payroll.js"></script>
+  <script src="../js/services/employees.js"></script>
+  <script src="../js/services/transactions.js"></script>
+  <script src="../js/services/periods.js"></script>
+  <script src="../js/services/dailyClosing.js"></script>
+  <script src="../js/services/reports.js"></script>
+  <script src="../js/services/dashboard.js"></script>
+  <script src="../js/services/backupFile.js"></script>
+  <script src="../js/services/zip.js"></script>
+  <script src="../js/services/xlsx.js"></script>
+  <script src="../js/services/monthReviewPdf.js"></script>
+  <script src="../js/services/cloudTarget.js"></script>
+  <script src="../js/services/accountingPackage.js"></script>
+  <script src="../js/services/backup.js"></script>
+  <script src="../js/services/maintenance.js"></script>
+  <script src="../js/api/api.js"></script>
+  <script>
+    const results = document.getElementById('results');
+    const state = { passed: 0, failed: 0, tests: [] };
+
+    function log(ok, name, detail) {
+      state.tests.push({ name, ok, detail: detail || '' });
+      results.innerHTML += '<div class="' + (ok ? 'pass' : 'fail') + '">' +
+        (ok ? '✓ ' : '✗ ') + name + (detail ? ': ' + detail : '') + '</div>';
+      if (ok) state.passed++; else state.failed++;
+    }
+
+    function assert(cond, msg) {
+      if (!cond) throw new Error(msg || 'Assertion failed');
+    }
+
+    async function test(name, fn) {
+      try {
+        const detail = await fn();
+        log(true, name, detail ? String(detail) : '');
+      } catch (e) {
+        log(false, name, e && e.message ? e.message : String(e));
+      }
+      window.__testResults = state;
+    }
+
+    async function seed(api) {
+      const cash = (await api.accounts.create({
+        name: 'الصندوق', type: 'cash', openingBalanceMinor: 100000,
+      })).data;
+      const bank = (await api.accounts.create({ name: 'البنك', type: 'bank' })).data;
+      await api.settings.save({
+        storeNameAr: 'محل بي ستور',
+        systemStartDate: '2026-09-01',
+        cashDrawerAccountId: cash.id,
+        defaultBankAccountId: bank.id,
+        paymentMethods: [
+          { id: 'cash', name: 'نقداً', accountId: cash.id },
+          { id: 'bank', name: 'تحويل', accountId: bank.id },
+        ],
+      });
+      const product = (await api.products.create({
+        name: 'قميص أطفال', defaultCostMinor: 1000, defaultPriceMinor: 5000,
+      })).data;
+      const variant = (await api.variants.create({
+        productId: product.id, size: 'M', color: 'أزرق',
+        quantity: 100, costMinor: 1000, priceMinor: 5000, date: '2026-09-01',
+      })).data;
+      await api.sales.create({
+        date: '2026-09-15',
+        lines: [{ variantId: variant.id, qty: 2, unitPriceMinor: 5000 }],
+        payments: [{ method: 'cash', accountId: cash.id, amountMinor: 10000, date: '2026-09-15' }],
+      });
+      await api.expenses.create({
+        date: '2026-09-15', amountMinor: 2500, description: 'كهرباء',
+        method: 'cash', accountId: cash.id,
+        allocation: { mode: 'single' },
+      });
+      return { cash, bank, product, variant };
+    }
+
+    async function run() {
+      const BeeStore = window.BeeStore;
+      const repo = new BeeStore.MemoryRepository();
+      await repo.open();
+      const api = new BeeStore.Api(repo);
+      const base = await seed(api);
+
+      await test('open month package builds with NOT FINAL status', async () => {
+        const info = (await api.accountingPackage.info('2026-09')).data;
+        assert(info.status === 'open', 'info status ' + info.status);
+        const pkg = (await api.accountingPackage.build('2026-09')).data;
+        assert(pkg.status === 'open', 'package status ' + pkg.status);
+        assert(pkg.manifest.statusLabel.indexOf('غير نهائي') >= 0, 'manifest non-final label');
+        assert(pkg.manifest.checks.length >= 10, 'checks missing');
+        assert(pkg.manifest.checks.every(c => c.ok === true), 'a cross-check failed: ' +
+          JSON.stringify(pkg.manifest.checks.filter(c => c.ok !== true)));
+        return pkg.filename + ' / ' + pkg.bytes.length + ' bytes';
+      });
+
+      await test('closed day then closed month produces a final package', async () => {
+        const preview = (await api.dailyClosings.preview('2026-09-15')).data;
+        const closed = await api.dailyClosings.close({
+          date: '2026-09-15',
+          countedCashMinor: preview.expectedCashMinor - 500,
+          takenOutMinor: 2000,
+          takenOutMode: 'bank_deposit',
+          bankAccountId: base.bank.id,
+        });
+        assert(closed.ok, closed.ok ? '' : closed.error.message);
+        const month = await api.periods.close('2026-09', 'اختبار حزمة');
+        assert(month.ok, month.ok ? '' : month.error.message);
+        const info = (await api.accountingPackage.info('2026-09')).data;
+        assert(info.status === 'closed', 'info status ' + info.status);
+        const pkg = (await api.accountingPackage.build('2026-09')).data;
+        assert(pkg.status === 'closed', 'package status ' + pkg.status);
+        assert(pkg.manifest.status === 'closed', 'manifest status');
+        assert(pkg.manifest.statusLabel.indexOf('مُقفل') >= 0, 'closed label');
+        return pkg.filename;
+      });
+
+      await test('ZIP contains README, PDF, XLSX, CSV folder and manifest', async () => {
+        const pkg = (await api.accountingPackage.build('2026-09')).data;
+        const entries = BeeStore.zip.readEntries(pkg.bytes);
+        const names = entries.map(e => e.name);
+        assert(names.indexOf('00-README.txt') >= 0, 'README missing');
+        assert(names.indexOf('01-Month-Review.pdf') >= 0, 'PDF missing');
+        assert(names.indexOf('accounting.xlsx') >= 0, 'XLSX missing');
+        assert(names.some(n => n.indexOf('csv/') === 0), 'CSV folder missing');
+        assert(names.indexOf('manifest.json') >= 0, 'manifest missing');
+        assert(names.length === pkg.files.length + 1, 'unexpected entry count ' + names.length);
+        const pdf = entries.find(e => e.name === '01-Month-Review.pdf');
+        const pdfHead = String.fromCharCode.apply(null, pdf.data.slice(0, 5));
+        assert(pdfHead === '%PDF-', 'PDF header ' + pdfHead);
+        assert(pdf.data.length > 2000, 'PDF too small ' + pdf.data.length);
+        return names.length + ' entries, PDF ' + pdf.data.length + ' bytes';
+      });
+
+      await test('manifest SHA-256 checksums verify for every file', async () => {
+        const pkg = (await api.accountingPackage.build('2026-09')).data;
+        const entries = BeeStore.zip.readEntries(pkg.bytes);
+        for (const file of pkg.manifest.files) {
+          const entry = entries.find(e => e.name === file.path);
+          assert(entry, 'missing ' + file.path);
+          const hash = await BeeStore.accountingPackageUtils.sha256Bytes(entry.data);
+          assert(hash === file.sha256, 'checksum mismatch ' + file.path);
+          assert(entry.data.length === file.bytes, 'size mismatch ' + file.path);
+        }
+        return pkg.manifest.files.length + ' files verified';
+      });
+
+      await test('CSV files start with a UTF-8 BOM', async () => {
+        const pkg = (await api.accountingPackage.build('2026-09')).data;
+        const entries = BeeStore.zip.readEntries(pkg.bytes);
+        const csv = entries.filter(e => e.name.indexOf('csv/') === 0);
+        assert(csv.length > 0, 'no CSV files');
+        for (const file of csv) {
+          assert(file.data[0] === 0xEF && file.data[1] === 0xBB && file.data[2] === 0xBF,
+            'no BOM in ' + file.name);
+        }
+        return csv.length + ' CSV files';
+      });
+
+      await test('Arabic Month Review PDF renders at least one page', async () => {
+        const doc = (await api.accountingPackage.pdf('2026-09')).data;
+        assert(doc.pageCount >= 1, 'pageCount ' + doc.pageCount);
+        assert(doc.bytes.length > 2000, 'bytes ' + doc.bytes.length);
+        const head = String.fromCharCode.apply(null, doc.bytes.slice(0, 5));
+        assert(head === '%PDF-', 'header ' + head);
+        return doc.pageCount + ' page(s), ' + doc.bytes.length + ' bytes';
+      });
+
+      await test('package share uses the share sheet through CloudTarget', async () => {
+        let shared = null;
+        const env = {
+          File: window.File,
+          navigator: {
+            canShare: () => true,
+            share: async (data) => { shared = data; },
+          },
+        };
+        const res = (await api.accountingPackage.share('2026-09', { env })).data;
+        assert(res.method === 'share', 'method ' + res.method);
+        assert(shared && shared.files && shared.files.length === 1, 'no shared file');
+        assert(shared.files[0].name.indexOf('.zip') > 0, 'wrong file name');
+        return shared.files[0].name;
+      });
+
+      await test('package download falls back to a download link', async () => {
+        let clicked = null;
+        const fakeLink = {
+          href: '', download: '', rel: '',
+          click() { clicked = this; },
+          remove() {},
+        };
+        const env = {
+          document: {
+            body: { appendChild() {} },
+            createElement() { return fakeLink; },
+          },
+          URL: {
+            createObjectURL(blob) { return 'blob:test-' + blob.size; },
+            revokeObjectURL() {},
+          },
+        };
+        const res = (await api.accountingPackage.download('2026-09', { env })).data;
+        assert(res.method === 'download', 'method ' + res.method);
+        assert(clicked && clicked.download.indexOf('.zip') > 0, 'link not clicked');
+        return clicked.download;
+      });
+
+      await test('cashier profile cannot build or share the package', async () => {
+        const ownerPin = (await api.security.setPin('owner', '4321')).data;
+        assert(ownerPin.pinSet !== false, 'owner pin not set');
+        await api.security.setPin('cashier', '1234');
+        const unlock = (await api.security.unlock('cashier', '1234')).data;
+        assert(unlock.profile === 'cashier', 'not cashier');
+        const build = await api.accountingPackage.build('2026-09');
+        assert(build.ok === false && build.error.code === 'PERMISSION',
+          'build allowed: ' + JSON.stringify(build));
+        const share = await api.accountingPackage.share('2026-09');
+        assert(share.ok === false && share.error.code === 'PERMISSION', 'share allowed');
+        const owner = (await api.security.unlock('owner', '4321')).data;
+        assert(owner.profile === 'owner', 'owner unlock failed');
+        return 'denied';
+      });
+
+      await test('L8 integrity is 16 checks and the closed day recomputes cleanly', async () => {
+        const res = (await api.maintenance.integrityCheck()).data;
+        assert(res.checks === 16, 'checks ' + res.checks);
+        const closingErrors = res.errors.filter(e => e.check === 'closing-recompute');
+        assert(closingErrors.length === 0, JSON.stringify(closingErrors));
+        assert(res.drawer && res.drawer.actualMinor === res.drawer.expectedMinor,
+          'drawer mismatch ' + JSON.stringify(res.drawer));
+        assert(Array.isArray(res.unclosedDays), 'unclosedDays missing');
+        assert(res.storage && typeof res.storage.supported === 'boolean', 'storage missing');
+        return res.errors.length + ' errors, ' + res.warnings.length + ' warnings';
+      });
+
+      await test('open month does not silently become final in manifest checks', async () => {
+        const pkg = (await api.accountingPackage.build('2026-10')).data;
+        assert(pkg.status === 'open', 'October should be open, got ' + pkg.status);
+        assert(pkg.manifest.statusLabel.indexOf('غير نهائي') >= 0, 'not marked non-final');
+        return pkg.filename;
+      });
+    }
+
+    run().then(() => {
+      results.innerHTML += '<h2>Results: ' + state.passed + ' passed, ' + state.failed +
+        ' failed</h2>';
+      state.done = true;
+      window.__testResults = state;
+    }).catch(e => {
+      results.innerHTML += '<div class="fail">Fatal: ' + (e && e.message ? e.message : e) + '</div>';
+      state.failed++;
+      state.tests.push({ name: 'fatal', ok: false, detail: String(e) });
+      state.done = true;
+      window.__testResults = state;
+    });
+  </script>
+</body>
+</html>

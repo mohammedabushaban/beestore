@@ -16,6 +16,7 @@
 - [ ] On a phone: the folder step is skipped automatically (desktop-only feature)
 - [ ] On desktop Chrome/Edge: optionally choose a data folder (e.g. `BeeStore-Data`) or skip
 - [ ] Load demo data or start empty
+- [ ] In the lock step, set and confirm a 4–6 digit owner PIN (required to finish the wizard; changeable later from Settings → الأمان)
 - [ ] After finishing, open **Settings → البيانات** and confirm the app version and cache version are visible
 
 ## PWA, Install & Offline (v3-Lite L1)
@@ -28,7 +29,7 @@
 - [ ] After one online load, Settings says «التطبيق محفوظ على الهاتف ويعمل دون إنترنت»
 - [ ] Airplane mode + close/reopen the app: the shell opens from cache and existing data is visible
 - [ ] Create and save a small invoice offline; close/reopen: the invoice is still there
-- [ ] Service worker controls the page and caches **84** app-shell files; no data/backup files are cached
+- [ ] Service worker controls the page and caches **97** app-shell files; no data/backup files are cached
 - [ ] No external/CDN requests in DevTools → Network; no CSP errors in Console
 - [ ] `index.html` has no inline `onclick` handlers; sidebar/header/nav links still navigate
 
@@ -100,6 +101,68 @@
 - [ ] Reopen the latest closed day (month must be open): generated records are soft-voided with an audit entry; reopening a non-latest day is blocked
 - [ ] Month Review shows the days table, closed/unclosed counters, total differences, and signed cash-difference row in P&L
 - [ ] External totals (card/wallet) produce warnings only and never post ledger entries
+
+## Local Profiles & App Lock (v3-Lite L5)
+
+- [ ] First run requires an owner PIN (4–6 digits, entered twice); it can be changed later from Settings → الأمان
+- [ ] Stored settings contain only `{algorithm, iterations, salt, hash, createdAt}` for a profile — never the PIN itself
+- [ ] Lock the app manually; the lock screen appears and the correct PIN unlocks it
+- [ ] After 5 wrong PINs the input is blocked for 30 s; further wrong attempts increase the delay
+- [ ] Auto-lock happens after `autoLockMinutes` (default 5) of inactivity
+- [ ] Send the app to the background for more than one minute; returning requires the PIN
+- [ ] Unlock with the same profile while a POS invoice is in progress: the cart is preserved
+- [ ] Switch to the cashier profile and unlock: the UI re-renders for the cashier (no owner actions)
+- [ ] Cashier can create an invoice with a discount at or below `cashierMaxDiscountPercent` (default 10%)
+- [ ] Cashier sees a discount error above the configured percentage (test above and below the limit)
+- [ ] Cashier can receive a customer payment, view products/prices/stock, view their own-day summary, and use Price Check
+- [ ] Cashier can create a return up to `cashierMaxReturnMinor` (default ₪50); a larger return is rejected
+- [ ] Cashier cannot see cost, profit, margin, or COGS anywhere (products, invoice lines, reports, dashboard)
+- [ ] Cashier cannot open reports, expenses, payroll, accounts, settings, backups, closings, voids, stock adjustments, price edits, or product edits
+- [ ] Cashier settings/`profiles` payloads are stripped by the facade, not only hidden by the page
+- [ ] Audit log entries and sales/returns/exchanges carry the acting `profile` / `createdByProfile`
+- [ ] A phone clock moved backwards more than a day (or forward more than 30 days) shows an Arabic warning and blocks posting until the owner confirms
+- [ ] Confirm the clock warning; posting works again for the confirmed day
+- [ ] Documented honest limit: local profiles stop casual access, not a technical person with developer tools; there is no remote wipe
+
+## Phone UX & Receipt Sharing (v3-Lite L6)
+
+- [ ] Enable **خط كبير** in Settings; text and controls grow without horizontal overflow
+- [ ] Tap targets are at least ~44 px; the POS bottom action bar works in portrait
+- [ ] Camera scan, USB/Bluetooth scanner, Price Check, and stocktake scanning still work (see the camera sections)
+- [ ] Open an invoice → **مشاركة الفاتورة** shares the Arabic receipt text via the OS share sheet
+- [ ] If text sharing is unsupported, the app falls back to copy/download behavior without losing the invoice
+- [ ] Printing A4/80mm and the Day Report still work after enabling large font
+
+## Accountant Package (v3-Lite L7)
+
+- [ ] Open **إقفال الشهور**, choose a month, and confirm the package actions are visible
+- [ ] For an **open month**, generate/share/download the package and confirm the visible **«غير نهائي — الشهر مفتوح»** marker in the PDF and workbook
+- [ ] For a **closed month**, generate the package and confirm it is marked final (no open-month watermark)
+- [ ] ZIP contains `00-README.txt` (Arabic/English), `01-Month-Review.pdf`, `accounting.xlsx`, `csv/`, and `manifest.json`
+- [ ] XLSX opens in Excel/LibreOffice with 18 sheets and readable Arabic headers
+- [ ] Each CSV opens in Excel with Arabic intact (UTF-8 BOM) and formulas neutralized
+- [ ] PDF opens on a phone and shows shaped Arabic (not disconnected letters), with the month and totals
+- [ ] `manifest.json` lists every file with size and SHA-256; re-computing a checksum matches
+- [ ] Cross-checks pass: P&L = Month Review; Σ Sales Journal = net sales (+ tax); Cash Book closing = cash balance; inventory valuation = balance snapshot; daily differences = P&L cash difference
+- [ ] Tampering with one package file makes manifest verification fail
+- [ ] **مشاركة الحزمة** opens the share sheet (Drive/WhatsApp/email) where supported; **تنزيل الحزمة** works as fallback
+- [ ] Cashier cannot build, share, or download a package (facade denies it)
+- [ ] The package is read-only: no database records change after generating/sharing it
+
+## Integrity, Drawer & Clock (v3-Lite L8)
+
+- [ ] Settings → الصيانة and the month-closing page show a **16-check** integrity result
+- [ ] On clean data, closed days recompute exactly with no red errors
+- [ ] Tamper with a closed day's expected cash, then run the check: `closing-recompute` reports an error
+- [ ] Void a `cash_difference` adjustment while its closing still has a difference: an error appears
+- [ ] Change only the adjustment amount: `cash-adjustment` reports the mismatch
+- [ ] Reopen and re-close the latest day: the check is clean again and the drawer balance matches
+- [ ] Drawer test: current balance = last closing's retained float + all later movements; a manual mismatch is reported
+- [ ] Leave an active day unclosed beyond `unclosedDayWarningDays` (default 3): a warning lists it, but does not block closing
+- [ ] With business data and an old/no backup, backup freshness and off-device warnings appear
+- [ ] Storage usage at 80%/90% produces warnings; clock anomaly appears in the check result
+- [ ] Warnings never block month closing; red errors do
+- [ ] A day report still prints after a clean re-check
 
 ## Camera Barcode Scanning (Android Chrome)
 
@@ -180,9 +243,22 @@ iOS 14.3+ exposes `getUserMedia` only in Safari (or a WebView with camera permis
 - [ ] Verify balance snapshot balances
 - [ ] Verify customer balances are correct after sales and payments
 
+## Final Verification (v3-Lite L10)
+
+Automated Node suite (2026-10-26): **188/188 passed** with `node --test --test-concurrency=1 tests/*.js` (serialized so the 50k-invoice perf assertion is not measured under parallel sibling load; the isolated run was 767 ms).
+
+Browser suites (headless Chromium, same day):
+
+- [x] `tests/idb-lazy.html` — 17/17 (memory window, indexed reads, summary, `variantDate`, v3→v6 upgrade, loading bar)
+- [x] `tests/smoke.html` — 10/10 (IndexedDB, export, month lock/reopen, integrity, Month Review, clear)
+- [x] `tests/ui-days.html` — 13/13 (day cards, days table, 4-step closing wizard, denominations, Day Report, Day mode, Month Review, settings, accounts delegation)
+- [x] `tests/ui-package.html` — 11/11 (open→closed package, Arabic Canvas PDF, 21 files/18 BOM CSVs, manifest checksums, share/download, cashier denial, 16-check integrity)
+- [x] Real app flow (`index.html`) — 10/10 (seed closed September, period page, package actions, final label, share sheet ZIP, integrity result with no errors)
+- [x] `tests/verify-offline.py` — 10/10 with CDP offline emulation (SW controls 97 cached files, shell starts offline, IndexedDB reads, invoice posts and survives a second offline reload)
+
 ## Performance (L2)
 
-> Automated reference (headless Chromium, re-run after L4 on 2026-10-25): 370 ms cold start, 30 ms save, 176 ms dashboard, 153 ms window month, 180 ms old month, 39.2 MB. Physical-phone verification is still required.
+> Automated reference (headless Chromium, re-run after L8 on 2026-10-26): 523 ms cold start, 18 ms save, 276 ms dashboard, 227 ms window month, 244 ms old month, 37.1 MB. Physical-phone verification is still required and remains unverified.
 
 - [x] Seed 50,000 invoices with `tests/perf.html` (headless or a desktop browser)
 - [x] Cold start ≤ 3 s; save invoice ≤ 100 ms; dashboard ≤ 1 s

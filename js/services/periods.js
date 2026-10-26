@@ -331,12 +331,8 @@
           updatedAt: BeeStore.dates.now(),
         };
         tx.put('periodClosings', rec);
-        tx.put('auditLog', {
-          id: BeeStore.ids.randomId('aud'),
-          timestamp: BeeStore.dates.now(),
-          action: 'period_close', entityType: 'period', entityId: month,
-          summary: 'إقفال شهر ' + month + (note ? ' - ' + note : ''),
-        });
+        tx.put('auditLog', BeeStore.audit.build('period_close', 'period', month,
+          'إقفال شهر ' + month + (note ? ' - ' + note : '')));
         return rec;
       });
     }
@@ -364,12 +360,8 @@
           reopenedAt: BeeStore.dates.now(), note: note || '',
         });
         tx.remove('periodClosings', rec.id);
-        tx.put('auditLog', {
-          id: BeeStore.ids.randomId('aud'),
-          timestamp: BeeStore.dates.now(),
-          action: 'period_reopen', entityType: 'period', entityId: month,
-          summary: 'إعادة فتح شهر ' + month + (note ? ' - ' + note : ''),
-        });
+        tx.put('auditLog', BeeStore.audit.build('period_reopen', 'period', month,
+          'إعادة فتح شهر ' + month + (note ? ' - ' + note : '')));
         return true;
       });
     }

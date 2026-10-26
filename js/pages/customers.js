@@ -7,9 +7,15 @@
   async function render(container) {
     container.innerHTML = '';
     container.appendChild(el('h2', { class: 'page-title' }, 'الزبائن والديون'));
+    const isCashier = !!(BeeStore.auth && BeeStore.auth.isCashier());
 
-    const addBtn = el('button', { class: 'btn btn-primary', onclick: () => _addCustomer() }, '+ زبون جديد');
-    container.appendChild(addBtn);
+    if (!isCashier) {
+      const addBtn = el('button', { class: 'btn btn-primary', onclick: () => _addCustomer() }, '+ زبون جديد');
+      container.appendChild(addBtn);
+    } else {
+      container.appendChild(el('p', { class: 'form-hint' },
+        'يمكنك استلام دفعات الزبائن وعرض كشف الحساب. إضافة أو تعديل الزبائن متاح للمالك فقط.'));
+    }
 
     const searchInput = input('text', '', { placeholder: 'بحث...', class: 'form-input' });
     container.appendChild(el('div', { class: 'filter-row' }, searchInput));
@@ -36,18 +42,24 @@
       container.appendChild(el('p', { class: 'empty-state' }, 'لا يوجد زبائن'));
       return;
     }
-    const rows = customers.map(c => [
-      c.name,
-      c.phone || '-',
-      el('button', { class: 'btn btn-sm btn-info', onclick: () => _viewStatement(c.id) }, 'كشف حساب'),
-      el('button', { class: 'btn btn-sm btn-success', onclick: () => _receivePayment(c.id, c.name) }, 'استلام دفعة'),
-      el('button', { class: 'btn btn-sm btn-secondary', onclick: () => _editCustomer(c.id) }, 'تعديل'),
-    ]);
+    const isCashier = !!(BeeStore.auth && BeeStore.auth.isCashier());
+    const rows = customers.map(c => {
+      const cells = [
+        c.name,
+        c.phone || '-',
+        el('button', { class: 'btn btn-sm btn-info', onclick: () => _viewStatement(c.id) }, 'كشف حساب'),
+        el('button', { class: 'btn btn-sm btn-success', onclick: () => _receivePayment(c.id, c.name) }, 'استلام دفعة'),
+      ];
+      if (!isCashier) {
+        cells.push(el('button', { class: 'btn btn-sm btn-secondary', onclick: () => _editCustomer(c.id) }, 'تعديل'));
+      }
+      return cells;
+    });
+    const headers = ['الاسم', 'الهاتف', '', '', ''];
+    if (!isCashier) headers.push('');
     container.appendChild(el('div', { class: 'table-wrapper' },
       el('table', { class: 'data-table' }, [
-        el('thead', {}, el('tr', {}, [
-          el('th', {}, 'الاسم'), el('th', {}, 'الهاتف'), el('th', {}, ''), el('th', {}, ''), el('th', {}, ''),
-        ])),
+        el('thead', {}, el('tr', {}, headers.map(h => el('th', {}, h)))),
         el('tbody', {}, rows.map(r => el('tr', {}, r.map(c => el('td', {}, c))))),
       ])
     ));

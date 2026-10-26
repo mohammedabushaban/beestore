@@ -131,3 +131,55 @@ All methods return `{ ok: true, data: ... }` or `{ ok: false, error: { code, mes
 | `maintenance.resetAll()` | `POST /api/maintenance/reset` | Reset all data |
 | `maintenance.isDatabaseEmpty()` | `GET /api/maintenance/empty` | Check if empty |
 | `audit.list(limit)` | `GET /api/audit?limit=` | List audit log |
+| `security.status()` | `GET /api/security/status` | Local lock/profile state (no PIN material) |
+| `security.profiles()` | `GET /api/security/profiles` | Owner/cashier `{id,name,pinSet}` only |
+| `security.unlock(profile, pin)` | `POST /api/security/unlock` | Verify a PIN and set the active profile |
+| `security.lock(reason)` | `POST /api/security/lock` | Lock the app now |
+| `security.setPin(profile, pin, options)` | `POST /api/security/pin` | Set/replace a profile PIN |
+| `security.removeCashier()` | `DELETE /api/security/cashier` | Remove the cashier PIN/profile |
+| `security.update(patch, currentPin)` | `PATCH /api/security` | Update limits, auto-lock, cashier name |
+| `security.clockStatus()` | `GET /api/security/clock` | Clock anomaly state + required confirmation |
+| `security.confirmClock()` | `POST /api/security/clock/confirm` | Owner confirms the current day after a clock jump |
+| `accountingPackage.info(month)` | `GET /api/accounting-package/:month/info` | Package readiness, open/closed status, file list |
+| `accountingPackage.build(month, options)` | `POST /api/accounting-package/:month` | Build the ZIP in memory (no DB writes) |
+| `accountingPackage.pdf(month, options)` | `POST /api/accounting-package/:month/pdf` | Build the Arabic Month Review PDF |
+| `accountingPackage.share(month, options)` | — | Share the ZIP via `CloudTarget` (owner only) |
+| `accountingPackage.download(month, options)` | — | Download the ZIP (owner only) |
+| `accountingPackage.sharePdf(month, options)` | — | Share the Month Review PDF |
+| `accountingPackage.downloadPdf(month, options)` | — | Download the Month Review PDF |
+
+## Local profiles and permissions (v3-Lite L5)
+
+`api.js` wraps every namespace and enforces an explicit **cashier allow-list**. The list covers sales/payment creation, product/variant/price reads, returns within `cashierMaxReturnMinor`, own-day summary, price check, and the minimum reads needed by those screens. Everything else is **owner-only**: reports, expenses, payroll, accounts, settings, backups, closings/reopen, voids, stock adjustments, product/price edits, audit, maintenance, and the accountant package.
+
+- Cashier responses are stripped of `cost`, `unitCostMinor`, `profit`, `margin`, `cogs`, and related keys at every depth.
+- `settings.profiles` and all PIN hash fields never leave the facade; owner settings expose only `pinSet`.
+- A cashier sale discount above `cashierMaxDiscountPercent` (default 10) is rejected with `PERMISSION`.
+- A cashier return above `cashierMaxReturnMinor` (default 5000 minor units = ₪50) is rejected with `PERMISSION`.
+- While a clock anomaly is pending, posting methods return `CLOCK_CONFIRM_REQUIRED`. Read-only report/package methods remain available to the owner.
+- `BeeStore.authUtils` supplies the read-method set, sensitive-key stripping, and settings sanitization. In older Node suites that do not load `auth.js`, the facade falls back to permissive no-op helpers.
+
+## Integrity result (v3-Lite L8)
+
+`maintenance.integrityCheck()` returns:
+
+```js
+{
+  errors: [{ level: "error", check, message, collection?, recordId? }],
+  warnings: [{ level: "warning", check, message, collection?, recordId? }],
+  checks: 16,
+  backup: { lastBackupAt, lastOffDeviceBackupAt, ageDays, warnDays, criticalDays, overdue, critical },
+  storage: { supported, persisted, usage, quota },
+  clock: { pending, reasons, ... } | null,
+  drawer: { date, drawerAccountId, retainedFloatMinor, laterMovementsMinor, expectedMinor, actualMinor } | null,
+  unclosedDays: ["YYYY-MM-DD", ...]
+}
+```
+
+Checks: base 9 (totals, stock, sale math, payroll, duplicates, references, counters, spread, dates) + `closing-recompute`, `drawer-balance`, `cash-adjustment`, `unclosed-days`, `backup`/`backup-offsite`, `storage`, `clock`. Red errors block month closing; warnings do not.
+
+## Notes
+
+- The REST column is the intended server mapping for a future v3-Full, not a live HTTP server. Today every method is executed locally in the browser.
+- Facade calls never throw; every failure is `{ok:false, error:{code,message}}`.
+- `repo` is the raw storage interface and is intentionally excluded from facade wrapping. Do not call it from pages except for explicit diagnostic/developer paths.

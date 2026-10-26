@@ -14,7 +14,7 @@
 
 const CACHE_PREFIX = 'beestore-v3-lite-';
 // >>> BEGIN GENERATED PRECACHE (run: node scripts/build-sw-list.js)
-const CACHE_VERSION = 'beestore-v3-lite-5b829f658d8e';
+const CACHE_VERSION = 'beestore-v3-lite-3b8cdcd696e7';
 const PRECACHE = [
   './bee.jpg',
   './css/app.css',
@@ -54,12 +54,16 @@ const PRECACHE = [
   './js/pages/settings.js',
   './js/pages/stocktake.js',
   './js/pages/suppliers.js',
+  './js/services/accountingPackage.js',
   './js/services/accounts.js',
   './js/services/audit.js',
+  './js/services/auth.js',
   './js/services/backup.js',
   './js/services/backupFile.js',
   './js/services/barcode.js',
   './js/services/categories.js',
+  './js/services/clockGuard.js',
+  './js/services/cloudTarget.js',
   './js/services/csv.js',
   './js/services/customers.js',
   './js/services/dailyClosing.js',
@@ -67,6 +71,7 @@ const PRECACHE = [
   './js/services/employees.js',
   './js/services/expenses.js',
   './js/services/maintenance.js',
+  './js/services/monthReviewPdf.js',
   './js/services/payroll.js',
   './js/services/periods.js',
   './js/services/products.js',
@@ -83,6 +88,8 @@ const PRECACHE = [
   './js/services/suppliers.js',
   './js/services/transactions.js',
   './js/services/variants.js',
+  './js/services/xlsx.js',
+  './js/services/zip.js',
   './js/storage/fileSync.js',
   './js/storage/idbRepository.js',
   './js/storage/memoryRepository.js',
@@ -94,6 +101,7 @@ const PRECACHE = [
   './js/ui/dialogs.js',
   './js/ui/errorLog.js',
   './js/ui/firstRun.js',
+  './js/ui/lock.js',
   './js/ui/period.js',
   './js/ui/print.js',
   './js/ui/router.js',

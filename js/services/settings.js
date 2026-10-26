@@ -61,6 +61,18 @@
     // The daily count sheet is ordered biggest first. Amounts are major units
     // (the UI converts using money.fromMajor), matching the ILS default.
     cashDenominations: [200, 100, 50, 20, 10, 5, 2, 1, 0.5, 0.1],
+    // v3-Lite §7: local profiles and app lock. Pin records are salted
+    // PBKDF2 hashes; the facade strips them from every UI response.
+    profiles: {
+      owner: { id: 'owner', name: 'المالك', pin: null, active: false },
+      cashier: { id: 'cashier', name: 'الكاشير', pin: null, active: false },
+    },
+    autoLockMinutes: 5,
+    lockoutAfter: 5,
+    lockoutSeconds: 30,
+    cashierMaxDiscountPercent: 10,
+    cashierMaxReturnMinor: 5000,
+    largeFont: false,
   };
 
   class SettingsService {

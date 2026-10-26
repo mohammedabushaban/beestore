@@ -54,7 +54,7 @@
       if (demoBtn) {
         demoBtn.onclick = async () => {
           await BeeStore.loadDemoData();
-          this.finish();
+          this._showStep(4);
         };
       }
 
@@ -71,7 +71,12 @@
 
       const emptyBtn = document.getElementById('wizard-empty');
       if (emptyBtn) {
-        emptyBtn.onclick = () => this.finish();
+        emptyBtn.onclick = () => this._showStep(4);
+      }
+
+      const startBtn = document.getElementById('wizard-start');
+      if (startBtn) {
+        startBtn.onclick = () => this.finish();
       }
     }
 
@@ -82,28 +87,59 @@
         step = 3;
       }
       this.step = step;
-      for (let i = 1; i <= 3; i++) {
+      for (let i = 1; i <= 4; i++) {
         const el = document.getElementById('wizard-step-' + i);
         if (el) el.style.display = i === step ? 'block' : 'none';
+      }
+      if (step === 4) {
+        const pin = document.getElementById('wizard-owner-pin');
+        if (pin) setTimeout(() => pin.focus(), 80);
       }
     }
 
     async finish() {
-      const overlay = document.getElementById('first-run-wizard');
-      if (overlay) overlay.style.display = 'none';
-      document.getElementById('app').style.display = 'block';
+      const ownerPin = (document.getElementById('wizard-owner-pin') || {}).value || '';
+      const ownerConfirm = (document.getElementById('wizard-owner-pin-confirm') || {}).value || '';
+      const cashierPin = (document.getElementById('wizard-cashier-pin') || {}).value || '';
+      if (!/^\d{4,6}$/.test(ownerPin)) {
+        BeeStore.ui.toast('اضبط رمزاً سرياً للمالك من 4 إلى 6 أرقام', 'error');
+        return;
+      }
+      if (ownerPin !== ownerConfirm) {
+        BeeStore.ui.toast('تأكيد رمز المالك لا يطابق الرمز', 'error');
+        return;
+      }
+      if (cashierPin && !/^\d{4,6}$/.test(cashierPin)) {
+        BeeStore.ui.toast('رمز الكاشير يجب أن يكون من 4 إلى 6 أرقام أو فارغاً', 'error');
+        return;
+      }
       if (BeeStore.settings && BeeStore.settings.ensureDefaults) {
         await BeeStore.settings.ensureDefaults();
       }
-      if (BeeStore._setupSidebar) BeeStore._setupSidebar();
-      if (BeeStore._setupRouter) BeeStore._setupRouter();
-      if (BeeStore._setupSaveStatus) BeeStore._setupSaveStatus();
-      if (BeeStore._setupVisibilityHandlers) BeeStore._setupVisibilityHandlers();
-      // The global period picker lives in the topbar — it must be rendered
-      // here too, otherwise it stays empty for wizard-created stores.
-      if (BeeStore.period && BeeStore.period.renderHeader) BeeStore.period.renderHeader();
-      if (BeeStore.router) BeeStore.router.start();
-      if (BeeStore.pwa && BeeStore.pwa.onAppReady) BeeStore.pwa.onAppReady();
+      try {
+        await BeeStore.auth.setPin('owner', ownerPin);
+        if (cashierPin) await BeeStore.auth.setPin('cashier', cashierPin);
+      } catch (e) {
+        BeeStore.ui.toast(e.message || 'تعذّر حفظ الرمز السري', 'error');
+        return;
+      }
+      const overlay = document.getElementById('first-run-wizard');
+      if (overlay) overlay.style.display = 'none';
+      document.getElementById('app').style.display = 'block';
+      // The wizard has just created the PIN: unlock directly instead of asking
+      // the owner to type the PIN they entered a second ago.
+      await BeeStore.auth.init();
+      const unlocked = await BeeStore.auth.unlock('owner', ownerPin);
+      if (!unlocked) {
+        BeeStore.appLock.show();
+        return;
+      }
+      BeeStore.settingsCache = await BeeStore.settings.get();
+      if (BeeStore.appLock && BeeStore.appLock.applyPreferences) {
+        BeeStore.appLock.applyPreferences(BeeStore.settingsCache);
+      }
+      BeeStore.appLock.bind({ onUnlocked: BeeStore._startApp });
+      await BeeStore.appLock.start();
     }
   }
 

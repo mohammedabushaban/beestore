@@ -98,6 +98,13 @@
       const wizard = d().getElementById('first-run-wizard');
       if (wizard && getComputedStyle(wizard).display !== 'none') {
         d().getElementById('wizard-empty').click();
+        // v3-Lite L5: the last wizard step requires an owner PIN.
+        const pin = d().getElementById('wizard-owner-pin');
+        if (pin) {
+          pin.value = '1357';
+          d().getElementById('wizard-owner-pin-confirm').value = '1357';
+          d().getElementById('wizard-start').click();
+        }
       }
       await waitFor(() => d().getElementById('app').style.display === 'block', 'بدء التطبيق');
       await waitFor(() => d().querySelector('#page-content .page-title'), 'تحميل الصفحة الرئيسية');

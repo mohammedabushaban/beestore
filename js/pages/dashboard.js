@@ -17,6 +17,11 @@
     }
     const d = res.data;
 
+    if (d && d.cashier) {
+      _renderCashier(container, d);
+      return;
+    }
+
     container.innerHTML = '';
     container.appendChild(el('h2', { class: 'page-title' }, 'الرئيسية'));
     if (BeeStore.period) await BeeStore.period.scopeBar(container);
@@ -522,6 +527,55 @@
         }
       }
     });
+  }
+
+  /** v3-Lite §7: cashier home — own day only, no cost/profit/month figures. */
+  function _renderCashier(container, d) {
+    container.innerHTML = '';
+    container.appendChild(el('h2', { class: 'page-title' }, 'الرئيسية — الكاشير'));
+    const t = d.today || {};
+    container.appendChild(el('div', { class: 'alert alert-info' },
+      'ملف الكاشير: تظهر هنا مبيعاتك اليوم فقط. التكلفة والأرباح والتقارير والإعدادات غير متاحة في هذا الملف.'));
+
+    container.appendChild(el('div', { class: 'cards-grid' }, [
+      _card('مبيعاتي اليوم', formatMoney(t.revenue || 0), (t.invoiceCount || 0) + ' فاتورة', '🧾'),
+      _card('المرتجعات اليوم', formatMoney(t.returns || 0), null, '↩️'),
+      _card('إجمالي الفواتير', formatMoney(t.grossSales || 0), null, '💵'),
+      _card('أصناف منخفضة المخزون', String(d.lowStockCount || 0), 'تحتاج متابعة من المالك', '📦'),
+    ]));
+
+    container.appendChild(el('div', { class: 'card' }, [
+      el('h3', {}, 'إجراءات سريعة'),
+      el('div', { class: 'dialog-actions', style: 'justify-content:flex-start;' }, [
+        el('button', { class: 'btn btn-primary', onclick: () => BeeStore.router.navigate('/pos') }, 'فاتورة جديدة'),
+        el('button', { class: 'btn btn-secondary', onclick: () => BeeStore.router.navigate('/price-check') }, 'فحص سعر'),
+        el('button', { class: 'btn btn-secondary', onclick: () => BeeStore.router.navigate('/returns') }, 'مرتجع'),
+        el('button', { class: 'btn btn-secondary', onclick: () => BeeStore.router.navigate('/customers') }, 'استلام دفعة'),
+      ]),
+    ]));
+
+    const recent = d.recentInvoices || [];
+    const card = el('div', { class: 'card' }, [el('h3', {}, 'آخر فواتيري اليوم')]);
+    if (recent.length === 0) {
+      card.appendChild(el('p', { class: 'empty-state' }, 'لا توجد فواتير بعد اليوم.'));
+    } else {
+      const rows = recent.map(inv => el('tr', {}, [
+        el('td', {}, inv.number),
+        el('td', {}, formatDate(inv.date)),
+        el('td', { style: 'text-align:left;' }, formatMoney(inv.totalMinor)),
+        el('td', {}, inv.status === 'void' ? 'ملغاة' : 'محفوظة'),
+      ]));
+      card.appendChild(el('div', { class: 'table-wrapper' }, [
+        el('table', { class: 'data-table' }, [
+          el('thead', {}, [el('tr', {}, [
+            el('th', {}, 'الرقم'), el('th', {}, 'التاريخ'),
+            el('th', {}, 'الإجمالي'), el('th', {}, 'الحالة'),
+          ])]),
+          el('tbody', {}, rows),
+        ]),
+      ]));
+    }
+    container.appendChild(card);
   }
 
   BeeStore.pages = BeeStore.pages || {};

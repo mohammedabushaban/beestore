@@ -6,6 +6,11 @@
 
   async function render(container) {
     container.innerHTML = '';
+    // v3-Lite §7: the cashier gets a read-only catalog (price + stock only).
+    if (BeeStore.auth && BeeStore.auth.isCashier()) {
+      await _renderCashierCatalog(container);
+      return;
+    }
     container.appendChild(el('h2', { class: 'page-title' }, 'المنتجات والمخزون'));
 
     const content = el('div', { id: 'products-content' });
@@ -36,6 +41,64 @@
     else if (tab === 'stock') _renderStock(container);
     else if (tab === 'lowstock') _renderLowStock(container);
     else if (tab === 'csv') _renderCsvImport(container);
+  }
+
+  async function _renderCashierCatalog(container) {
+    container.appendChild(el('h2', { class: 'page-title' }, 'المنتجات والأسعار'));
+    container.appendChild(el('p', { class: 'alert alert-info' },
+      'عرض للقراءة فقط: السعر والكمية المتوفرة. تعديل المنتجات والأسعار والتكلفة متاح للمالك فقط.'));
+
+    const [productsRes, variantsRes] = await Promise.all([
+      BeeStore.api.products.list(),
+      BeeStore.api.variants.list(),
+    ]);
+    if (!productsRes.ok) { toast(productsRes.error.message, 'error'); return; }
+    if (!variantsRes.ok) { toast(variantsRes.error.message, 'error'); return; }
+    const productMap = {};
+    for (const p of productsRes.data) productMap[p.id] = p;
+    const activeVariants = variantsRes.data.filter(v => {
+      const p = productMap[v.productId];
+      return (!p || p.active !== false) && v.active !== false;
+    });
+
+    const searchInput = input('text', '', { placeholder: 'ابحث بالاسم أو الباركود أو المقاس...' });
+    const listDiv = el('div');
+    container.appendChild(el('div', { class: 'filter-row' }, searchInput));
+    container.appendChild(listDiv);
+
+    function draw() {
+      const q = (searchInput.value || '').trim().toLowerCase();
+      const rows = activeVariants.filter(v => {
+        const p = productMap[v.productId];
+        const hay = [p ? p.name : '', v.size, v.color, v.sku, v.barcode].join(' ').toLowerCase();
+        return !q || hay.indexOf(q) !== -1;
+      }).map(v => {
+        const p = productMap[v.productId];
+        const low = v.quantity <= (v.lowStockThreshold || 0);
+        return el('tr', {}, [
+          el('td', {}, p ? p.name : '—'),
+          el('td', {}, v.size || '—'),
+          el('td', {}, v.color || '—'),
+          el('td', { style: 'direction:ltr;text-align:start;' }, v.barcode || v.sku || '—'),
+          el('td', {}, formatMoney(v.priceMinor)),
+          el('td', { class: low ? 'text-danger' : '' }, String(v.quantity)),
+        ]);
+      });
+      listDiv.innerHTML = '';
+      if (rows.length === 0) {
+        listDiv.appendChild(el('p', { class: 'empty-state' }, 'لا توجد أصناف مطابقة.'));
+        return;
+      }
+      listDiv.appendChild(el('div', { class: 'table-wrapper' }, el('table', { class: 'data-table' }, [
+        el('thead', {}, el('tr', {}, [
+          el('th', {}, 'المنتج'), el('th', {}, 'المقاس'), el('th', {}, 'اللون'),
+          el('th', {}, 'الباركود'), el('th', {}, 'السعر'), el('th', {}, 'المتوفر'),
+        ])),
+        el('tbody', {}, rows),
+      ])));
+    }
+    searchInput.addEventListener('input', draw);
+    draw();
   }
 
   async function _renderCategories(container) {

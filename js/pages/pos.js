@@ -214,6 +214,13 @@
       onclick: () => _printLastInvoice(),
       'aria-label': 'طباعة الفاتورة'
     }, 'طباعة الفاتورة');
+    const shareBtn = el('button', {
+      class: 'btn btn-secondary pos-share-btn',
+      id: 'pos-share-btn',
+      style: 'display:none',
+      onclick: () => _shareLastInvoice(),
+      'aria-label': 'مشاركة الفاتورة'
+    }, 'مشاركة');
 
     return el('div', { class: 'pos-right' }, [
       el('div', { class: 'card' }, [
@@ -246,7 +253,7 @@
         el('button', { class: 'btn btn-sm btn-secondary', onclick: () => _addPayment(paymentsDiv), 'aria-label': 'إضافة دفعة جديدة' }, '+ إضافة دفعة'),
       ]),
       totalsDiv,
-      el('div', { class: 'pos-actions', role: 'group', 'aria-label': 'إجراءات الفاتورة' }, [saveBtn, clearBtn, printBtn]),
+      el('div', { class: 'pos-actions', role: 'group', 'aria-label': 'إجراءات الفاتورة' }, [saveBtn, clearBtn, printBtn, shareBtn]),
     ]);
   }
 
@@ -571,6 +578,8 @@
       toast(res.data.duplicate ? 'الفاتورة محفوظة مسبقاً (تم تجاهل التكرار)' : 'تم حفظ الفاتورة بنجاح');
       const printBtn = document.getElementById('pos-print-btn');
       if (printBtn) printBtn.style.display = 'inline-block';
+      const shareBtn = document.getElementById('pos-share-btn');
+      if (shareBtn) shareBtn.style.display = 'inline-block';
       _resetForm();
     } else {
       toast(res.error.message, 'error');
@@ -615,6 +624,12 @@
   function _printLastInvoice() {
     if (lastSaleId) {
       BeeStore.print.printInvoice(lastSaleId);
+    }
+  }
+
+  function _shareLastInvoice() {
+    if (lastSaleId) {
+      BeeStore.print.shareInvoice(lastSaleId);
     }
   }
 

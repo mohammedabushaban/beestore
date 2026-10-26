@@ -134,6 +134,42 @@
         topProducts,
       };
     }
+
+    /**
+     * v3-Lite §7: the cashier sees only its own day's sales summary. No cost,
+     * profit, balances, reports, backups or month data are computed for this
+     * response at all (the facade returns this instead of get()).
+     * @returns {Promise<object>} cashier-only dashboard payload
+     */
+    async cashierSummary() {
+      const today = BeeStore.dates.today();
+      const settings = await this.repo.get('meta', 'settings') || {};
+      const sales = await this.repo.listRange('sales', today, today,
+        s => s.status !== 'void' && s.createdByProfile === 'cashier');
+      const returns = await this.repo.listRange('salesReturns', today, today,
+        r => r.createdByProfile === 'cashier');
+      const invoices = sales.slice().sort((a, b) =>
+        String(b.date + b.number).localeCompare(String(a.date + a.number)));
+      const revenueMinor = BeeStore.money.sum(sales.map(s => s.totalMinor)) -
+        BeeStore.money.sum(returns.map(r => r.refundMinor));
+      const variants = await this.repo.list('variants', v => v.active !== false);
+      const threshold = Number(settings.defaultLowStockThreshold) || 3;
+      const lowStockCount = variants.filter(v => v.quantity <= (v.lowStockThreshold || threshold)).length;
+      return {
+        cashier: true,
+        today: {
+          revenue: revenueMinor,
+          grossSales: BeeStore.money.sum(sales.map(s => s.totalMinor)),
+          returns: BeeStore.money.sum(returns.map(r => r.refundMinor)),
+          invoiceCount: sales.length,
+        },
+        recentInvoices: invoices.slice(0, 10).map(s => ({
+          id: s.id, number: s.number, date: s.date,
+          totalMinor: s.totalMinor, status: s.status,
+        })),
+        lowStockCount,
+      };
+    }
   }
 
   BeeStore.dashboard = new DashboardService(null);

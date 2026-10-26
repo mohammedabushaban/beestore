@@ -68,6 +68,8 @@
       container.appendChild(emptyState('لا توجد فواتير'));
       return;
     }
+    // v3-Lite §7: the cashier may print and collect payments, never void.
+    const isCashier = !!(BeeStore.auth && BeeStore.auth.isCashier());
     const rows = invoices.map(inv => {
       const hasReturns = inv.returnStatus && inv.returnStatus !== 'none';
       return [
@@ -85,13 +87,14 @@
           ? el('button', { class: 'btn btn-sm btn-success', onclick: () => _receiveInvoicePayment(inv) }, 'دفعة')
           : '',
         el('button', { class: 'btn btn-sm btn-primary', onclick: () => BeeStore.print.printInvoice(inv.id) }, 'طباعة'),
-        (inv.status === 'void' || inv.returnStatus !== 'none')
+        el('button', { class: 'btn btn-sm btn-secondary', onclick: () => BeeStore.print.shareInvoice(inv.id) }, 'مشاركة'),
+        (isCashier || inv.status === 'void' || inv.returnStatus !== 'none')
           ? ''
           : el('button', { class: 'btn btn-sm btn-danger', onclick: () => _voidInvoice(inv.id, inv.number) }, 'إلغاء'),
       ];
     });
     container.appendChild(table(
-      ['الرقم', 'التاريخ', 'الزبون', 'الإجمالي', 'المتبقي', 'الحالة', 'عرض', 'دفعة', 'طباعة', 'إلغاء'],
+      ['الرقم', 'التاريخ', 'الزبون', 'الإجمالي', 'المتبقي', 'الحالة', 'عرض', 'دفعة', 'طباعة', 'مشاركة', 'إلغاء'],
       rows
     ));
   }
@@ -228,6 +231,7 @@
           onclick: () => { overlay.remove(); _receiveInvoicePayment(sale); },
         }, 'استلام دفعة (' + formatMoney(sale.dueMinor) + ')') : null,
         el('button', { class: 'btn btn-primary', onclick: () => BeeStore.print.printInvoice(sale.id) }, 'طباعة'),
+        el('button', { class: 'btn btn-secondary', onclick: () => BeeStore.print.shareInvoice(sale.id) }, 'مشاركة'),
       ]),
     ]);
     overlay.appendChild(content);

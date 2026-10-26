@@ -63,6 +63,44 @@
 - `settings.cashDrawerAccountId`, `settings.defaultBankAccountId`, `settings.cashDenominations[]` configure the drawer, suggested bank, and count sheet.
 - P&L: monthly summary stores signed `cashDifference`; operating expenses subtract it, so a shortage raises expenses and a surplus lowers them.
 
+## v3-Lite L5 Local Profiles & Clock Fields (schemaVersion 3)
+
+- `settings.profiles.owner` / `settings.profiles.cashier`: `{id, name, pin, active}`. `pin` is `null` or `{algorithm: "PBKDF2-SHA256", iterations: 210000, salt: <base64>, hash: <base64>, createdAt}`. The PIN itself is never stored and never returned by the facade.
+- `settings.autoLockMinutes` (default 5), `settings.lockoutAfter` (default 5), `settings.lockoutSeconds` (default 30), `settings.cashierMaxDiscountPercent` (default 10), `settings.cashierMaxReturnMinor` (default 5000 = ₪50), `settings.largeFont` (default false).
+- `sales`, `salesReturns`, `exchanges`: optional `createdByProfile` (`"owner"|"cashier"`). `auditLog` records carry `profile` and remain append-only.
+- `meta.clock`: `{lastSeenDate, lastSeenAt, confirmedDate, confirmedAt}`. A backward jump >1 day vs `meta.updatedAt`, or a forward jump >30 days vs `lastSeenDate`, requires a per-day owner confirmation before posting.
+- Lock state (active profile, failed attempts, lockout expiry) is in memory only and is intentionally not exported in backups.
+
+## v3-Lite L8 Integrity Fields (schemaVersion 3, dbVersion 6)
+
+No new collection or schema version was added. L8 uses the existing fields:
+
+- `dailyClosings.cashDrawerAccountId` and `cashDrawerAccountName`: the drawer identity frozen with each closing. Integrity recomputation uses this account even if settings change later.
+- `dailyClosings` frozen figures are re-derived from documents with `excludeClosingId`, so the closing's own `cashAdjustments` / `transfers` / `ownerTransactions` are not double-counted. The check compares opening, invoice count, sales, average, cash sales, collections, refunds, supplier cash payments, cash expenses, other in/out, expected cash, method maps, `counted − expected = difference`, `counted − takenOut = retainedFloat`, and the `noCount` zero-difference rule.
+- `cashAdjustments` with `sourceType: "cash_difference"` must match their closing's `differenceMinor`, `date`, and drawer account; their monthly sum must equal the month's closing differences.
+- `meta.summary.cashDifference` remains the signed monthly sum used by P&L.
+- Integrity reads `settings.lastBackupAt`, `settings.lastOffDeviceBackupAt`, `settings.backupWarnDays`, `settings.backupCriticalDays`, `settings.unclosedDayWarningDays` (default 3), and returns `backup`, `storage`, `clock`, `drawer`, and `unclosedDays` alongside errors/warnings.
+
+## v3-Lite L7 Accountant Package (not stored in IndexedDB)
+
+The package is generated in memory and never written to the database. Its manifest uses this shape:
+
+```json
+{
+  "format": "BeeStore-Accountant-Package",
+  "formatVersion": 1,
+  "month": "2026-10",
+  "status": "closed",
+  "final": true,
+  "generatedAt": "2026-10-31T18:00:00.000Z",
+  "appVersion": "3.0.0-lite",
+  "files": [{ "path": "accounting.xlsx", "size": 12345, "sha256": "..." }],
+  "checks": [{ "id": "pnl-month-review", "status": "pass", "message": "..." }]
+}
+```
+
+`status` is `"open"` until the month is closed; open packages are watermarked **«غير نهائي — الشهر مفتوح»**. CSV files are UTF-8 with a BOM and guard leading `=`, `+`, `-`, `@` against formula injection.
+
 ## Money Representation
 
 All monetary values are integers in minor units (agorot/cents). For example, ₪100.50 is stored as `10050`.

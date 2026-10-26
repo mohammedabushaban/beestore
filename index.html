@@ -73,6 +73,54 @@
         </div>
         <p class="form-hint">على هاتف جديد: ثبّت التطبيق، افتحه، ثم اختر «استعادة من نسخة احتياطية» وحدد ملف BeeStore-backup. لن تُحفظ النسخة داخل التطبيق — احتفظ بالملف في Drive أو واتساب.</p>
       </div>
+      <div id="wizard-step-4" style="display:none">
+        <h3>قفل التطبيق والملفات الشخصية</h3>
+        <p>اضبط رقماً سرياً للمالك (4–6 أرقام). يُطلب عند فتح التطبيق وعند إغلاقه تلقائياً.</p>
+        <div class="form-group">
+          <label class="form-label">الرمز السري للمالك *</label>
+          <input type="password" id="wizard-owner-pin" class="form-input" inputmode="numeric" autocomplete="new-password" maxlength="6" placeholder="4–6 أرقام">
+        </div>
+        <div class="form-group">
+          <label class="form-label">تأكيد رمز المالك *</label>
+          <input type="password" id="wizard-owner-pin-confirm" class="form-input" inputmode="numeric" autocomplete="new-password" maxlength="6">
+        </div>
+        <div class="form-group">
+          <label class="form-label">رمز الكاشير (اختياري)</label>
+          <input type="password" id="wizard-cashier-pin" class="form-input" inputmode="numeric" autocomplete="new-password" maxlength="6" placeholder="اتركه فارغاً لتعطيل ملف الكاشير">
+          <p class="form-hint">الكاشير يبيع ويستلم الدفعات ضمن حدود، ولا يرى التكلفة أو الأرباح أو التقارير أو الإعدادات.</p>
+        </div>
+        <p class="form-hint">لا يوجد خادم ولا محو عن بُعد. القفل المحلي يحمي من الاستخدام العابر، وليس من شخص خبير بأدوات المتصفح. احتفظ بنسخ احتياطية خارج الهاتف.</p>
+        <button type="button" class="btn btn-primary" id="wizard-start">بدء الاستخدام</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="lock-screen" class="lock-screen" style="display:none">
+    <div class="lock-card">
+      <img src="bee.jpg" alt="" class="lock-logo">
+      <h2>بي ستور مقفل</h2>
+      <p id="lock-subtitle" class="lock-subtitle">اختر الملف وأدخل الرمز السري</p>
+      <div id="lock-profiles" class="lock-profiles" role="group" aria-label="اختيار الملف"></div>
+      <div class="form-group">
+        <label class="form-label" for="lock-pin">الرمز السري</label>
+        <input type="password" id="lock-pin" class="form-input lock-pin" inputmode="numeric" autocomplete="current-password" maxlength="6" placeholder="••••">
+      </div>
+      <p id="lock-error" class="lock-error" role="alert"></p>
+      <button type="button" class="btn btn-primary btn-lg lock-submit" id="lock-submit">فتح</button>
+      <p class="lock-help">الرمز يحمي بيانات المتجر على هذا الهاتف. لا توجد إعادة تعيين عن بُعد.</p>
+    </div>
+  </div>
+
+  <div id="clock-warning" class="lock-screen clock-warning" style="display:none">
+    <div class="lock-card">
+      <div class="clock-warning-icon" aria-hidden="true">⏰</div>
+      <h2>تحذير: تاريخ الهاتف غير طبيعي</h2>
+      <div id="clock-warning-reasons"></div>
+      <p class="alert alert-warning">لن يُسمح بتسجيل أي فاتورة أو عملية حتى تؤكد أن التاريخ والوقت صحيحان. صحّح تاريخ الهاتف من الإعدادات ثم أعد فتح التطبيق، أو أكد المتابعة إذا كان التاريخ صحيحاً فعلاً.</p>
+      <div class="dialog-actions">
+        <button type="button" class="btn btn-primary" id="clock-confirm">التاريخ صحيح — متابعة</button>
+        <button type="button" class="btn btn-secondary" id="clock-cancel">إغلاق ومقفل</button>
+      </div>
     </div>
   </div>
 
@@ -230,6 +278,10 @@
         <div class="header-title" id="page-title">الرئيسية</div>
         <div class="period-selector" id="period-selector"></div>
         <div class="header-save-status" id="header-save-status"></div>
+        <span id="profile-chip" class="profile-chip" title="الملف الحالي"></span>
+        <button type="button" class="btn btn-secondary btn-sm header-lock" id="header-lock" aria-label="قفل التطبيق" title="قفل التطبيق">
+          <svg viewBox="0 0 24 24" aria-hidden="true" style="width:15px;height:15px;stroke:currentColor;fill:none;stroke-width:2;stroke-linecap:round"><rect x="5" y="10" width="14" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg>
+        </button>
         <button type="button" class="btn btn-primary btn-sm header-action" data-route="/pos" aria-label="فاتورة جديدة">
           <svg viewBox="0 0 24 24" aria-hidden="true" style="width:15px;height:15px;stroke:currentColor;fill:none;stroke-width:2.2;stroke-linecap:round"><path d="M12 5v14M5 12h14"/></svg>
           <span class="header-action-label">فاتورة جديدة</span>
@@ -255,6 +307,8 @@
   <script src="js/storage/migrations.js"></script>
   <script src="js/storage/fileSync.js"></script>
   <script src="js/services/settings.js"></script>
+  <script src="js/services/auth.js"></script>
+  <script src="js/services/clockGuard.js"></script>
   <script src="js/services/audit.js"></script>
   <script src="js/services/accounts.js"></script>
   <script src="js/services/categories.js"></script>
@@ -276,6 +330,11 @@
   <script src="js/services/reports.js"></script>
   <script src="js/services/dashboard.js"></script>
   <script src="js/services/backupFile.js"></script>
+  <script src="js/services/zip.js"></script>
+  <script src="js/services/xlsx.js"></script>
+  <script src="js/services/monthReviewPdf.js"></script>
+  <script src="js/services/cloudTarget.js"></script>
+  <script src="js/services/accountingPackage.js"></script>
   <script src="js/services/backup.js"></script>
   <script src="js/services/maintenance.js"></script>
   <script src="js/services/snapshots.js"></script>
@@ -285,6 +344,7 @@
   <script src="js/ui/dialogs.js"></script>
   <script src="js/ui/backupUI.js"></script>
   <script src="js/ui/print.js"></script>
+  <script src="js/ui/lock.js"></script>
   <script src="js/ui/firstRun.js"></script>
   <script src="js/ui/period.js"></script>
   <script src="js/ui/errorLog.js"></script>

@@ -14,10 +14,11 @@
 
     _bindServices() {
       const services = [
-        'settings', 'accounts', 'categories', 'products', 'variants', 'stock',
+        'settings', 'auth', 'clockGuard', 'accounts', 'categories', 'products', 'variants', 'stock',
         'sales', 'returns', 'customers', 'suppliers', 'purchases', 'purchaseReturns',
         'expenses', 'employees', 'payroll', 'transactions', 'periods',
         'dailyClosing', 'reports', 'dashboard', 'backup', 'maintenance', 'audit',
+        'accountingPackage',
       ];
       for (const name of services) {
         const svc = BeeStore[name];
@@ -32,7 +33,7 @@
       // NEVER rejects. Service throws (BeeError with .code) become fail().
       // `repo` is excluded: it is the raw storage interface, not the facade.
       for (const key of Object.keys(this)) {
-        if (key === 'repo') continue;
+        if (key === 'repo' || key === 'security') continue;
         const ns = this[key];
         if (!ns || typeof ns !== 'object') continue;
         for (const m of Object.keys(ns)) {
@@ -40,7 +41,7 @@
           const fn = ns[m].bind(ns);
           ns[m] = async (...args) => {
             try {
-              return await fn(...args);
+              return await this._dispatch(key, m, fn, args);
             } catch (e) {
               const code = (e && e.code) || 'UNKNOWN';
               const message = (e && e.message) || 'حدث خطأ غير معروف';
@@ -48,8 +49,187 @@
             }
           };
         }
+      }
     }
-  }
+
+    _utils() {
+      // Node regression suites may load the facade without auth.js; the
+      // browser always loads it first (index.html script order).
+      return BeeStore.authUtils || {
+        READ_METHODS: new Set(),
+        stripSensitive: (v) => v,
+        sanitizeSettings: (v) => v,
+      };
+    }
+
+    /**
+     * v3-Lite §7 central enforcement: permission check + response shaping for
+     * every facade call, before a page sees anything. Pages never enforce
+     * roles themselves. The namespace functions already return {ok,...}, so
+     * this only reshapes the data of successful calls (never double-wraps).
+     */
+    async _dispatch(ns, method, fn, args) {
+      const utils = this._utils();
+      const auth = BeeStore.auth;
+      if (auth) {
+        auth.assertCan(ns + '.' + method);
+        if (this._isPostingAction(ns, method) && auth.postingBlocked()) {
+          throw BeeStore.errors.err('CLOCK_ANOMALY',
+            'تم إيقاف التسجيل مؤقتاً حتى تأكيد تاريخ الهاتف. راجع تحذير الساعة أولاً.');
+        }
+      }
+      let callArgs = args;
+      const cashier = !!(auth && auth.isCashier());
+      if (cashier && ns === 'dashboard' && method === 'get') {
+        // The cashier never receives the owner dashboard (cost, profit,
+        // balances, month figures) — not even momentarily.
+        return ok(utils.stripSensitive(await BeeStore.dashboard.cashierSummary()));
+      }
+      if (ns === 'settings') {
+        // Never accept PIN records from a page; the security namespace owns
+        // them. Screens may read back only pinSet flags (sanitized below).
+        callArgs = args.map((arg) => {
+          if (!arg || typeof arg !== 'object' || Array.isArray(arg)) return arg;
+          if (method !== 'save' && method !== 'update') return arg;
+          const copy = { ...arg };
+          delete copy.profiles;
+          delete copy.pin;
+          return copy;
+        });
+      }
+      if (ns === 'sales' && method === 'create') {
+        callArgs = [await this._prepareSale(callArgs[0], cashier)];
+      }
+      if (ns === 'returns' && method === 'create') {
+        callArgs = [await this._prepareReturn(callArgs[0], cashier)];
+      }
+      if (ns === 'dailyClosings' && method === 'close' && auth) {
+        callArgs = [{ ...(callArgs[0] || {}), closedBy: auth.profileName() || 'المالك' }];
+      }
+      const res = await fn(...callArgs);
+      if (!res || res.ok !== true) return res;
+      let data = res.data;
+      if (ns === 'settings') data = utils.sanitizeSettings(data);
+      if (cashier) data = utils.stripSensitive(data);
+      return ok(data);
+    }
+
+    _isPostingAction(ns, method) {
+      const reads = this._utils().READ_METHODS;
+      if (reads.has(method)) return false;
+      // Safety operations must remain usable while the clock is unconfirmed.
+      if (ns === 'backup' || ns === 'security') return false;
+      // The accountant package is a read-only export; a clock warning must
+      // not stop the owner from taking a package before fixing the date.
+      if (ns === 'accountingPackage') return false;
+      if (ns === 'maintenance' && method !== 'recalculateStock' && method !== 'resetAll') return false;
+      return true;
+    }
+
+    async _prepareSale(data, cashier) {
+      const sale = { ...(data || {}) };
+      const profile = BeeStore.auth && BeeStore.auth.profile ? BeeStore.auth.profile() : null;
+      sale.createdByProfile = profile;
+      if (!cashier) return sale;
+      const settings = await BeeStore.settings.get();
+      const limits = {
+        maxPercent: Math.max(0, Number(settings.cashierMaxDiscountPercent) || 0),
+      };
+      let regularSubtotal = 0;
+      let actualSubtotal = 0;
+      for (const line of (sale.lines || [])) {
+        const qty = Number(BeeStore.money.normalizeDigits(line.qty)) || 0;
+        const unit = BeeStore.money.roundMinor(line.unitPriceMinor || 0);
+        const lineDiscount = BeeStore.money.roundMinor(line.lineDiscountMinor || 0);
+        actualSubtotal += Math.max(0, BeeStore.money.mul(unit, qty) - lineDiscount);
+        let catalog = unit;
+        try {
+          const variant = await this.repo.get('variants', line.variantId);
+          if (variant) catalog = BeeStore.money.roundMinor(variant.priceMinor);
+        } catch (e) { /* service will report a missing variant */ }
+        regularSubtotal += BeeStore.money.mul(catalog, qty);
+      }
+      let invoiceDiscount = 0;
+      if (sale.discount && sale.discount.value > 0) {
+        if (sale.discount.type === 'percent') {
+          invoiceDiscount = Math.round(actualSubtotal * Number(sale.discount.value) / 100);
+        } else {
+          invoiceDiscount = BeeStore.money.fromMajor(sale.discount.value);
+        }
+      }
+      const effectiveDiscount = Math.max(0, regularSubtotal - actualSubtotal + invoiceDiscount);
+      const maxDiscount = Math.round(regularSubtotal * limits.maxPercent / 100);
+      if (effectiveDiscount > maxDiscount) {
+        throw BeeStore.errors.err('PERMISSION',
+          'خصم الكاشير يتجاوز الحد المسموح (' + limits.maxPercent + '٪). ' +
+          'اطلب من المالك تطبيق خصم أكبر.');
+      }
+      return sale;
+    }
+
+    async _prepareReturn(data, cashier) {
+      const ret = { ...(data || {}) };
+      const profile = BeeStore.auth && BeeStore.auth.profile ? BeeStore.auth.profile() : null;
+      ret.createdByProfile = profile;
+      if (!cashier) return ret;
+      const settings = await BeeStore.settings.get();
+      const max = Math.max(0, Number(settings.cashierMaxReturnMinor) || 0);
+      const sale = await this.repo.get('sales', ret.saleId);
+      if (!sale) return ret; // let the service return its Arabic NOT_FOUND
+      let refund = 0;
+      for (const line of (ret.lines || [])) {
+        const saleLine = sale.lines[Number(line.saleLineIndex)];
+        if (!saleLine) continue;
+        const qty = Number(line.qty) || 0;
+        const proportionalDiscount = saleLine.lineDiscountMinor > 0
+          ? Math.round(saleLine.lineDiscountMinor * qty / saleLine.qty) : 0;
+        refund += BeeStore.money.mul(saleLine.unitPriceMinor, qty) - proportionalDiscount;
+      }
+      if (refund > max) {
+        throw BeeStore.errors.err('PERMISSION',
+          'قيمة المرتجع تتجاوز حد الكاشير (' + BeeStore.money.format(max) + '). ' +
+          'اطلب من المالك تنفيذ المرتجع.');
+      }
+      return ret;
+    }
+
+    _try(fn) {
+      return (async () => {
+        try { return ok(await fn()); }
+        catch (e) {
+          return fail((e && e.code) || 'UNKNOWN', (e && e.message) || 'حدث خطأ غير معروف');
+        }
+      })();
+    }
+
+    security = {
+      status: async () => this._try(async () => {
+        await BeeStore.auth.profiles();
+        return BeeStore.auth.state();
+      }),
+      profiles: async () => this._try(() => BeeStore.auth.profiles()),
+      unlock: async (profile, pin) => this._try(() => BeeStore.auth.unlock(profile, pin)),
+      lock: async (reason) => this._try(async () => {
+        const state = BeeStore.auth.lock(reason);
+        if (BeeStore.appLock && BeeStore.appLock.onLocked) BeeStore.appLock.onLocked();
+        return state;
+      }),
+      setPin: async (profile, pin, options) => this._try(() => BeeStore.auth.setPin(profile, pin, options)),
+      removeCashier: async () => this._try(() => BeeStore.auth.removeCashier()),
+      update: async (patch, currentPin) => this._try(() => BeeStore.auth.updateSecurity(patch, currentPin)),
+      clockStatus: async () => this._try(async () => {
+        if (!BeeStore.clockGuard) return { pending: false };
+        const state = await BeeStore.clockGuard.check();
+        BeeStore.auth.setClockState(state);
+        return state;
+      }),
+      confirmClock: async () => this._try(async () => {
+        if (!BeeStore.clockGuard) return { pending: false };
+        const state = await BeeStore.clockGuard.confirm();
+        BeeStore.auth.setClockState(state);
+        return state;
+      }),
+    };
 
     settings = {
       get: async () => ok(await BeeStore.settings.get()),
@@ -241,6 +421,16 @@
 
     dashboard = {
       get: async () => ok(await BeeStore.dashboard.get()),
+    };
+
+    accountingPackage = {
+      info: async (month) => ok(await BeeStore.accountingPackage.info(month)),
+      build: async (month, options) => ok(await BeeStore.accountingPackage.build(month, options)),
+      pdf: async (month, options) => ok(await BeeStore.accountingPackage.pdf(month, options)),
+      share: async (month, options) => ok(await BeeStore.accountingPackage.share(month, options)),
+      download: async (month, options) => ok(await BeeStore.accountingPackage.download(month, options)),
+      sharePdf: async (month, options) => ok(await BeeStore.accountingPackage.sharePdf(month, options)),
+      downloadPdf: async (month, options) => ok(await BeeStore.accountingPackage.downloadPdf(month, options)),
     };
 
     backup = {

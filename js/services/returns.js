@@ -103,6 +103,7 @@
             : (data.refundMethod || null),
           reason: data.reason || '',
           exchangeSaleId: null,
+          createdByProfile: data.createdByProfile || null,
           createdAt: BeeStore.dates.now(),
           updatedAt: BeeStore.dates.now(),
         };
@@ -229,6 +230,7 @@
         returnStatus: 'none',
         installmentPlan: null,
         notes: 'استبدال من ' + ret.number,
+        createdByProfile: ret.createdByProfile || originalSale.createdByProfile || null,
         createdAt: BeeStore.dates.now(),
         updatedAt: BeeStore.dates.now(),
       };

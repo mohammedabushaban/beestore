@@ -72,11 +72,12 @@
     detailDiv.innerHTML = '<div class="loading-overlay"><div class="loading-spinner"></div></div>';
     const m = state.month;
 
-    const [checkRes, reviewRes, recRes, closedRes] = await Promise.all([
+    const [checkRes, reviewRes, recRes, closedRes, pkgRes] = await Promise.all([
       BeeStore.api.periods.checklist(m),
       BeeStore.api.reports.monthReview(m),
       BeeStore.api.reports.profitCashReconciliation(m),
       BeeStore.api.periods.list(),
+      BeeStore.api.accountingPackage.info(m),
     ]);
     if (!checkRes.ok) { detailDiv.innerHTML = ''; detailDiv.appendChild(el('p', { class: 'alert alert-danger' }, checkRes.error.message)); return; }
     const check = checkRes.data;
@@ -150,8 +151,78 @@
     }, 'طباعة تقرير الشهر'));
     detailDiv.appendChild(el('div', { class: 'card no-print' }, [el('h4', {}, 'إجراءات'), actions]));
 
+    // v3-Lite §8: accountant package. It is generated offline in the browser
+    // and shared through the OS share sheet (Drive/WhatsApp/email) or a plain
+    // download. Open months carry a visible "غير نهائي" status everywhere.
+    if (pkgRes.ok) {
+      const pkg = pkgRes.data;
+      const statusEl = el('p', { class: 'form-hint' },
+        pkg.closed
+          ? 'الشهر مُقفل — الحزمة نهائية وتحتوي كل الجداول وبصمات التحقق.'
+          : 'الشهر مفتوح — ستظهر علامة «غير نهائي — الشهر مفتوح» في التقرير والملفات.');
+      const pkgCard = el('div', { class: 'card no-print' }, [
+        el('h4', {}, 'حزمة المحاسب'),
+        el('p', { class: 'form-hint' },
+          'ZIP واحد: تقرير PDF عربي، ملف Excel بثماني عشرة ورقة، نسخ CSV بترميز UTF-8، وملف manifest ببصمات SHA-256.'),
+        statusEl,
+        el('div', { class: 'dialog-actions' }, [
+          el('button', {
+            class: 'btn btn-primary',
+            onclick: () => _runPackageAction('share', m, pkgCard, statusEl),
+          }, 'مشاركة الحزمة'),
+          el('button', {
+            class: 'btn btn-secondary',
+            onclick: () => _runPackageAction('download', m, pkgCard, statusEl),
+          }, 'تنزيل الحزمة'),
+          el('button', {
+            class: 'btn btn-info',
+            onclick: () => _runPackageAction('sharePdf', m, pkgCard, statusEl),
+          }, 'مشاركة تقرير PDF'),
+        ]),
+        el('p', { class: 'form-hint' },
+          'من نافذة المشاركة اختر Google Drive أو واتساب أو البريد. المحاسب يفتح الحزمة للقراءة فقط ولا يعدّل بيانات التطبيق.'),
+      ]);
+      detailDiv.appendChild(pkgCard);
+    }
+
     const integDiv = el('div', { id: 'period-integrity' });
     detailDiv.appendChild(integDiv);
+  }
+
+  async function _runPackageAction(kind, month, card, statusEl) {
+    const buttons = Array.from(card.querySelectorAll('button'));
+    const previous = statusEl.textContent;
+    for (const b of buttons) b.disabled = true;
+    statusEl.textContent = kind === 'sharePdf'
+      ? 'جاري تجهيز تقرير الشهر PDF… قد يستغرق لحظات.'
+      : 'جاري تجهيز الحزمة… قد يستغرق لحظات.';
+    try {
+      const api = BeeStore.api.accountingPackage;
+      const res = kind === 'sharePdf' ? await api.sharePdf(month)
+        : (kind === 'download' ? await api.download(month) : await api.share(month));
+      if (!res.ok) {
+        statusEl.textContent = previous;
+        toast(res.error.message, 'error');
+        return;
+      }
+      const method = res.data && res.data.method;
+      if (method === 'share') {
+        statusEl.textContent = 'تم فتح نافذة المشاركة. اختر Google Drive أو واتساب أو البريد.';
+        toast('تم تجهيز الملف للمشاركة');
+      } else if (method === 'download') {
+        statusEl.textContent = 'تم تنزيل الملف: ' + (res.data.filename || '');
+        toast('تم تنزيل الملف');
+      } else if (method === 'cancelled') {
+        statusEl.textContent = 'أُلغيت المشاركة. يمكنك التنزيل بدلاً منها.';
+      } else {
+        statusEl.textContent = 'تم تجهيز الملف، لكن المشاركة غير مدعومة على هذا الجهاز.';
+      }
+    } catch (e) {
+      statusEl.textContent = previous;
+      toast((e && e.message) || 'تعذّر تجهيز الحزمة', 'error');
+    } finally {
+      for (const b of buttons) b.disabled = false;
+    }
   }
 
   function _kpi(title, value) {

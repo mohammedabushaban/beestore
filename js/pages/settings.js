@@ -14,6 +14,7 @@
       el('button', { class: 'tab active', onclick: function () { _showTab('general', content); _setActiveTab(this); } }, 'عام'),
       el('button', { class: 'tab', onclick: function () { _showTab('invoice', content); _setActiveTab(this); } }, 'الفاتورة والملصقات'),
       el('button', { class: 'tab', onclick: function () { _showTab('payments', content); _setActiveTab(this); } }, 'طرق الدفع'),
+      el('button', { class: 'tab', onclick: function () { _showTab('security', content); _setActiveTab(this); } }, 'الأمان والملفات'),
       el('button', { class: 'tab', onclick: function () { _showTab('backup', content); _setActiveTab(this); } }, 'النسخ الاحتياطي'),
       el('button', { class: 'tab', onclick: function () { _showTab('data', content); _setActiveTab(this); } }, 'البيانات'),
       el('button', { class: 'tab', onclick: function () { _showTab('maintenance', content); _setActiveTab(this); } }, 'الصيانة'),
@@ -40,6 +41,7 @@
     if (tab === 'general') _renderGeneral(panel);
     else if (tab === 'invoice') _renderInvoice(panel);
     else if (tab === 'payments') _renderPayments(panel);
+    else if (tab === 'security') _renderSecurity(panel);
     else if (tab === 'backup') _renderBackup(panel);
     else if (tab === 'data') _renderData(panel);
     else if (tab === 'maintenance') _renderMaintenance(panel);
@@ -815,6 +817,188 @@
     ]));
 
     return el('div', { class: 'card' }, children);
+  }
+
+  /**
+   * v3-Lite §7: local Owner/Cashier profiles, PINs, auto-lock and cashier
+   * limits. PIN hashes never come back through the facade — only pinSet.
+   */
+  async function _renderSecurity(container) {
+    const res = await BeeStore.api.settings.get();
+    if (!res.ok) { toast(res.error.message, 'error'); return; }
+    const s = res.data || {};
+    const profiles = s.profiles || {};
+    const owner = profiles.owner || {};
+    const cashier = profiles.cashier || {};
+    const state = BeeStore.auth ? BeeStore.auth.state() : { profile: 'owner' };
+    const currentName = state.profile === 'cashier' ? 'الكاشير' : 'المالك';
+
+    function openPinDialog(profile) {
+      const isOwner = profile === 'owner';
+      const existing = isOwner ? owner : cashier;
+      const currentInput = (isOwner && existing.pinSet)
+        ? input('password', '', { inputmode: 'numeric', maxlength: '6', autocomplete: 'current-password' })
+        : null;
+      const nameInput = input('text', existing.name || (isOwner ? 'المالك' : 'الكاشير'));
+      const pinInput = input('password', '', { inputmode: 'numeric', maxlength: '6', autocomplete: 'new-password' });
+      const confirmInput = input('password', '', { inputmode: 'numeric', maxlength: '6', autocomplete: 'new-password' });
+      const errorEl = el('p', { class: 'lock-error', role: 'alert' });
+      const content = [
+        el('p', { class: 'form-hint' }, isOwner
+          ? 'رمز المالك يفتح كل الصفحات. بعد ضبطه سيُطلب الرمز في كل مرة يُفتح فيها التطبيق.'
+          : 'رمز الكاشير يفتح ملفاً محدوداً: بيع، استلام دفعات، مرتجعات ضمن الحد، وفحص سعر — دون تكلفة أو أرباح أو تقارير أو إعدادات.'),
+      ];
+      if (currentInput) content.push(formField('رمز المالك الحالي', currentInput, true));
+      content.push(formField('الاسم الظاهر', nameInput));
+      content.push(formField('الرمز السري الجديد', pinInput, true, '4 إلى 6 أرقام.'));
+      content.push(formField('تأكيد الرمز الجديد', confirmInput, true));
+      content.push(errorEl);
+
+      const dialog = BeeStore.dialogs.openDialog(
+        isOwner ? 'رمز المالك' : 'ملف الكاشير', content, null, {
+          footer: [
+            el('button', { class: 'btn btn-secondary', onclick: () => dialog.close() }, 'إلغاء'),
+            el('button', {
+              class: 'btn btn-primary',
+              onclick: async () => {
+                const pin = pinInput.value.trim();
+                if (!/^\d{4,6}$/.test(pin)) { errorEl.textContent = 'الرمز يجب أن يكون من 4 إلى 6 أرقام'; return; }
+                if (pin !== confirmInput.value.trim()) { errorEl.textContent = 'التأكيد لا يطابق الرمز'; return; }
+                const opts = { name: nameInput.value.trim() || undefined };
+                if (currentInput) {
+                  if (!/^\d{4,6}$/.test(currentInput.value.trim())) {
+                    errorEl.textContent = 'أدخل رمز المالك الحالي';
+                    return;
+                  }
+                  opts.currentPin = currentInput.value.trim();
+                }
+                const r = await BeeStore.api.security.setPin(profile, pin, opts);
+                if (!r.ok) { errorEl.textContent = r.error.message; return; }
+                dialog.close();
+                if (BeeStore.appLock) {
+                  BeeStore.settingsCache = await BeeStore.settings.get();
+                  BeeStore.appLock.applyRoleUI();
+                  BeeStore.appLock.touch();
+                }
+                toast(isOwner ? 'تم ضبط رمز المالك' : 'تم تفعيل ملف الكاشير');
+                _showTab('security', container);
+              },
+            }, 'حفظ'),
+          ],
+        });
+    }
+
+    container.appendChild(el('div', { class: 'card' }, [
+      el('h3', {}, 'الملفات والرموز السرية'),
+      el('p', {}, 'الملف الحالي: ' + currentName + '.'),
+      el('div', { class: 'security-row' }, [
+        el('div', {}, [
+          el('strong', {}, 'المالك'),
+          el('p', { class: 'form-hint' }, owner.pinSet ? 'رمز المالك مضبوط.' : 'رمز المالك غير مضبوط — التطبيق يُفتح دون رمز.'),
+        ]),
+        el('button', { class: 'btn btn-secondary', onclick: () => openPinDialog('owner') },
+          owner.pinSet ? 'تغيير رمز المالك' : 'ضبط رمز المالك'),
+      ]),
+      el('hr', { class: 'card-divider' }),
+      el('div', { class: 'security-row' }, [
+        el('div', {}, [
+          el('strong', {}, 'الكاشير'),
+          el('p', { class: 'form-hint' }, cashier.pinSet
+            ? 'ملف الكاشير مفعّل (' + (cashier.name || 'الكاشير') + ').'
+            : 'ملف الكاشير غير مفعّل.'),
+        ]),
+        el('div', { class: 'dialog-actions', style: 'margin:0;' }, [
+          el('button', { class: 'btn btn-secondary', onclick: () => openPinDialog('cashier') },
+            cashier.pinSet ? 'تغيير رمز الكاشير' : 'تفعيل الكاشير'),
+          cashier.pinSet ? el('button', {
+            class: 'btn btn-danger',
+            onclick: () => confirmDialog('تعطيل الكاشير', 'لن يستطيع الكاشير فتح التطبيق حتى تعيد تفعيله. هل تريد المتابعة؟', async () => {
+              const r = await BeeStore.api.security.removeCashier();
+              if (!r.ok) { toast(r.error.message, 'error'); return; }
+              toast('تم تعطيل ملف الكاشير');
+              _showTab('security', container);
+            }),
+          }, 'تعطيل') : null,
+        ]),
+      ]),
+    ]));
+
+    const autoLockInput = input('number', String(s.autoLockMinutes || 5), { min: 1, max: 60, step: 1 });
+    const discountInput = input('number', String(s.cashierMaxDiscountPercent == null ? 10 : s.cashierMaxDiscountPercent), { min: 0, max: 100, step: 1 });
+    const returnInput = input('number', ((Number(s.cashierMaxReturnMinor) || 0) / 100).toFixed(2), { min: 0, step: '0.01' });
+    const lockoutAfterInput = input('number', String(s.lockoutAfter || 5), { min: 3, max: 10, step: 1 });
+    const lockoutSecondsInput = input('number', String(s.lockoutSeconds || 30), { min: 10, max: 600, step: 10 });
+    const fontCheck = BeeStore.dialogs.checkbox('تكبير الخط (مناسب للهاتف والشاشات الصغيرة)', !!s.largeFont);
+    const currentPinInput = owner.pinSet
+      ? input('password', '', { inputmode: 'numeric', maxlength: '6', autocomplete: 'current-password' })
+      : null;
+
+    const limitCard = el('div', { class: 'card' }, [
+      el('h3', {}, 'القفل والحدود'),
+      formField('القفل التلقائي بعد (دقائق بدون استخدام)', autoLockInput),
+      el('p', { class: 'form-hint' }, 'يُقفل أيضاً تلقائياً عند إبقاء التطبيق في الخلفية أكثر من دقيقة.'),
+      formField('أقصى نسبة خصم للكاشير (٪)', discountInput),
+      formField('أقصى مبلغ مرتجع للكاشير', returnInput),
+      el('p', { class: 'form-hint' }, 'المبلغ بالعملة الأساسية (' + (s.currencySymbol || '₪') + '). اجعل 0 لمنع مرتجعات الكاشير.' ),
+      formField('محاولات خاطئة قبل الإيقاف', lockoutAfterInput),
+      formField('مدة الإيقاف الأولى (ثانية)', lockoutSecondsInput),
+      fontCheck,
+      currentPinInput ? formField('رمز المالك الحالي للتأكيد', currentPinInput, true,
+        'مطلوب لحفظ أي تغيير في هذا القسم.') : null,
+      el('button', {
+        class: 'btn btn-primary',
+        onclick: async () => {
+          const autoMinutes = Number(autoLockInput.value);
+          const maxDiscount = Number(discountInput.value);
+          const maxReturn = BeeStore.money.fromMajor(returnInput.value);
+          const lockoutAfter = Number(lockoutAfterInput.value);
+          const lockoutSeconds = Number(lockoutSecondsInput.value);
+          if (!Number.isFinite(autoMinutes) || autoMinutes < 1 || autoMinutes > 60) {
+            toast('القفل التلقائي يجب أن يكون بين 1 و60 دقيقة', 'error'); return;
+          }
+          if (!Number.isFinite(maxDiscount) || maxDiscount < 0 || maxDiscount > 100) {
+            toast('نسبة خصم الكاشير يجب أن تكون بين 0 و100', 'error'); return;
+          }
+          if (!Number.isFinite(maxReturn) || maxReturn < 0) {
+            toast('حد المرتجع غير صالح', 'error'); return;
+          }
+          if (!Number.isFinite(lockoutAfter) || lockoutAfter < 3 || lockoutAfter > 10) {
+            toast('عدد المحاولات يجب أن يكون بين 3 و10', 'error'); return;
+          }
+          if (!Number.isFinite(lockoutSeconds) || lockoutSeconds < 10 || lockoutSeconds > 600) {
+            toast('مدة الإيقاف يجب أن تكون بين 10 و600 ثانية', 'error'); return;
+          }
+          const patch = {
+            autoLockMinutes: Math.round(autoMinutes),
+            cashierMaxDiscountPercent: Math.round(maxDiscount),
+            cashierMaxReturnMinor: maxReturn,
+            lockoutAfter: Math.round(lockoutAfter),
+            lockoutSeconds: Math.round(lockoutSeconds),
+            largeFont: !!fontCheck.querySelector('input').checked,
+          };
+          const r = await BeeStore.api.security.update(patch,
+            currentPinInput ? currentPinInput.value.trim() : undefined);
+          if (!r.ok) { toast(r.error.message, 'error'); return; }
+          BeeStore.settingsCache = await BeeStore.settings.get();
+          if (BeeStore.appLock) {
+            BeeStore.appLock.applyPreferences(BeeStore.settingsCache);
+            BeeStore.appLock.touch();
+          }
+          toast('تم حفظ إعدادات الأمان');
+          _showTab('security', container);
+        },
+      }, 'حفظ إعدادات الأمان'),
+    ]);
+    container.appendChild(limitCard);
+
+    container.appendChild(el('div', { class: 'card' }, [
+      el('h3', {}, 'حدود الحماية المحلية'),
+      el('p', { class: 'alert alert-warning' },
+        'هذه الحماية تمنع الاستخدام العابر وتخفي التكلفة والأرباح عن الكاشير، لكنها ليست حماية مطلقة: ' +
+        'شخص خبير بأدوات المتصفح يستطيع الوصول إلى بيانات هذا الهاتف. لا توجد إعادة تعيين أو محو عن بُعد.'),
+      el('p', { class: 'form-hint' },
+        'لحماية أفضل: فعّل قفل شاشة الهاتف، استخدم رمزاً لا يعرفه غيرك، واحتفظ بنسخ احتياطية مشفّرة خارج الهاتف بانتظام.'),
+    ]));
   }
 
   function _formatBytes(bytes) {

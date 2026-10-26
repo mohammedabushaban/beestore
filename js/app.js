@@ -71,7 +71,7 @@
       BeeStore.wizard.show();
     } else {
       await BeeStore.settings.ensureDefaults();
-      startApp();
+      await _startWithLock();
     }
 
     if (hasLocks) {
@@ -153,7 +153,17 @@
   }
 
   function startApp() {
+    if (BeeStore._appStarted) {
+      // Returning from the lock screen must keep the current DOM (including an
+      // in-progress invoice) untouched. Just make the app visible again.
+      document.getElementById('app').style.display = 'block';
+      return;
+    }
+    BeeStore._appStarted = true;
     document.getElementById('app').style.display = 'block';
+    if (BeeStore.appLock && BeeStore.appLock.applyPreferences) {
+      BeeStore.appLock.applyPreferences(BeeStore.settingsCache);
+    }
     _setupSidebar();
     _setupRouter();
     _setupSaveStatus();
@@ -162,6 +172,16 @@
     BeeStore.router.start();
     if (BeeStore.pwa) BeeStore.pwa.onAppReady();
   }
+
+  async function _startWithLock() {
+    BeeStore.settingsCache = await BeeStore.settings.get();
+    await BeeStore.auth.init();
+    BeeStore.appLock.bind({ onUnlocked: startApp });
+    await BeeStore.appLock.start();
+  }
+
+  BeeStore._startWithLock = _startWithLock;
+  BeeStore._startApp = startApp;
 
   // Re-run the current page (used when the global period changes).
   BeeStore.router.rerender = function () {
@@ -267,6 +287,16 @@
         document.getElementById('page-title').textContent = page.title;
         const content = document.getElementById('page-content');
         content.innerHTML = '';
+        if (BeeStore.appLock && !BeeStore.appLock.canRoute(path)) {
+          content.appendChild(document.createElement('div'));
+          content.firstChild.className = 'alert alert-warning';
+          content.firstChild.textContent = 'هذه الصفحة غير متاحة لملف الكاشير. ' +
+            'استخدم فاتورة جديدة أو فحص السعر أو الفواتير.';
+          document.querySelectorAll('.sidebar-nav a').forEach(a => {
+            a.classList.toggle('active', a.dataset.route === path);
+          });
+          return;
+        }
         // v2 §12.3: a failing page must not blank the whole app.
         try {
           const result = page.render(content);

@@ -98,7 +98,18 @@
     async share(options) {
       options = options || {};
       const payload = await this.createPayload(options);
-      const result = await bf().shareOrDownload(payload.blob, payload.filename, options.env);
+      // v3-Lite §8.2: backups and accountant packages share one CloudTarget
+      // delivery path. Older Node suites that load only backupFile keep the
+      // direct fallback (which takes the env directly, not an options wrapper).
+      const useCloudTarget = !!(BeeStore.cloudTarget && BeeStore.cloudTarget.shareOrDownload);
+      const result = useCloudTarget
+        ? await BeeStore.cloudTarget.shareOrDownload(payload.blob, payload.filename, {
+          env: options.env,
+          mimeType: 'application/json',
+          title: 'نسخة احتياطية — بي ستور',
+          text: 'احفظ هذه النسخة خارج الهاتف (Drive أو واتساب أو بريد إلكتروني).',
+        })
+        : await bf().shareOrDownload(payload.blob, payload.filename, options.env);
       let warning = null;
       if (result.method === 'share' || result.method === 'download') {
         try {

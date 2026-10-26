@@ -2,6 +2,106 @@
   'use strict';
   const BeeStore = root.BeeStore || (root.BeeStore = {});
 
+  /**
+   * v3-Lite §10: plain-text receipt for Web Share / clipboard / .txt download.
+   * Pure (Node-testable): no DOM, no navigator.
+   */
+  function buildInvoiceText(sale, settings, customer, payments) {
+    const s = settings || {};
+    const money = (v) => BeeStore.money.format(v || 0);
+    const lines = [];
+    lines.push((s.storeNameAr || s.storeName || 'Bee Store'));
+    if (s.phone) lines.push('هاتف: ' + s.phone);
+    if (s.address) lines.push(s.address);
+    lines.push('');
+    lines.push('فاتورة بيع رقم ' + sale.number);
+    lines.push('التاريخ: ' + BeeStore.dates.formatDate(sale.date));
+    if (customer) lines.push('الزبون: ' + customer.name);
+    else if (sale.customerName) lines.push('الزبون: ' + sale.customerName);
+    lines.push('');
+    for (const line of (sale.lines || [])) {
+      const name = [line.productName, line.size, line.color].filter(Boolean).join(' - ');
+      lines.push(name + ' × ' + line.qty + ' = ' + money(line.lineTotalMinor));
+    }
+    lines.push('');
+    lines.push('المجموع الفرعي: ' + money(sale.subtotalMinor));
+    if (sale.discountMinor > 0) lines.push('الخصم: -' + money(sale.discountMinor));
+    if (sale.taxMinor > 0) lines.push('الضريبة: ' + money(sale.taxMinor));
+    lines.push('الإجمالي: ' + money(sale.totalMinor));
+    lines.push('المدفوع: ' + money(sale.paidMinor));
+    lines.push('المتبقي: ' + money(sale.dueMinor));
+    if (payments && payments.length) {
+      lines.push('');
+      lines.push('الدفعات:');
+      for (const p of payments) {
+        const method = (BeeStore.settings && BeeStore.settings.methodLabel)
+          ? BeeStore.settings.methodLabel(s, p.method) : p.method;
+        lines.push('- ' + method + ': ' + money(p.amountMinor) + ' (' + BeeStore.dates.formatDate(p.date) + ')');
+      }
+    }
+    if (s.invoiceFooter) {
+      lines.push('');
+      lines.push(s.invoiceFooter);
+    }
+    return lines.join('\n');
+  }
+
+  function _downloadText(text, filename) {
+    const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
+    if (BeeStore.backupFile && typeof BeeStore.backupFile.downloadBlob === 'function') {
+      BeeStore.backupFile.downloadBlob(blob, filename);
+      return true;
+    }
+    if (!window.URL || typeof window.URL.createObjectURL !== 'function') return false;
+    const url = window.URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => { try { window.URL.revokeObjectURL(url); } catch (e) { /* ignore */ } }, 1000);
+    return true;
+  }
+
+  /**
+   * Shares a receipt as text. On a phone this opens the native share sheet
+   * (WhatsApp, Messages...). Desktop falls back to clipboard, then to a .txt
+   * download. Never throws: returns {ok, method|code}.
+   */
+  async function shareInvoice(saleId) {
+    const res = await BeeStore.api.sales.printData(saleId);
+    if (!res.ok) {
+      BeeStore.ui.toast(res.error.message, 'error');
+      return { ok: false, code: res.error.code };
+    }
+    const { sale, settings, customer, payments } = res.data;
+    const text = buildInvoiceText(sale, settings, customer, payments);
+    const title = 'فاتورة ' + sale.number;
+    try {
+      if (navigator.share) {
+        await navigator.share({ title, text });
+        return { ok: true, method: 'share' };
+      }
+    } catch (e) {
+      if (e && e.name === 'AbortError') return { ok: false, code: 'CANCELLED' };
+      // Fall through to clipboard.
+    }
+    try {
+      if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+        await navigator.clipboard.writeText(text);
+        BeeStore.ui.toast('تم نسخ نص الفاتورة — الصقه في واتساب أو رسالة');
+        return { ok: true, method: 'clipboard' };
+      }
+    } catch (e) { /* fall through */ }
+    if (_downloadText(text, 'BeeStore-' + sale.number + '.txt')) {
+      BeeStore.ui.toast('تم تنزيل نص الفاتورة');
+      return { ok: true, method: 'download' };
+    }
+    BeeStore.ui.toast('تعذّرت مشاركة الفاتورة على هذا المتصفح', 'error');
+    return { ok: false, code: 'SHARE_UNAVAILABLE' };
+  }
+
   function printInvoice(saleId) {
     BeeStore.api.sales.printData(saleId).then(res => {
       if (!res.ok) { BeeStore.ui.toast(res.error.message, 'error'); return; }
@@ -316,7 +416,8 @@
 
   BeeStore.print = {
     printInvoice, printLabelSheet, printDailyClosing, printDayReport,
-    buildInvoiceHtml, buildLabelSheetHtml, buildDayReportHtml,
+    shareInvoice, buildInvoiceHtml, buildInvoiceText, buildLabelSheetHtml,
+    buildDayReportHtml,
   };
   if (typeof module !== 'undefined') module.exports = BeeStore.print;
 })(typeof window !== 'undefined' ? window : globalThis);

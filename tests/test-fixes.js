@@ -149,6 +149,36 @@ test('B8 invoice HTML escapes user text', async () => {
   assert.ok(html.includes('&lt;svg'), 'customer name escaped');
 });
 
+// L6 §10: receipt sharing text is complete, Arabic and plain (no HTML).
+test('L6 shared receipt text includes store, lines, totals and payments', async () => {
+  global.document = global.document || { addEventListener() {} };
+  require('../js/ui/components.js');
+  require('../js/ui/print.js');
+  const sale = {
+    number: 'INV-000007', date: '2026-11-20',
+    customerName: 'زبون',
+    lines: [{
+      productName: 'فستان', size: 'M', color: 'أحمر', qty: 2,
+      unitPriceMinor: 5000, lineTotalMinor: 10000,
+    }],
+    subtotalMinor: 10000, discountMinor: 500, taxMinor: 0,
+    totalMinor: 9500, paidMinor: 9500, dueMinor: 0,
+  };
+  const text = BeeStore.print.buildInvoiceText(sale,
+    { storeNameAr: 'بي ستور', phone: '0599', invoiceFooter: 'شكراً' },
+    null,
+    [{ method: 'cash', amountMinor: 9500, date: '2026-11-20' }]);
+  assert.ok(text.includes('بي ستور'));
+  assert.ok(text.includes('INV-000007'));
+  assert.ok(text.includes('فستان'));
+  assert.ok(!text.includes('<'), 'share text is plain, never HTML');
+  assert.ok(text.includes('الخصم'));
+  assert.ok(text.includes('الإجمالي'));
+  assert.ok(text.includes('الدفعات'));
+  assert.ok(text.includes('شكراً'));
+  assert.ok(text.includes('0599'));
+});
+
 // B6: barcode uniqueness enforced on variant update.
 test('B6 variant update rejects duplicate barcode', async () => {
   const api = await freshApi();

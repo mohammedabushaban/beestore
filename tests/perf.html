@@ -88,16 +88,19 @@
 
     async function seed() {
       const BeeStore = window.BeeStore;
+      window.__perfStage = 'delete-db';
       await del(DB);
       BeeStore.config.dbName = DB;
       BeeStore.config.dbVersion = 6;
       BeeStore.config.memoryWindowMonths = 2;
       BeeStore.dates.setClock(() => '2026-10-25');
 
+      window.__perfStage = 'open';
       repo = new BeeStore.IdbRepository();
       await repo.open();
       api = new BeeStore.Api(repo);
 
+      window.__perfStage = 'settings';
       const settings = (await api.settings.save({
         systemStartDate: '2024-11-01',
         businessName: 'متجر الأداء',
@@ -109,6 +112,7 @@
       })).data;
       accountId = account.id;
 
+      window.__perfStage = 'masters';
       const customer = (await api.customers.create({
         name: 'Customer A', phone: '0910000000',
       })).data;
@@ -133,6 +137,7 @@
       }
 
       const started = performance.now();
+      window.__perfStage = 'bulk-seed';
       let docs = [];
       let moves = [];
       for (let i = 0; i < INVOICES; i++) {
@@ -176,6 +181,7 @@
           createdAt: date + 'T09:00:01.000Z',
         });
         if (docs.length >= BATCH || i === INVOICES - 1) {
+          window.__perfBatch = i;
           await rawBulk('sales', docs);
           await rawBulk('stockMovements', moves);
           docs = [];
@@ -184,7 +190,9 @@
       }
       // Raw writes bypass the repository, so the materialized summary must be
       // built explicitly before the cold-start measurement reads it.
+      window.__perfStage = 'rebuild-summary';
       await repo._rebuildSummary();
+      window.__perfStage = 'seed-done';
       timings.seed = Math.round(performance.now() - started);
       out.innerHTML += '<div>Seeded ' + INVOICES + ' invoices in ' + timings.seed + ' ms; ' +
         'settings ' + (settings.businessName || '') + '</div>';
@@ -192,6 +200,7 @@
 
     async function measure() {
       const BeeStore = window.BeeStore;
+      window.__perfStage = 'measure';
       repo.db.close();
       repo.opened = false;
 

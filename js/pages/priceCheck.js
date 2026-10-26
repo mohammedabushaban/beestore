@@ -123,14 +123,18 @@
 
   function _renderNotFound(container, code, onCreate) {
     container.innerHTML = '';
-    container.appendChild(el('div', { class: 'price-result price-result-error' }, [
+    const canCreate = !(BeeStore.auth && BeeStore.auth.isCashier());
+    const box = el('div', { class: 'price-result price-result-error' }, [
       el('div', { class: 'price-result-name' }, 'باركود غير موجود'),
       el('p', { style: 'margin: 8px 0 14px;' }, 'لا يوجد صنف مسجّل بالباركود: ' + code),
-      el('button', {
+    ]);
+    if (canCreate) {
+      box.appendChild(el('button', {
         class: 'btn btn-primary', type: 'button',
         onclick: () => onCreate(code),
-      }, 'إضافة صنف بهذا الباركود'),
-    ]));
+      }, 'إضافة صنف بهذا الباركود'));
+    }
+    container.appendChild(box);
   }
 
   BeeStore.pages = BeeStore.pages || {};

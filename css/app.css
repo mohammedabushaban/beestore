@@ -2110,6 +2110,103 @@ body.scanner-open { overflow: hidden; }
 }
 
 /* ============================================================
+   v3-Lite §7 — app lock, profiles, cashier UI
+   ============================================================ */
+.lock-screen {
+  position: fixed;
+  inset: 0;
+  z-index: 1200;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  background:
+    radial-gradient(120% 80% at 100% 0%, rgba(245, 183, 0, 0.22) 0%, rgba(245, 183, 0, 0) 55%),
+    linear-gradient(160deg, #101827 0%, #1b2740 100%);
+}
+.lock-card {
+  width: min(420px, 100%);
+  max-height: calc(100vh - 40px);
+  overflow-y: auto;
+  background: var(--surface);
+  border-radius: var(--radius-xl);
+  padding: 28px 24px;
+  box-shadow: var(--shadow-lg);
+  text-align: center;
+}
+.lock-logo {
+  width: 72px;
+  height: 72px;
+  border-radius: 20px;
+  object-fit: cover;
+  margin-bottom: 10px;
+  box-shadow: var(--shadow-md);
+}
+.lock-subtitle { color: var(--ink-500); margin: 4px 0 16px; font-size: 0.9rem; }
+.lock-profiles { display: flex; gap: 8px; justify-content: center; flex-wrap: wrap; margin-bottom: 14px; }
+.lock-profile {
+  border: 1.5px solid var(--ink-200);
+  background: var(--surface);
+  color: var(--ink-600);
+  border-radius: var(--radius-pill);
+  padding: 8px 18px;
+  font-weight: 700;
+  cursor: pointer;
+  transition: background var(--transition), border-color var(--transition), color var(--transition);
+}
+.lock-profile.active { background: var(--amber-100); border-color: var(--amber-400); color: var(--amber-700); }
+.lock-pin {
+  text-align: center;
+  font-size: 1.65rem;
+  letter-spacing: 0.35em;
+  direction: ltr;
+  font-variant-numeric: tabular-nums;
+  padding: 12px;
+}
+.lock-error { color: var(--danger); min-height: 1.5em; font-size: 0.88rem; margin: 8px 0 0; font-weight: 600; }
+.lock-submit { width: 100%; margin-top: 8px; }
+.lock-help { font-size: 0.75rem; color: var(--ink-500); margin-top: 14px; line-height: 1.7; }
+.clock-warning .lock-card { text-align: start; }
+.clock-warning-icon { font-size: 2.6rem; text-align: center; margin-bottom: 4px; }
+.clock-warning .dialog-actions { justify-content: center; }
+.profile-chip {
+  display: inline-flex;
+  align-items: center;
+  padding: 4px 10px;
+  border-radius: var(--radius-pill);
+  font-size: 0.72rem;
+  font-weight: 700;
+  line-height: 1.6;
+}
+.profile-chip-owner { background: var(--amber-100); color: var(--amber-700); }
+.profile-chip-cashier { background: var(--info-soft); color: var(--info-ink); }
+.profile-chip:empty { display: none; }
+.header-lock { padding: 6px 9px; }
+.security-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 14px;
+  padding: 10px 0;
+  flex-wrap: wrap;
+}
+.security-row .dialog-actions { flex-wrap: wrap; }
+.role-cashier .owner-only { display: none !important; }
+
+/* v3-Lite §10: optional larger typography for a small phone screen. */
+html.large-font { font-size: 17.5px; }
+html.large-font body { font-size: 17px; }
+html.large-font .form-input,
+html.large-font input,
+html.large-font select,
+html.large-font textarea { font-size: 18px; }
+html.large-font .data-table th,
+html.large-font .data-table td { font-size: 0.9rem; }
+html.large-font .btn { font-size: 0.98rem; }
+html.large-font .sidebar-nav li a { font-size: 0.96rem; }
+html.large-font .page-title { font-size: 1.5rem; }
+
+/* ============================================================
    Print
    ============================================================ */
 @media print {

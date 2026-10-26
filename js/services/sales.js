@@ -232,6 +232,8 @@
           returnStatus: 'none',
           installmentPlan: null,
           notes: data.notes || '',
+          // v3-Lite §7: the cashier's own day summary filters on this field.
+          createdByProfile: data.createdByProfile || null,
           createdAt: BeeStore.dates.now(),
           updatedAt: BeeStore.dates.now(),
         };

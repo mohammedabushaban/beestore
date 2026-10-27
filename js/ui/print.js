@@ -214,40 +214,89 @@
     setTimeout(() => { win.print(); }, 500);
   }
 
+  // A4 label sheet: labels flow side-by-side in a compact grid (4 columns
+  // for the default 50×30 mm label), with small gaps and no per-label page
+  // break. Long product names wrap/shrink instead of being clipped.
+  const LABEL_PAGE = { width: 210, height: 297, margin: 4, gap: 2 };
+
+  function _labelSheetLayout(settings) {
+    const parts = String((settings && settings.labelSize) || '50x30').toLowerCase().split('x');
+    let w = Number(parts[0]) || 50;
+    let h = Number(parts[1]) || 30;
+    w = Math.max(20, Math.min(100, w));
+    h = Math.max(15, Math.min(100, h));
+
+    const usableW = LABEL_PAGE.width - LABEL_PAGE.margin * 2;
+    const usableH = LABEL_PAGE.height - LABEL_PAGE.margin * 2;
+    const cols = Math.max(1, Math.round(usableW / (w + LABEL_PAGE.gap)));
+    const rows = Math.max(1, Math.floor((usableH + LABEL_PAGE.gap) / (h + LABEL_PAGE.gap)));
+    return { w, h, cols, rows, perPage: cols * rows };
+  }
+
+  function _labelNameClass(name) {
+    const length = Array.from(String(name || '')).length;
+    if (length > 60) return ' name-xs';
+    if (length > 34) return ' name-sm';
+    return '';
+  }
+
   // Pure builder (testable in Node): getBarcodeImg(barcode) -> dataURL|string|null.
   function buildLabelSheetHtml(variants, settings, getBarcodeImg) {
     const esc = BeeStore.ui.escapeHtml;
-    const labelSize = (settings && settings.labelSize) || '50x30';
-    const parts = String(labelSize).split('x').map(Number);
-    const w = parts[0] || 50, h = parts[1] || 30;
+    const layout = _labelSheetLayout(settings);
     const storeName = (settings && (settings.storeNameAr || settings.storeName)) || 'Bee Store';
+    const gap = LABEL_PAGE.gap;
+    const margin = LABEL_PAGE.margin;
+    const pricePx = layout.h >= 34 ? 13 : (layout.h >= 26 ? 12 : 10);
+    const productPx = layout.h >= 34 ? 9.5 : (layout.h >= 26 ? 8.5 : 7.5);
+    const metaPx = layout.h >= 26 ? 6.5 : 6;
+    const storePx = layout.h >= 26 ? 6.5 : 6;
+    const barcodePx = layout.h >= 26 ? 6.5 : 6;
+    const barcodeH = Math.max(5, Math.min(10, layout.h * 0.3)).toFixed(1);
+    const pad = Math.max(1, Math.min(2.5, layout.h * 0.05 + 0.5)).toFixed(1);
 
-    let html = '<html dir="rtl"><head><meta charset="UTF-8"><title>ملصقات</title>';
+    let html = '<!doctype html><html dir="rtl"><head><meta charset="UTF-8"><title>ملصقات A4</title>';
     html += '<style>';
-    html += '@page { size: ' + w + 'mm ' + h + 'mm; margin: 2mm; }';
-    html += 'body { font-family: "Cairo", Arial, sans-serif; margin: 0; padding: 0; }';
-    html += '.label { width: ' + w + 'mm; height: ' + h + 'mm; border: 1px solid #ccc; padding: 2mm; box-sizing: border-box; page-break-after: always; text-align: center; display: flex; flex-direction: column; justify-content: center; }';
-    html += '.store-name { font-size: 10px; font-weight: bold; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }';
-    html += '.product-name { font-size: 9px; margin: 1mm 0; word-break: break-word; overflow-wrap: anywhere; overflow: hidden; max-height: 7mm; }';
-    html += '.price { font-size: 12px; font-weight: bold; color: #F5B700; }';
-    html += '.barcode-img { max-width: 100%; height: 12mm; margin-top: 1mm; }';
-    html += '.barcode-text { font-size: 8px; margin-top: 1mm; font-family: monospace; }';
-    html += '@media print { body { margin: 0; } }';
+    html += '@page { size: A4 portrait; margin: ' + margin + 'mm; }';
+    html += '* { box-sizing: border-box; }';
+    html += 'html, body { margin: 0; padding: 0; background: #fff; }';
+    html += 'body { font-family: "Cairo", "Segoe UI", Tahoma, Arial, sans-serif; color: #111; -webkit-print-color-adjust: exact; print-color-adjust: exact; }';
+    html += '.sheet { display: grid; grid-template-columns: repeat(' + layout.cols + ', minmax(0, 1fr)); grid-auto-rows: ' + layout.h + 'mm; gap: ' + gap + 'mm; align-content: start; page-break-after: always; break-after: page; }';
+    html += '.sheet:last-child { page-break-after: auto; break-after: auto; }';
+    html += '.label { height: ' + layout.h + 'mm; padding: ' + pad + 'mm; border: 0.3mm dashed #cbd5e1; border-radius: 1.2mm; display: flex; flex-direction: column; justify-content: space-between; align-items: stretch; text-align: center; background: #fff; overflow: visible; page-break-inside: avoid; break-inside: avoid; }';
+    html += '.label-head { display: flex; align-items: baseline; justify-content: space-between; gap: 1.5mm; width: 100%; line-height: 1; }';
+    html += '.store-name { font-size: ' + storePx + 'px; font-weight: 600; color: #555; max-width: 48%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }';
+    html += '.price { font-size: ' + pricePx + 'px; font-weight: 800; color: #946200; white-space: nowrap; direction: ltr; unicode-bidi: isolate; }';
+    html += '.label-body { display: flex; flex-direction: column; justify-content: center; gap: 0.3mm; min-height: 0; }';
+    html += '.product-name { font-size: ' + productPx + 'px; font-weight: 700; line-height: 1.15; color: #111; overflow-wrap: anywhere; word-break: break-word; }';
+    html += '.product-name.name-sm { font-size: ' + (productPx - 1) + 'px; }';
+    html += '.product-name.name-xs { font-size: ' + Math.max(6.5, productPx - 1.5) + 'px; }';
+    html += '.variant-meta { font-size: ' + metaPx + 'px; color: #555; line-height: 1.1; }';
+    html += '.barcode-img { display: block; width: 100%; height: ' + barcodeH + 'mm; object-fit: contain; }';
+    html += '.barcode-text { font-size: ' + barcodePx + 'px; line-height: 1; letter-spacing: 0.3px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-family: ui-monospace, "Courier New", monospace; }';
+    html += '@media print { html, body { margin: 0; } }';
     html += '</style></head><body>';
 
-    for (const v of variants) {
-      let img = null;
-      if (getBarcodeImg) {
-        try { img = getBarcodeImg(v.barcode); } catch (e) { img = null; }
+    for (let start = 0; start < variants.length; start += layout.perPage) {
+      html += '<div class="sheet">';
+      for (const v of variants.slice(start, start + layout.perPage)) {
+        let img = null;
+        if (getBarcodeImg) {
+          try { img = getBarcodeImg(v.barcode); } catch (e) { img = null; }
+        }
+        const meta = [v.size, v.color].filter(Boolean).join(' / ');
+        html += '<div class="label">';
+        html += '<div class="label-head"><span class="store-name">' + esc(storeName) + '</span><span class="price">' + esc(BeeStore.money.format(v.priceMinor)) + '</span></div>';
+        html += '<div class="label-body">';
+        html += '<div class="product-name' + _labelNameClass(v.productName) + '">' + esc(v.productName) + '</div>';
+        if (meta) html += '<div class="variant-meta">' + esc(meta) + '</div>';
+        html += '</div>';
+        if (img) {
+          html += '<img class="barcode-img" src="' + esc(img) + '" alt="' + esc(v.barcode) + '">';
+        }
+        html += '<div class="barcode-text" dir="ltr">' + esc(v.barcode) + '</div>';
+        html += '</div>';
       }
-      html += '<div class="label">';
-      html += '<div class="store-name">' + esc(storeName) + '</div>';
-      html += '<div class="product-name">' + esc(v.productName) + ' - ' + esc(v.size) + ' / ' + esc(v.color) + '</div>';
-      html += '<div class="price">' + esc(BeeStore.money.format(v.priceMinor)) + '</div>';
-      if (img) {
-        html += '<img class="barcode-img" src="' + esc(img) + '" alt="' + esc(v.barcode) + '">';
-      }
-      html += '<div class="barcode-text">' + esc(v.barcode) + '</div>';
       html += '</div>';
     }
 
@@ -257,11 +306,12 @@
 
   function printLabelSheet(variants, settings) {
     // Render Code128 in THIS window (canvas) and embed as dataURL images, so
-    // the print window needs no libraries (spec §8.6).
+    // the print window needs no libraries (spec §8.6). displayValue is off
+    // because the sheet prints its own legible barcode number below the bars.
     const getImg = (BeeStore.barcode && BeeStore.barcode.generate)
-      ? (text) => BeeStore.barcode.generate(text, { height: 40 })
+      ? (text) => BeeStore.barcode.generate(text, { height: 50, width: 2, margin: 4, displayValue: false })
       : null;
-    openPrintWindow(buildLabelSheetHtml(variants, settings, getImg), 'label');
+    openPrintWindow(buildLabelSheetHtml(variants, settings, getImg), 'A4');
   }
 
   function printDailyClosing(date) {

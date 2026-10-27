@@ -9,7 +9,14 @@
         if (k === 'class') e.className = v;
         else if (k === 'html') e.innerHTML = v;
         else if (k.startsWith('on')) e.addEventListener(k.slice(2), v);
-        else e.setAttribute(k, v);
+        else if (typeof v === 'boolean') {
+          // Boolean HTML attributes (checked, disabled, selected...) must be
+          // set as DOM properties. setAttribute('checked', false) would still
+          // create checked="false", which browsers treat as checked.
+          if (k in e) e[k] = v;
+          else if (v) e.setAttribute(k, '');
+          else e.removeAttribute(k);
+        } else e.setAttribute(k, v);
       }
     }
     if (children) {

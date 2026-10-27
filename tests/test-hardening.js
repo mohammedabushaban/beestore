@@ -248,6 +248,24 @@ test('V2 print builders produce sized RTL output', async () => {
   const labels = print.buildLabelSheetHtml(
     [{ productName: 'P', size: 'S', color: 'C', priceMinor: 1500, barcode: '200000000001' }],
     { labelSize: '50x30' }, () => null);
-  assert.ok(labels.includes('size: 50mm 30mm'), 'label page size');
+  assert.ok(labels.includes('size: A4 portrait'), 'A4 label sheet');
+  assert.ok(labels.includes('grid-template-columns: repeat(4, minmax(0, 1fr))'), 'four labels side-by-side');
+  assert.ok(labels.includes('gap: 2mm'), 'small gap between labels');
   assert.ok(labels.includes('200000000001'), 'barcode text present');
+  assert.ok(!/\.product-name[^}]*max-height/.test(labels), 'product name not height-clipped');
+  assert.ok(!/\.product-name[^}]*overflow:\s*hidden/.test(labels), 'product name not overflow-clipped');
+  assert.ok(labels.includes('class="price"'), 'price always rendered');
+  assert.ok(!/\.label\s*\{[^}]*page-break-after/.test(labels), 'no page break per label');
+
+  const many = [];
+  for (let i = 0; i < 10; i++) {
+    many.push({ productName: 'منتج طويل الاسم بعض الشيء', size: 'M', color: 'أزرق', priceMinor: 3500, barcode: '20000000000' + i });
+  }
+  const manyHtml = print.buildLabelSheetHtml(many, { labelSize: '50x30' }, () => null);
+  assert.strictEqual((manyHtml.match(/<div class="label">/g) || []).length, 10, 'all labels rendered');
+  assert.strictEqual((manyHtml.match(/<div class="sheet">/g) || []).length, 1, 'ten 50x30 labels fit one A4 page');
+
+  const twoPages = many.concat(many, many, many);
+  const twoPagesHtml = print.buildLabelSheetHtml(twoPages, { labelSize: '50x30' }, () => null);
+  assert.strictEqual((twoPagesHtml.match(/<div class="sheet">/g) || []).length, 2, '40 labels split into two A4 pages');
 });

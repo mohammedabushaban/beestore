@@ -54,7 +54,7 @@
 - [ ] **Returns**: create return for an invoice, verify stock is restored
 - [ ] **Products**: create product, edit price/cost, deactivate product, scan barcode
 - [ ] **Price Check (فحص سعر)**: scan → name/size/color/price/stock; unknown → create action
-- [ ] **Labels**: select variants, set copies, print label sheet
+- [ ] **Labels**: search results are only checked after selecting; edit a variant's barcode manually (e.g. `1001`) and save; select variants, set copies, then print an A4 sheet where labels sit side-by-side with small gaps and the name/price are not clipped
 - [ ] **Purchases**: create purchase invoice, verify stock increases, scan receiving
 - [ ] **Suppliers**: create supplier, pay supplier
 - [ ] **Customers**: create customer, view statement, receive payment

@@ -97,9 +97,13 @@
       const checkbox = el('input', {
         type: 'checkbox',
         class: 'form-checkbox',
-        checked: !!selected,
+        autocomplete: 'off',
         'aria-label': 'تحديد ' + pname + ' ' + v.size + ' / ' + v.color,
       });
+      // Set the live property explicitly (never rely on the HTML attribute,
+      // where checked="false" still means checked in browsers).
+      checkbox.checked = !!selected;
+      checkbox.setAttribute('data-variant-id', v.id);
 
       const row = el('div', {
         class: 'label-item' + (selected ? ' is-selected' : ''),

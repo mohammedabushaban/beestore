@@ -68,7 +68,8 @@
 
   function checkbox(label, checked, attrs) {
     const id = 'chk-' + Math.random().toString(36).slice(2);
-    const input = el('input', Object.assign({ type: 'checkbox', id, class: 'form-checkbox', checked: !!checked }, attrs || {}));
+    const input = el('input', Object.assign({ type: 'checkbox', id, class: 'form-checkbox' }, attrs || {}));
+    input.checked = !!checked;
     const labelEl = el('label', { for: id, style: 'cursor: pointer; display: flex; align-items: center; gap: 8px;' }, [input, document.createTextNode(' ' + label)]);
     return el('div', { class: 'form-group', style: 'display: flex; align-items: center;' }, labelEl);
   }
@@ -77,7 +78,8 @@
     const group = el('div', { class: 'form-group', role: 'radiogroup', 'aria-label': attrs?.label });
     for (const opt of options) {
       const id = name + '-' + opt.value;
-      const input = el('input', Object.assign({ type: 'radio', name, id, value: opt.value, class: 'form-radio', checked: String(opt.value) === String(value) }, attrs || {}));
+      const input = el('input', Object.assign({ type: 'radio', name, id, value: opt.value, class: 'form-radio' }, attrs || {}));
+      input.checked = String(opt.value) === String(value);
       const labelEl = el('label', { for: id, style: 'cursor: pointer; margin-left: 8px; margin-right: 16px;' }, opt.label);
       group.appendChild(el('div', { style: 'display: inline-flex; align-items: center;' }, [input, labelEl]));
     }

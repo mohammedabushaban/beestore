@@ -43,9 +43,14 @@
       const todayGross = BeeStore.money.sum(todaySales.map(s => s.totalMinor));
       const todayRevenue = todayGross - todayReturnsMinor;
       const todayGrossCogs = BeeStore.money.sum(todaySales.map(s =>
-        (s.lines || []).reduce((sum, l) => sum + l.unitCostMinor * l.qty, 0)));
+        (s.lines || []).reduce((sum, l) => sum + (l.cogsMinor != null
+          ? Number(l.cogsMinor) || 0
+          : l.unitCostMinor * l.qty), 0)));
       const todayReturnedCogs = BeeStore.money.sum(todayReturns.map(r =>
-        (r.lines || []).filter(l => l.restock).reduce((sum, l) => sum + l.unitCostMinor * l.qty, 0)));
+        (r.lines || []).filter(l => l.restock).reduce((sum, l) =>
+          sum + (l.restockCostMinor != null
+            ? Number(l.restockCostMinor) || 0
+            : l.unitCostMinor * l.qty), 0)));
       const todayProfit = todayRevenue - (todayGrossCogs - todayReturnedCogs);
 
       // v2 §9.5 single source of truth: month KPIs come from the accrual P&L
@@ -59,8 +64,10 @@
       let inventoryCost = 0;
       let inventoryRetail = 0;
       for (const v of variants) {
-        inventoryCost += v.quantity * v.costMinor;
-        inventoryRetail += v.quantity * v.priceMinor;
+        inventoryCost += v.valueMinor != null
+          ? Math.round(Number(v.valueMinor) || 0)
+          : BeeStore.money.mul(v.costMinor, v.quantity);
+        inventoryRetail += BeeStore.money.mul(v.priceMinor, v.quantity);
       }
 
       const lowStockThreshold = settings.defaultLowStockThreshold || 3;

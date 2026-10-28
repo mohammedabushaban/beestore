@@ -268,7 +268,33 @@ Browser checks (headless Chromium, same day; each page in its own session):
 - [x] `tests/ui-package.html` — 11/11 (unchanged package flow still green after schema 4)
 - [x] `tests/verify-offline.py` — 10/10 (SW 100 files, offline shell/data/invoice + second reload)
 
-Not yet: document postings (A2/A3), journal/chart UI (A6), physical-phone performance after A1.
+Not yet at A1: document postings (A2 delivered inventory-side postings), journal/chart UI (A6), physical-phone performance after A1.
+
+## v5 A2 Verification (2026-10-28)
+
+Automated Node suite: **219/219 passed** with `node --test --test-concurrency=1 tests/*.js`. `tests/test-inventory.js` adds **14** tests for `money.allocate`, exact COGS/rounding remainders, partial-return discount exactness, purchase-return `5030` differences, sale/purchase void reversals, adjustments/stocktakes, revaluation, negative-stock `COST_ESTIMATED`, migration `4→5`, and randomized trial-balance/journal/inventory invariants.
+
+Browser checks (headless Chromium, same day; each page in its own session):
+
+- [x] `tests/idb-lazy.html` — 18/18 (v7 stores, append-only journal, existing lazy-window/summary checks)
+- [x] `tests/smoke.html` — 11/11 (chart seed, balanced JE, trial balance, append-only, verify on IndexedDB)
+- [x] `tests/ui-days.html` — 13/13 (L4 flow still green after schema 5)
+- [x] `tests/ui-package.html` — 11/11 (package flow still green after schema 5)
+- [x] `tests/verify-offline.py` — 10/10 (SW 101 files, offline shell/data/invoice + second reload)
+
+Manual checks for the accounting core:
+
+- [ ] Record a purchase with an invoice discount; confirm each line's `inventoryValueMinor` sums exactly to the header `inventoryValueMinor` and the inventory account `1200` equals Σ variant `valueMinor` (new data only).
+- [ ] Sell multiple units at a cost with a remainder (e.g. 3 units, 100.00 total); confirm COGS is exact and the variant value ends at zero, with no rounding residue.
+- [ ] Return the sale partially three times; confirm the three refunds sum exactly to the invoice total and `returnedDiscountMinor` reaches the line discount exactly.
+- [ ] Return purchased units after a cost change; confirm the difference between the supplier refund and the carrying value removed lands in `5030`, and the journal stays balanced.
+- [ ] Void a sale and a purchase; confirm reversing entries carry the **original** date, and the documents/movements list the reversal ids in `journalEntryIds[]`.
+- [ ] Run a stocktake with a gain and a shortage; confirm `5020` moves in the correct direction and gains do not create revenue.
+- [ ] Revalue a variant's cost; confirm only the value delta is posted to `5030` and `stockRevaluation` appears separately in P&L.
+- [ ] Open the journal via `api.journal.trialBalance()` / `verify()` after the flows; confirm total debits equal credits and `verify()` reports no errors.
+- [ ] Restore an old schema-4 backup; confirm migration `4→5` preserves existing inventory/purchase values and creates no journal entries.
+
+Still pending: A3 revenue/cash/AR/payment postings, sale invoice-discount line proration (v4 M7), journal/chart UI (A6), physical-phone performance after A2.
 
 ## Performance (L2)
 

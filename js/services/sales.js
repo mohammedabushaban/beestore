@@ -142,6 +142,11 @@
             lineDiscountMinor,
             lineTotalMinor,
             returnedQty: 0,
+            returnedCostMinor: 0,
+            returnedDiscountMinor: 0,
+            cogsMinor: 0,
+            costEstimated: false,
+            costFlag: null,
           });
         }
 
@@ -234,6 +239,10 @@
           notes: data.notes || '',
           // v3-Lite §7: the cashier's own day summary filters on this field.
           createdByProfile: data.createdByProfile || null,
+          cogsMinor: 0,
+          costEstimated: false,
+          costFlag: null,
+          journalEntryIds: [],
           createdAt: BeeStore.dates.now(),
           updatedAt: BeeStore.dates.now(),
         };
@@ -244,26 +253,55 @@
 
         tx.put('sales', sale);
 
+        let totalCogsMinor = 0;
+        let costEstimated = false;
+        const saleMovements = [];
         for (const line of lines) {
           const variant = await tx.get('variants', line.variantId);
-          variant.quantity -= line.qty;
-          variant.updatedAt = BeeStore.dates.now();
+          // v5 §3.2: exact tracked-value issue; the last unit takes the
+          // remaining value and the line stores its own exact COGS.
+          const change = BeeStore.stock.issue(variant, line.qty);
+          line.cogsMinor = change.cogsMinor;
+          line.costEstimated = change.estimated;
+          line.costFlag = change.estimated ? 'COST_ESTIMATED' : null;
+          totalCogsMinor += change.cogsMinor;
+          if (change.estimated) costEstimated = true;
           tx.put('variants', variant);
-          tx.put('stockMovements', {
+          const movement = {
             id: BeeStore.ids.randomId('stm'),
             variantId: line.variantId,
             date: sale.date,
             type: 'sale',
             qtyChange: -line.qty,
-            unitCostMinor: line.unitCostMinor,
-            avgCostAfterMinor: variant.costMinor,
+            unitCostMinor: line.qty > 0
+              ? Math.round(Math.abs(change.cogsMinor) / line.qty)
+              : line.unitCostMinor,
+            valueChangeMinor: change.valueChangeMinor,
+            valueAfterMinor: change.valueAfterMinor,
+            avgCostAfterMinor: change.avgCostAfterMinor,
+            estimated: !!change.estimated,
+            costFlag: change.estimated ? 'COST_ESTIMATED' : null,
             refType: 'sale',
             refId: sale.id,
             note: 'فاتورة ' + sale.number,
             balanceAfter: variant.quantity,
+            journalEntryIds: [],
             createdAt: BeeStore.dates.now(),
-          });
+          };
+          tx.put('stockMovements', movement);
+          saleMovements.push(movement);
         }
+        sale.cogsMinor = totalCogsMinor;
+        sale.costEstimated = costEstimated;
+        sale.costFlag = costEstimated ? 'COST_ESTIMATED' : null;
+        if (BeeStore.posting) {
+          const entry = await BeeStore.posting.saleCost(tx, sale, totalCogsMinor);
+          if (entry) {
+            BeeStore.posting.linkAll([sale].concat(saleMovements), entry);
+            for (const movement of saleMovements) tx.put('stockMovements', movement);
+          }
+        }
+        tx.put('sales', sale);
 
         if (data.customerId) {
           const customer = await tx.get('customers', data.customerId);
@@ -324,44 +362,77 @@
         await BeeStore.periods.assertOpen(tx, BeeStore.dates.today());
         await BeeStore.periods.assertDayOpen(tx, s.date);
 
+        const voidMovements = [];
         for (const line of s.lines) {
           const variant = await tx.get('variants', line.variantId);
+          // Restore the exact value that left inventory when the sale posted,
+          // not today's average (v5 §3.2, §4 row 21).
+          const restoreValue = line.cogsMinor != null
+            ? Math.round(Number(line.cogsMinor) || 0)
+            : BeeStore.money.mul(line.unitCostMinor, line.qty);
+          let change = {
+            valueChangeMinor: restoreValue,
+            valueAfterMinor: variant ? BeeStore.stock.ensureValue(variant) + restoreValue : 0,
+            avgCostAfterMinor: variant ? variant.costMinor : line.unitCostMinor,
+          };
           if (variant) {
-            variant.quantity += line.qty;
-            variant.updatedAt = BeeStore.dates.now();
+            change = BeeStore.stock.restore(variant, line.qty, restoreValue);
             tx.put('variants', variant);
           }
-          tx.put('stockMovements', {
+          const movement = {
             id: BeeStore.ids.randomId('stm'),
             variantId: line.variantId,
-            date: BeeStore.dates.today(),
+            date: s.date,
             type: 'void_sale',
             qtyChange: line.qty,
-            unitCostMinor: line.unitCostMinor,
-            avgCostAfterMinor: variant ? variant.costMinor : line.unitCostMinor,
+            unitCostMinor: line.qty > 0
+              ? Math.round(restoreValue / line.qty)
+              : line.unitCostMinor,
+            valueChangeMinor: change.valueChangeMinor,
+            valueAfterMinor: change.valueAfterMinor,
+            avgCostAfterMinor: change.avgCostAfterMinor,
             refType: 'void_sale',
             refId: s.id,
             note: 'إلغاء فاتورة ' + s.number,
             balanceAfter: variant ? variant.quantity : 0,
+            journalEntryIds: [],
             createdAt: BeeStore.dates.now(),
-          });
+          };
+          tx.put('stockMovements', movement);
+          voidMovements.push(movement);
         }
 
         for (const p of s.payments) {
           tx.put('stockMovements', {
             id: BeeStore.ids.randomId('stm'),
             variantId: null,
-            date: BeeStore.dates.today(),
+            date: s.date,
             type: 'void_sale',
             qtyChange: 0,
             unitCostMinor: 0,
+            valueChangeMinor: 0,
+            valueAfterMinor: 0,
             avgCostAfterMinor: 0,
             refType: 'void_sale_payment',
             refId: s.id,
             note: 'عكس دفع فاتورة ' + s.number,
             balanceAfter: 0,
+            journalEntryIds: [],
             createdAt: BeeStore.dates.now(),
           });
+        }
+
+        if (BeeStore.posting) {
+          const reversals = await BeeStore.posting.reverseDocument(
+            tx, 'SALE', s.id,
+            { description: 'إلغاء فاتورة ' + s.number, reason: reason || '' },
+            { allowClosedDay: true });
+          if (reversals.length > 0) {
+            BeeStore.posting.linkAll([s].concat(voidMovements), reversals);
+            // Re-persist after linking: IndexedDB structured-clones at put
+            // time, so a later mutation of the staged object is not saved.
+            for (const movement of voidMovements) tx.put('stockMovements', movement);
+          }
         }
 
         s.status = 'void';

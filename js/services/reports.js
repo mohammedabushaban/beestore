@@ -24,7 +24,8 @@
       const payroll = await this.repo.listRange('payroll', from.slice(0, 7), to.slice(0, 7));
       const expenseCategories = await this.repo.list('expenseCategories');
       const stockMovements = await this.repo.listRange('stockMovements', from, to, m =>
-        (m.type === 'adjustment' || m.type === 'stocktake' || m.type === 'sale_return')
+        (m.type === 'adjustment' || m.type === 'stocktake' ||
+          m.type === 'sale_return' || m.type === 'revaluation')
       );
       const cashAdjustments = await this.repo.listRange('cashAdjustments', from, to,
         a => !a.voided);
@@ -34,13 +35,19 @@
       for (const s of sales) {
         netSales += s.totalMinor - s.taxMinor;
         for (const line of s.lines) {
-          cogs += line.unitCostMinor * line.qty;
+          cogs += line.cogsMinor != null
+            ? Math.round(Number(line.cogsMinor) || 0)
+            : line.unitCostMinor * line.qty;
         }
       }
       for (const r of salesReturns) {
         netSales -= r.refundMinor;
         for (const line of r.lines) {
-          if (line.restock) cogs -= line.unitCostMinor * line.qty;
+          if (line.restock) {
+            cogs -= line.restockCostMinor != null
+              ? Math.round(Number(line.restockCostMinor) || 0)
+              : line.unitCostMinor * line.qty;
+          }
         }
       }
 
@@ -59,12 +66,25 @@
       }
 
       let stockLosses = 0;
+      let stockRevaluation = 0;
       for (const m of stockMovements) {
-        if ((m.type === 'adjustment' && m.qtyChange < 0) || (m.type === 'stocktake' && m.qtyChange < 0)) {
-          stockLosses += Math.abs(m.qtyChange) * (m.unitCostMinor || 0);
+        if (m.type === 'adjustment' || m.type === 'stocktake') {
+          if (m.valueChangeMinor != null) {
+            // v2 convention until the A3 journal cut-over: only a shortage is
+            // an expense; a count gain never turns into income here.
+            const delta = Number(m.valueChangeMinor) || 0;
+            if (delta < 0) stockLosses -= delta;
+          } else if (m.qtyChange < 0) {
+            stockLosses += Math.abs(m.qtyChange) * (m.unitCostMinor || 0);
+          }
         }
         if (m.type === 'sale_return' && m.qtyChange < 0) {
           stockLosses += Math.abs(m.qtyChange) * (m.unitCostMinor || 0);
+        }
+        if (m.type === 'revaluation') {
+          stockRevaluation -= m.valueChangeMinor != null
+            ? Number(m.valueChangeMinor) || 0
+            : 0;
         }
       }
 
@@ -94,13 +114,14 @@
       for (const a of cashAdjustments) cashDifference += Number(a.amountMinor) || 0;
       // v3-Lite §4.3: shortages increase operating expenses, surpluses reduce
       // them. The signed line is returned for the Day/Period reports.
-      const operatingExpenses = singleTotal + salaryExpense + stockLosses - cashDifference;
+      const operatingExpenses = singleTotal + salaryExpense + stockLosses +
+        stockRevaluation - cashDifference;
       const netProfit = grossProfit - operatingExpenses;
 
       return {
         from, to,
         netSales, cogs, grossProfit, margin,
-        operatingExpenses, salaryExpense, stockLosses, cashDifference,
+        operatingExpenses, salaryExpense, stockLosses, stockRevaluation, cashDifference,
         expensesByCategory,
         netProfit,
       };
@@ -154,11 +175,22 @@
       const variants = await this.repo.list('variants');
       let totalCost = 0;
       let totalRetail = 0;
-      for (const v of variants) {
-        totalCost += v.quantity * v.costMinor;
-        totalRetail += v.quantity * v.priceMinor;
-      }
-      return { totalCost, totalRetail, potentialProfit: totalRetail - totalCost, variants };
+      const rows = variants.map(v => {
+        const qty = Number(v.quantity) || 0;
+        const valueMinor = v.valueMinor != null
+          ? Math.round(Number(v.valueMinor) || 0)
+          : BeeStore.money.mul(v.costMinor, qty);
+        const avgCostMinor = BeeStore.stock && BeeStore.stock.averageCost
+          ? BeeStore.stock.averageCost(qty, valueMinor, v.costMinor)
+          : (Number(v.costMinor) || 0);
+        totalCost += valueMinor;
+        totalRetail += BeeStore.money.mul(v.priceMinor, qty);
+        return { ...v, valueMinor, avgCostMinor };
+      });
+      return {
+        totalCost, totalRetail, potentialProfit: totalRetail - totalCost,
+        variants: rows,
+      };
     }
 
     async receivablesAging() {
@@ -238,7 +270,9 @@
           }
           byProduct[k].qty += l.qty;
           byProduct[k].revenue += l.lineTotalMinor;
-          byProduct[k].cost += l.unitCostMinor * l.qty;
+          byProduct[k].cost += l.cogsMinor != null
+            ? Math.round(Number(l.cogsMinor) || 0)
+            : l.unitCostMinor * l.qty;
         }
       }
       const products = Object.values(byProduct).map(p => ({ ...p, profit: p.revenue - p.cost }));
@@ -262,7 +296,9 @@
           const cat = (v && pMap[v.productId] && (cMap[pMap[v.productId].categoryId] || 'بدون تصنيف')) || '—';
           if (!byCategory[cat]) byCategory[cat] = { revenue: 0, cost: 0 };
           byCategory[cat].revenue += l.lineTotalMinor;
-          byCategory[cat].cost += l.unitCostMinor * l.qty;
+          byCategory[cat].cost += l.cogsMinor != null
+            ? Math.round(Number(l.cogsMinor) || 0)
+            : l.unitCostMinor * l.qty;
         }
       }
 
@@ -301,10 +337,26 @@
       const inv = { purchasedUnits: 0, purchasedValue: 0, soldUnits: 0, soldCost: 0, adjustedUnits: 0, adjustedCost: 0 };
       for (const m of moves) {
         const q = m.qtyChange || 0;
-        if (m.type === 'purchase' || m.type === 'opening') { inv.purchasedUnits += q; inv.purchasedValue += q * (m.unitCostMinor || 0); }
-        else if (m.type === 'sale' || m.type === 'void_purchase') { inv.soldUnits += -q; inv.soldCost += -q * (m.avgCostAfterMinor != null ? m.avgCostAfterMinor : (m.unitCostMinor || 0)); }
-        else if (m.type === 'sale_return' || m.type === 'void_sale' || m.type === 'purchase_return') { inv.adjustedUnits += q; inv.adjustedCost += q * (m.avgCostAfterMinor != null ? m.avgCostAfterMinor : (m.unitCostMinor || 0)); }
-        else { inv.adjustedUnits += q; inv.adjustedCost += q * (m.avgCostAfterMinor != null ? m.avgCostAfterMinor : (m.unitCostMinor || 0)); }
+        const tracked = m.valueChangeMinor != null;
+        const moveValue = tracked
+          ? Number(m.valueChangeMinor) || 0
+          : q * (m.avgCostAfterMinor != null ? m.avgCostAfterMinor : (m.unitCostMinor || 0));
+        if (m.type === 'purchase' || m.type === 'opening') {
+          inv.purchasedUnits += q;
+          inv.purchasedValue += tracked ? moveValue : q * (m.unitCostMinor || 0);
+        } else if (m.type === 'sale' || m.type === 'void_purchase') {
+          inv.soldUnits += -q;
+          inv.soldCost += tracked ? -moveValue
+            : -q * (m.avgCostAfterMinor != null ? m.avgCostAfterMinor : (m.unitCostMinor || 0));
+        } else if (m.type === 'sale_return' || m.type === 'void_sale' || m.type === 'purchase_return') {
+          inv.adjustedUnits += q;
+          inv.adjustedCost += tracked ? moveValue
+            : q * (m.avgCostAfterMinor != null ? m.avgCostAfterMinor : (m.unitCostMinor || 0));
+        } else {
+          inv.adjustedUnits += q;
+          inv.adjustedCost += tracked ? moveValue
+            : q * (m.avgCostAfterMinor != null ? m.avgCostAfterMinor : (m.unitCostMinor || 0));
+        }
       }
 
       // Customers: new credit, collections, overdue.

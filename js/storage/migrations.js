@@ -99,6 +99,208 @@
         return BeeStore.chartSeed.applyToData(data);
       },
     },
+    {
+      // A2: tracked inventory value. Replays every legacy stock movement with
+      // its historical unit cost so existing data keeps its old gross value
+      // (no retrospective discount reallocation), then backfills the fields
+      // new postings and reports rely on. No journal entries are created here:
+      // A3 replays the documents into the journal.
+      from: 4,
+      to: 5,
+      migrate(data) {
+        if (!data.collections) data.collections = {};
+        const C = data.collections;
+        if (!Array.isArray(C.journalEntries)) C.journalEntries = [];
+        const round = (v) => Math.round(Number(v) || 0);
+        const ensureLinks = (doc) => {
+          if (!Array.isArray(doc.journalEntryIds)) doc.journalEntryIds = [];
+        };
+
+        for (const sale of (C.sales || [])) {
+          ensureLinks(sale);
+          let totalCogs = 0;
+          for (const line of (sale.lines || [])) {
+            const qty = Number(line.qty) || 0;
+            const cogs = line.cogsMinor != null
+              ? round(line.cogsMinor)
+              : round((Number(line.unitCostMinor) || 0) * qty);
+            line.cogsMinor = cogs;
+            if (line.costEstimated === undefined) line.costEstimated = false;
+            if (line.costFlag === undefined) {
+              line.costFlag = line.costEstimated ? 'COST_ESTIMATED' : null;
+            }
+            if (line.returnedCostMinor === undefined) {
+              const returned = Number(line.returnedQty) || 0;
+              line.returnedCostMinor = qty > 0
+                ? Math.round(cogs * returned / qty)
+                : 0;
+            }
+            if (line.returnedDiscountMinor === undefined) {
+              line.returnedDiscountMinor = 0;
+            }
+            totalCogs += cogs;
+          }
+          if (sale.cogsMinor === undefined) sale.cogsMinor = totalCogs;
+          if (sale.costEstimated === undefined) sale.costEstimated = false;
+          if (sale.costFlag === undefined) {
+            sale.costFlag = sale.costEstimated ? 'COST_ESTIMATED' : null;
+          }
+        }
+
+        for (const ret of (C.salesReturns || [])) {
+          ensureLinks(ret);
+          let totalRestock = 0;
+          for (const line of (ret.lines || [])) {
+            const qty = Number(line.qty) || 0;
+            const originalCost = round((Number(line.unitCostMinor) || 0) * qty);
+            if (line.returnedCostMinor === undefined) line.returnedCostMinor = originalCost;
+            if (line.restockCostMinor === undefined) {
+              line.restockCostMinor = line.restock === false ? 0 : originalCost;
+            }
+            if (line.valueChangeMinor === undefined) line.valueChangeMinor = 0;
+            totalRestock += round(line.restockCostMinor);
+          }
+          if (ret.restockCostMinor === undefined) ret.restockCostMinor = totalRestock;
+        }
+
+        // Reconstruct the line discount already refunded by legacy returns so
+        // the next partial return takes the exact remainder (v5 §3.1). The
+        // old refund formula was unitPrice × qty − rounded discount, so the
+        // difference is the discount actually granted.
+        const saleById = new Map((C.sales || []).map(s => [s.id, s]));
+        for (const ret of (C.salesReturns || [])) {
+          const sale = saleById.get(ret.saleId);
+          if (!sale || !Array.isArray(sale.lines)) continue;
+          for (const line of (ret.lines || [])) {
+            const saleLine = sale.lines[Number(line.saleLineIndex)];
+            if (!saleLine || line.lineRefundMinor == null) continue;
+            const qty = Number(line.qty) || 0;
+            const unitPrice = line.unitPriceMinor != null
+              ? round(line.unitPriceMinor)
+              : round(saleLine.unitPriceMinor);
+            const discount = Math.max(0,
+              round(unitPrice * qty) - round(line.lineRefundMinor));
+            const lineDiscount = Math.max(0, round(saleLine.lineDiscountMinor));
+            saleLine.returnedDiscountMinor = Math.min(lineDiscount,
+              round(saleLine.returnedDiscountMinor) + discount);
+          }
+        }
+
+        for (const purchase of (C.purchases || [])) {
+          ensureLinks(purchase);
+          let totalValue = 0;
+          for (const line of (purchase.lines || [])) {
+            const qty = Number(line.qty) || 0;
+            const gross = round((Number(line.unitCostMinor) || 0) * qty);
+            if (line.grossMinor === undefined) line.grossMinor = gross;
+            if (line.discountMinor === undefined) line.discountMinor = 0;
+            if (line.inventoryValueMinor === undefined) {
+              // Preserve the old document-derived inventory value exactly.
+              line.inventoryValueMinor = gross;
+            }
+            if (line.netUnitCostMinor === undefined) {
+              line.netUnitCostMinor = qty > 0
+                ? Math.round(line.inventoryValueMinor / qty)
+                : (Number(line.unitCostMinor) || 0);
+            }
+            if (line.returnedValueMinor === undefined) line.returnedValueMinor = 0;
+            totalValue += round(line.inventoryValueMinor);
+          }
+          if (purchase.inventoryValueMinor === undefined) {
+            purchase.inventoryValueMinor = totalValue;
+          }
+        }
+
+        for (const ret of (C.purchaseReturns || [])) {
+          ensureLinks(ret);
+          let totalValue = 0;
+          for (const line of (ret.lines || [])) {
+            const qty = Number(line.qty) || 0;
+            const fallback = round((Number(line.unitCostMinor) || 0) * qty);
+            if (line.valueMinor === undefined) {
+              line.valueMinor = line.lineTotalMinor != null
+                ? round(line.lineTotalMinor)
+                : fallback;
+            }
+            if (line.lineTotalMinor === undefined) line.lineTotalMinor = line.valueMinor;
+            if (line.removedValueMinor === undefined) line.removedValueMinor = line.valueMinor;
+            if (line.differenceMinor === undefined) {
+              line.differenceMinor = round(line.valueMinor - line.removedValueMinor);
+            }
+            totalValue += round(line.valueMinor);
+          }
+          if (ret.totalMinor === undefined) ret.totalMinor = totalValue;
+        }
+
+        // Replay tracked value in the same date/created order as the stock
+        // ledger. Movements already carrying value (a partially migrated or
+        // re-imported dump) keep that exact value; all others use their
+        // historical unit cost so old reports keep the same gross figures.
+        const byVariant = {};
+        const movements = C.stockMovements || [];
+        for (let i = 0; i < movements.length; i++) {
+          const m = movements[i];
+          ensureLinks(m);
+          if (!m.variantId) continue;
+          (byVariant[m.variantId] = byVariant[m.variantId] || []).push({ m, i });
+        }
+        const replay = {};
+        for (const variantId of Object.keys(byVariant)) {
+          const seq = byVariant[variantId].sort((a, b) =>
+            String(a.m.date || '').localeCompare(String(b.m.date || '')) ||
+            String(a.m.createdAt || '').localeCompare(String(b.m.createdAt || '')) ||
+            a.i - b.i);
+          let qty = 0;
+          let value = 0;
+          let lastCost = 0;
+          for (const entry of seq) {
+            const m = entry.m;
+            const q = Number(m.qtyChange) || 0;
+            const unitCost = round(m.unitCostMinor);
+            let valueChange;
+            if (m.valueChangeMinor != null) {
+              valueChange = round(m.valueChangeMinor);
+            } else if (m.type === 'revaluation') {
+              valueChange = 0;
+            } else {
+              // Signed movement value: opening/purchase/void_sale positive,
+              // sale/purchase_return/void_purchase negative, adjustments by
+              // their own signed quantity.
+              valueChange = round(q * unitCost);
+            }
+            m.valueChangeMinor = valueChange;
+            value += valueChange;
+            qty += q;
+            if (m.type === 'opening' || qty > 0) {
+              if (value >= 0 && qty > 0) lastCost = Math.round(value / qty);
+            }
+            m.valueAfterMinor = round(value);
+            const derived = qty > 0 && value >= 0 ? Math.round(value / qty) : 0;
+            m.avgCostAfterMinor = derived || lastCost || unitCost;
+          }
+          replay[variantId] = { qty, value, lastCost };
+        }
+
+        for (const variant of (C.variants || [])) {
+          ensureLinks(variant);
+          const qty = Number(variant.quantity) || 0;
+          const oldCost = round(variant.costMinor);
+          const state = replay[variant.id];
+          if (state) {
+            variant.valueMinor = round(state.value);
+            if (qty > 0 && variant.valueMinor >= 0) {
+              variant.costMinor = Math.round(variant.valueMinor / qty);
+            } else if (state.lastCost >= 0) {
+              variant.costMinor = state.lastCost;
+            }
+          } else if (variant.valueMinor == null) {
+            variant.valueMinor = round(qty * oldCost);
+          }
+        }
+
+        return data;
+      },
+    },
   ];
 
   async function migrate(data, currentVersion) {

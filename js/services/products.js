@@ -61,13 +61,19 @@
           defaultPriceMinor: BeeStore.money.roundMinor(data.defaultPriceMinor || 0),
           active: data.active !== false,
           imageDataUri: data.imageDataUri || null,
+          journalEntryIds: [],
           createdAt: BeeStore.dates.now(),
           updatedAt: BeeStore.dates.now(),
         };
         tx.put('products', product);
 
         if (data.variants && data.variants.length > 0) {
+          const openingDate = data.date || BeeStore.dates.today();
+          const openingDocs = [];
+          let openingValueMinor = 0;
           for (const v of data.variants) {
+            const costMinor = BeeStore.money.roundMinor(
+              v.costMinor || product.defaultCostMinor);
             const variant = {
               id: BeeStore.ids.randomId('var'),
               productId: product.id,
@@ -75,11 +81,13 @@
               color: v.color,
               sku: v.sku || this._genSku(product, v),
               barcode: v.barcode || BeeStore.ids.nextBarcode(),
-              costMinor: BeeStore.money.roundMinor(v.costMinor || product.defaultCostMinor),
+              costMinor,
               priceMinor: BeeStore.money.roundMinor(v.priceMinor || product.defaultPriceMinor),
               quantity: 0,
+              valueMinor: 0,
               lowStockThreshold: v.lowStockThreshold || null,
               active: true,
+              journalEntryIds: [],
               createdAt: BeeStore.dates.now(),
               updatedAt: BeeStore.dates.now(),
             };
@@ -87,23 +95,46 @@
               throw BeeStore.errors.err('INVALID', 'سعر البيع مطلوب - أدخل سعراً أكبر من صفر');
             }
             tx.put('variants', variant);
-            if (v.quantity > 0) {
-            tx.put('stockMovements', {
-              id: BeeStore.ids.randomId('stm'),
-              variantId: variant.id,
-              date: data.date || BeeStore.dates.today(),
-              type: 'opening',
-              qtyChange: v.quantity,
-              unitCostMinor: variant.costMinor,
-              avgCostAfterMinor: variant.costMinor,
-              refType: 'opening',
+            const qty = Number(v.quantity) || 0;
+            if (qty > 0) {
+              variant.quantity = qty;
+              variant.valueMinor = qty * costMinor;
+              const movement = {
+                id: BeeStore.ids.randomId('stm'),
+                variantId: variant.id,
+                date: openingDate,
+                type: 'opening',
+                qtyChange: qty,
+                unitCostMinor: costMinor,
+                valueChangeMinor: variant.valueMinor,
+                valueAfterMinor: variant.valueMinor,
+                avgCostAfterMinor: costMinor,
+                refType: 'opening',
                 refId: null,
                 note: 'مخزون افتتاحي',
-                balanceAfter: v.quantity,
+                balanceAfter: qty,
+                journalEntryIds: [],
                 createdAt: BeeStore.dates.now(),
-              });
-              variant.quantity = v.quantity;
-              tx.put('variants', variant);
+              };
+              tx.put('stockMovements', movement);
+              openingDocs.push(variant, movement);
+              openingValueMinor += variant.valueMinor;
+            }
+            tx.put('variants', variant);
+          }
+          if (BeeStore.posting && openingValueMinor > 0) {
+            const entry = await BeeStore.posting.openingStock(tx, {
+              date: openingDate,
+              sourceId: product.id,
+              description: 'مخزون افتتاحي ' + product.name,
+              valueMinor: openingValueMinor,
+            });
+            if (entry) {
+              BeeStore.posting.linkAll([product].concat(openingDocs), entry);
+              tx.put('products', product);
+              for (const doc of openingDocs) {
+                tx.put(doc.variantId ? 'stockMovements' : 'variants', doc);
+              }
             }
           }
         }

@@ -72,7 +72,7 @@
      * gapless number, and appends. Never updates or deletes an existing entry.
      * @param {object} tx active repository transaction
      * @param {object} data entry fields
-     * @param {object} [options] {allowInactive}
+     * @param {object} [options] {allowInactive,allowClosedDay}
      * @returns {Promise<object>} saved entry
      */
     async post(tx, data, options) {
@@ -215,7 +215,7 @@
         profile: data.profile !== undefined ? data.profile : this._profileName(),
       };
 
-      await this._assertLocks(tx, entry);
+      await this._assertLocks(tx, entry, options);
       entry.number = await this._reserveNumber(tx);
       await tx.append('journalEntries', entry);
       return entry;
@@ -232,7 +232,8 @@
       return 'system';
     }
 
-    async _assertLocks(tx, entry) {
+    async _assertLocks(tx, entry, options) {
+      options = options || {};
       if (entry.isScheduled) {
         if (BeeStore.periods.assertScheduledOpen) {
           await BeeStore.periods.assertScheduledOpen(tx, entry.date);
@@ -247,7 +248,12 @@
       } else {
         await BeeStore.periods.assertOpen(tx, entry.date);
       }
-      await BeeStore.periods.assertDayOpen(tx, entry.date);
+      // Inventory-only postings (purchases, stock counts, opening stock, cost
+      // revaluation) are non-cash and may be recorded after the day is closed,
+      // matching the v3-Lite §4.5 day-lock rules. Cash documents never set this.
+      if (!options.allowClosedDay) {
+        await BeeStore.periods.assertDayOpen(tx, entry.date);
+      }
       return true;
     }
 
@@ -291,10 +297,12 @@
      * @param {object} tx active transaction
      * @param {object[]} entries originals
      * @param {object} [meta] {description, reason, sourceType, sourceId, profile}
+     * @param {object} [options] {allowClosedDay}
      * @returns {Promise<object[]>} reversal entries
      */
-    async reverseEntries(tx, entries, meta) {
+    async reverseEntries(tx, entries, meta, options) {
       meta = meta || {};
+      options = options || {};
       const out = [];
       for (const original of (entries || [])) {
         if (!original || !original.id) continue;
@@ -313,10 +321,31 @@
           isScheduled: original.isScheduled === true,
           profile: meta.profile,
           postingVersion: meta.postingVersion,
-        }, { allowInactive: true });
+        }, { allowInactive: true, allowClosedDay: !!options.allowClosedDay });
         out.push(reversal);
       }
       return out;
+    }
+
+    /**
+     * Reverses every entry belonging to one source document inside an
+     * existing transaction. Returns [] when the document has no entries
+     * (legacy documents before their journal replay).
+     * @param {object} tx active transaction
+     * @param {string} sourceType source document type
+     * @param {string} sourceId source document id
+     * @param {object} [meta] description/reason/profile
+     * @param {object} [options] {allowClosedDay}
+     * @returns {Promise<object[]>} reversal entries
+     */
+    async reverseSourceTx(tx, sourceType, sourceId, meta, options) {
+      const entries = await this._forSourceTx(tx, sourceType, sourceId);
+      if (entries.length === 0) return [];
+      return this.reverseEntries(tx, entries, {
+        ...(meta || {}),
+        sourceType: meta && meta.sourceType ? meta.sourceType : sourceType,
+        sourceId: meta && meta.sourceId !== undefined ? meta.sourceId : sourceId,
+      }, options);
     }
 
     /**

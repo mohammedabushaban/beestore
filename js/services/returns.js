@@ -48,6 +48,41 @@
      * @returns {Promise<object>} the created return
      * @throws {BeeError} NOT_FOUND | SALE_VOID | INVALID_LINE | EXCEEDS_SOLD | INSUFFICIENT_STOCK | PERIOD_CLOSED
      */
+    /**
+     * Refund quote for one linked sale line (v5 §3.1): the line discount is
+     * allocated across returned units with the remainder taken by the final
+     * return, so the refunded discounts always sum exactly to the line
+     * discount. Shared with the cashier preview so both paths agree.
+     * @param {object} saleLine stored sale line
+     * @param {number} qty quantity being returned
+     * @returns {{discountMinor:number,refundMinor:number,alreadyDiscountMinor:number}}
+     */
+    quoteRefund(saleLine, qty) {
+      const qtySold = Number(saleLine.qty) || 0;
+      const requested = Math.floor(Number(qty) || 0);
+      if (qtySold <= 0 || requested <= 0) {
+        return { discountMinor: 0, refundMinor: 0, alreadyDiscountMinor: 0 };
+      }
+      const returnedQty = Number(saleLine.returnedQty) || 0;
+      const remainingQty = Math.max(0, qtySold - returnedQty);
+      const lineDiscount = Math.max(0,
+        Math.round(Number(saleLine.lineDiscountMinor) || 0));
+      const tracked = Number(saleLine.returnedDiscountMinor);
+      const alreadyDiscount = Math.min(lineDiscount, Math.max(0,
+        Number.isFinite(tracked) && saleLine.returnedDiscountMinor != null
+          ? tracked
+          : Math.round(lineDiscount * returnedQty / qtySold)));
+      const remainingDiscount = lineDiscount - alreadyDiscount;
+      const discountMinor = requested >= remainingQty
+        ? remainingDiscount
+        : Math.round(remainingDiscount * requested / remainingQty);
+      return {
+        discountMinor,
+        refundMinor: BeeStore.money.mul(saleLine.unitPriceMinor, requested) - discountMinor,
+        alreadyDiscountMinor: alreadyDiscount,
+      };
+    }
+
     async create(data) {
       const ret = await this.repo.transaction(async (tx) => {
         const returnDate = data.date || BeeStore.dates.today();
@@ -62,19 +97,44 @@
 
         const lines = [];
         let refundMinor = 0;
+        const seenLines = new Set();
         for (const line of data.lines) {
           const saleLine = sale.lines[line.saleLineIndex];
           if (!saleLine) throw BeeStore.errors.err('INVALID_LINE', 'بند غير صالح');
+          if (seenLines.has(line.saleLineIndex)) {
+            throw BeeStore.errors.err('INVALID_LINE', 'لا يمكن تكرار بند الفاتورة في المرتجع نفسه');
+          }
+          seenLines.add(line.saleLineIndex);
           const alreadyReturned = saleLine.returnedQty || 0;
           const maxReturn = saleLine.qty - alreadyReturned;
           if (line.qty > maxReturn) {
             throw BeeStore.errors.err('EXCEEDS_SOLD', 'كمية المرتجع تتجاوز الكمية المباعة المتبقية');
           }
           const unitPriceMinor = saleLine.unitPriceMinor;
-          const proportionalDiscount = saleLine.lineDiscountMinor > 0 ?
-            Math.round(saleLine.lineDiscountMinor * line.qty / saleLine.qty) : 0;
-          const lineRefund = BeeStore.money.mul(unitPriceMinor, line.qty) - proportionalDiscount;
+          const quote = this.quoteRefund(saleLine, line.qty);
+          const lineRefund = quote.refundMinor;
           refundMinor += lineRefund;
+          saleLine.returnedDiscountMinor =
+            quote.alreadyDiscountMinor + quote.discountMinor;
+          // v5 §3.2: a returned unit comes back at the exact cost that was
+          // charged to COGS when it sold. Track the already-returned cost so
+          // the final return takes the remaining value exactly.
+          const soldCost = saleLine.cogsMinor != null
+            ? Math.round(Number(saleLine.cogsMinor) || 0)
+            : BeeStore.money.mul(saleLine.unitCostMinor, saleLine.qty);
+          const alreadyQty = Number(saleLine.returnedQty) || 0;
+          const alreadyCost = Number(saleLine.returnedCostMinor) || 0;
+          const remainingQty = saleLine.qty - alreadyQty;
+          let returnedCostMinor;
+          if (line.qty === remainingQty) {
+            returnedCostMinor = soldCost - alreadyCost;
+          } else if (alreadyQty === 0) {
+            returnedCostMinor = Math.round(soldCost * line.qty / saleLine.qty);
+          } else {
+            returnedCostMinor = Math.round(
+              (soldCost - alreadyCost) * line.qty / remainingQty);
+          }
+          saleLine.returnedCostMinor = alreadyCost + returnedCostMinor;
           lines.push({
             saleLineIndex: line.saleLineIndex,
             variantId: saleLine.variantId,
@@ -86,6 +146,9 @@
             unitCostMinor: saleLine.unitCostMinor,
             restock: line.restock !== false,
             lineRefundMinor: lineRefund,
+            returnedCostMinor,
+            restockCostMinor: line.restock !== false ? returnedCostMinor : 0,
+            valueChangeMinor: 0,
           });
         }
 
@@ -97,6 +160,7 @@
           customerId: sale.customerId,
           lines,
           refundMinor,
+          restockCostMinor: 0,
           refundMode: data.refundMode || 'cash_refund',
           refundMethod: data.refundMode === 'cash_refund'
             ? (data.refundMethod || BeeStore.settings.resolvePaymentAccount(settings, 'cash'))
@@ -104,42 +168,65 @@
           reason: data.reason || '',
           exchangeSaleId: null,
           createdByProfile: data.createdByProfile || null,
+          journalEntryIds: [],
           createdAt: BeeStore.dates.now(),
           updatedAt: BeeStore.dates.now(),
         };
 
         tx.put('salesReturns', ret);
 
+        let restockCostMinor = 0;
+        const returnMovements = [];
         for (const line of lines) {
           const saleLine = sale.lines[line.saleLineIndex];
           saleLine.returnedQty = (saleLine.returnedQty || 0) + line.qty;
           if (line.restock) {
             const variant = await tx.get('variants', line.variantId);
-            let newAvg = line.unitCostMinor;
+            let change = {
+              valueChangeMinor: line.restockCostMinor,
+              valueAfterMinor: 0,
+              avgCostAfterMinor: line.unitCostMinor,
+            };
             if (variant) {
-              newAvg = BeeStore.stock.blendCost(
-                variant.quantity, variant.costMinor, line.qty, line.unitCostMinor);
-              variant.quantity += line.qty;
-              variant.costMinor = newAvg;
-              variant.updatedAt = BeeStore.dates.now();
+              // Exact original COGS, not today's average (§3.2 / §4 row 3b).
+              change = BeeStore.stock.restore(variant, line.qty, line.restockCostMinor);
               tx.put('variants', variant);
             }
-            tx.put('stockMovements', {
+            line.valueChangeMinor = change.valueChangeMinor;
+            const movement = {
               id: BeeStore.ids.randomId('stm'),
               variantId: line.variantId,
               date: ret.date,
               type: 'sale_return',
               qtyChange: line.qty,
-              unitCostMinor: line.unitCostMinor,
-              avgCostAfterMinor: newAvg,
+              unitCostMinor: line.qty > 0
+                ? Math.round(line.restockCostMinor / line.qty)
+                : line.unitCostMinor,
+              valueChangeMinor: change.valueChangeMinor,
+              valueAfterMinor: change.valueAfterMinor,
+              avgCostAfterMinor: change.avgCostAfterMinor,
               refType: 'sale_return',
               refId: ret.id,
               note: 'مرتجع ' + ret.number,
               balanceAfter: variant ? variant.quantity : 0,
+              journalEntryIds: [],
               createdAt: BeeStore.dates.now(),
-            });
+            };
+            tx.put('stockMovements', movement);
+            returnMovements.push(movement);
+            restockCostMinor += line.restockCostMinor;
           }
         }
+        ret.restockCostMinor = restockCostMinor;
+
+        if (BeeStore.posting) {
+          const entry = await BeeStore.posting.saleReturnCost(tx, ret, restockCostMinor);
+          if (entry) {
+            BeeStore.posting.linkAll([ret].concat(returnMovements), entry);
+            for (const movement of returnMovements) tx.put('stockMovements', movement);
+          }
+        }
+        tx.put('salesReturns', ret);
 
         const totalReturned = sale.lines.reduce((sum, l) => sum + (l.returnedQty || 0), 0);
         const totalSold = sale.lines.reduce((sum, l) => sum + l.qty, 0);
@@ -194,6 +281,11 @@
           lineDiscountMinor: 0,
           lineTotalMinor: BeeStore.money.mul(unitPriceMinor, qty),
           returnedQty: 0,
+          returnedCostMinor: 0,
+          returnedDiscountMinor: 0,
+          cogsMinor: 0,
+          costEstimated: false,
+          costFlag: null,
         });
       }
       if (lines.length === 0) {
@@ -231,30 +323,61 @@
         installmentPlan: null,
         notes: 'استبدال من ' + ret.number,
         createdByProfile: ret.createdByProfile || originalSale.createdByProfile || null,
+        cogsMinor: 0,
+        costEstimated: false,
+        costFlag: null,
+        journalEntryIds: [],
         createdAt: BeeStore.dates.now(),
         updatedAt: BeeStore.dates.now(),
       };
       tx.put('sales', sale);
+      let totalCogsMinor = 0;
+      let costEstimated = false;
+      const saleMovements = [];
       for (const line of lines) {
         const variant = await tx.get('variants', line.variantId);
-        variant.quantity -= line.qty;
-        variant.updatedAt = BeeStore.dates.now();
+        const change = BeeStore.stock.issue(variant, line.qty);
+        line.cogsMinor = change.cogsMinor;
+        line.costEstimated = change.estimated;
+        line.costFlag = change.estimated ? 'COST_ESTIMATED' : null;
+        totalCogsMinor += change.cogsMinor;
+        if (change.estimated) costEstimated = true;
         tx.put('variants', variant);
-        tx.put('stockMovements', {
+        const movement = {
           id: BeeStore.ids.randomId('stm'),
           variantId: line.variantId,
           date: sale.date,
           type: 'sale',
           qtyChange: -line.qty,
-          unitCostMinor: line.unitCostMinor,
-          avgCostAfterMinor: variant.costMinor,
+          unitCostMinor: line.qty > 0
+            ? Math.round(Math.abs(change.cogsMinor) / line.qty)
+            : line.unitCostMinor,
+          valueChangeMinor: change.valueChangeMinor,
+          valueAfterMinor: change.valueAfterMinor,
+          avgCostAfterMinor: change.avgCostAfterMinor,
+          estimated: !!change.estimated,
+          costFlag: change.estimated ? 'COST_ESTIMATED' : null,
           refType: 'sale',
           refId: sale.id,
           note: 'فاتورة استبدال ' + sale.number,
           balanceAfter: variant.quantity,
+          journalEntryIds: [],
           createdAt: BeeStore.dates.now(),
-        });
+        };
+        tx.put('stockMovements', movement);
+        saleMovements.push(movement);
       }
+      sale.cogsMinor = totalCogsMinor;
+      sale.costEstimated = costEstimated;
+      sale.costFlag = costEstimated ? 'COST_ESTIMATED' : null;
+      if (BeeStore.posting) {
+        const entry = await BeeStore.posting.saleCost(tx, sale, totalCogsMinor);
+        if (entry) {
+          BeeStore.posting.linkAll([sale].concat(saleMovements), entry);
+          for (const movement of saleMovements) tx.put('stockMovements', movement);
+        }
+      }
+      tx.put('sales', sale);
       return sale;
     }
   }

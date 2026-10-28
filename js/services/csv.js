@@ -60,8 +60,11 @@
       if (rows.length === 0) return { ok: false, errors };
 
       const result = await this.repo.transaction(async (tx) => {
-        await BeeStore.periods.assertOpen(tx, BeeStore.dates.today());
+        const importDate = BeeStore.dates.today();
+        await BeeStore.periods.assertOpen(tx, importDate);
         const created = [];
+        const openingDocs = [];
+        let openingValueMinor = 0;
         for (const row of rows) {
           let variant = null;
           if (row.barcode) {
@@ -74,27 +77,33 @@
           }
 
           if (variant) {
-            const newCost = BeeStore.stock.blendCost(
-              variant.quantity, variant.costMinor, row.quantity, row.costMinor || variant.costMinor);
-            variant.quantity += row.quantity;
-            variant.costMinor = newCost;
+            const unitCost = row.costMinor || variant.costMinor;
+            const change = BeeStore.stock.receive(
+              variant, row.quantity, BeeStore.money.mul(unitCost, row.quantity));
             variant.priceMinor = row.priceMinor || variant.priceMinor;
-            variant.updatedAt = BeeStore.dates.now();
             tx.put('variants', variant);
-            tx.put('stockMovements', {
+            const movement = {
               id: BeeStore.ids.randomId('stm'),
               variantId: variant.id,
-              date: BeeStore.dates.today(),
+              date: importDate,
               type: 'opening',
               qtyChange: row.quantity,
-              unitCostMinor: row.costMinor,
-              avgCostAfterMinor: newCost,
+              unitCostMinor: unitCost,
+              valueChangeMinor: change.valueChangeMinor,
+              valueAfterMinor: change.valueAfterMinor,
+              avgCostAfterMinor: change.avgCostAfterMinor,
               refType: 'import',
               refId: null,
               note: 'استيراد CSV',
               balanceAfter: variant.quantity,
+              journalEntryIds: [],
               createdAt: BeeStore.dates.now(),
-            });
+            };
+            tx.put('stockMovements', movement);
+            if (row.quantity > 0) {
+              openingDocs.push(variant, movement);
+              openingValueMinor += change.valueChangeMinor;
+            }
             created.push({ action: 'updated', name: row.name });
           } else {
             const product = tx.put('products', {
@@ -108,6 +117,7 @@
               defaultPriceMinor: row.priceMinor,
               active: true,
               imageDataUri: null,
+              journalEntryIds: [],
               createdAt: BeeStore.dates.now(),
             });
             const newVariant = {
@@ -120,28 +130,51 @@
               costMinor: row.costMinor,
               priceMinor: row.priceMinor,
               quantity: row.quantity,
+              valueMinor: BeeStore.money.mul(row.costMinor, row.quantity),
               lowStockThreshold: null,
               active: true,
+              journalEntryIds: [],
               createdAt: BeeStore.dates.now(),
             };
             tx.put('variants', newVariant);
             if (row.quantity > 0) {
-              tx.put('stockMovements', {
+              const movement = {
                 id: BeeStore.ids.randomId('stm'),
                 variantId: newVariant.id,
-                date: BeeStore.dates.today(),
-              type: 'opening',
-              qtyChange: row.quantity,
-              unitCostMinor: row.costMinor,
-              avgCostAfterMinor: row.costMinor,
-              refType: 'import',
-              refId: null,
-              note: 'استيراد CSV',
-              balanceAfter: row.quantity,
+                date: importDate,
+                type: 'opening',
+                qtyChange: row.quantity,
+                unitCostMinor: row.costMinor,
+                valueChangeMinor: newVariant.valueMinor,
+                valueAfterMinor: newVariant.valueMinor,
+                avgCostAfterMinor: row.costMinor,
+                refType: 'import',
+                refId: null,
+                note: 'استيراد CSV',
+                balanceAfter: row.quantity,
+                journalEntryIds: [],
                 createdAt: BeeStore.dates.now(),
-              });
+              };
+              tx.put('stockMovements', movement);
+              openingDocs.push(product, newVariant, movement);
+              openingValueMinor += newVariant.valueMinor;
             }
             created.push({ action: 'created', name: row.name });
+          }
+        }
+        if (BeeStore.posting && openingValueMinor > 0) {
+          const entry = await BeeStore.posting.openingStock(tx, {
+            date: importDate,
+            sourceId: null,
+            description: 'مخزون استيراد CSV',
+            valueMinor: openingValueMinor,
+          });
+          if (entry) {
+            BeeStore.posting.linkAll(openingDocs, entry);
+            for (const doc of openingDocs) {
+              tx.put(doc.variantId ? 'stockMovements' :
+                (doc.productId ? 'variants' : 'products'), doc);
+            }
           }
         }
         return created;

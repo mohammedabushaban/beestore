@@ -599,6 +599,8 @@
           major(prev.operatingExpenses), major(lastYear.operatingExpenses)],
         ['الرواتب / Salaries', major(pnl.salaryExpense), major(prev.salaryExpense), major(lastYear.salaryExpense)],
         ['فروقات المخزون / Stock losses', major(pnl.stockLosses), major(prev.stockLosses), major(lastYear.stockLosses)],
+        ['تسوية تكلفة المخزون / Inventory revaluation', major(pnl.stockRevaluation),
+          major(prev.stockRevaluation), major(lastYear.stockRevaluation)],
         ['فروقات الصندوق / Cash over-short', major(pnl.cashDifference),
           major(prev.cashDifference), major(lastYear.cashDifference)],
         ['صافي الربح / Net profit', major(pnl.netProfit), major(prev.netProfit), major(lastYear.netProfit)],
@@ -667,7 +669,9 @@
       for (const s of sales) {
         for (const l of (s.lines || [])) {
           const revenue = Number(l.lineTotalMinor) || 0;
-          const cost = (Number(l.unitCostMinor) || 0) * (Number(l.qty) || 0);
+          const cost = l.cogsMinor != null
+            ? Math.round(Number(l.cogsMinor) || 0)
+            : (Number(l.unitCostMinor) || 0) * (Number(l.qty) || 0);
           lineRevenue += revenue;
           lineCost += cost;
           const profit = revenue - cost;
@@ -787,6 +791,8 @@
             ['الرواتب / Salaries (Payroll sheet)', '', '', '', '', '', '', '',
               major(pnl.salaryExpense), ''],
             ['فروقات المخزون / Stock losses', '', '', '', '', '', '', '', major(pnl.stockLosses), ''],
+            ['تسوية تكلفة المخزون / Inventory revaluation', '', '', '', '', '', '', '',
+              major(pnl.stockRevaluation), ''],
             ['فروقات الصندوق / Cash over-short', '', '', '', '', '', '', '', major(pnl.cashDifference), ''],
             ['المصاريف التشغيلية / Operating expenses', '', '', '', '', '', '', '',
               major(pnl.operatingExpenses), ''],
@@ -968,7 +974,9 @@
         if (qty > 0) g.inQty += qty;
         if (qty < 0) g.outQty += -qty;
         g.netQty += qty;
-        g.cost += Math.abs(qty) * (Number(m.unitCostMinor) || 0);
+        g.cost += m.valueChangeMinor != null
+          ? Math.abs(Number(m.valueChangeMinor) || 0)
+          : Math.abs(qty) * (Number(m.unitCostMinor) || 0);
       }
       const stockRows = Object.values(moveGroups)
         .sort((a, b) => a.type.localeCompare(b.type))
@@ -1260,10 +1268,11 @@
         review.pnl.current.salaryExpense, payrollGross);
 
       addCheck('expenses_reconcile_operating',
-        'المصاريف + الرواتب + فروقات المخزون − فروقات الصندوق = المصاريف التشغيلية',
+        'المصاريف + الرواتب + فروقات المخزون + تسوية التكلفة − فروقات الصندوق = المصاريف التشغيلية',
         review.pnl.current.operatingExpenses,
         operatingExpenseTotal + review.pnl.current.salaryExpense +
-        review.pnl.current.stockLosses - review.pnl.current.cashDifference);
+        review.pnl.current.stockLosses + review.pnl.current.stockRevaluation -
+        review.pnl.current.cashDifference);
 
       addCheck('receivables_aging_matches_snapshot',
         'أرصدة الزبائن الموجبة تساوي ذمم الزبائن في صورة الميزانية',

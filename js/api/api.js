@@ -182,9 +182,7 @@
         const saleLine = sale.lines[Number(line.saleLineIndex)];
         if (!saleLine) continue;
         const qty = Number(line.qty) || 0;
-        const proportionalDiscount = saleLine.lineDiscountMinor > 0
-          ? Math.round(saleLine.lineDiscountMinor * qty / saleLine.qty) : 0;
-        refund += BeeStore.money.mul(saleLine.unitPriceMinor, qty) - proportionalDiscount;
+        refund += BeeStore.returns.quoteRefund(saleLine, qty).refundMinor;
       }
       if (refund > max) {
         throw BeeStore.errors.err('PERMISSION',

@@ -61,9 +61,14 @@
 
         const lines = [];
         let totalMinor = 0;
+        const seenLines = new Set();
         for (const line of (data.lines || [])) {
           const pline = purchase.lines[line.purchaseLineIndex];
           if (!pline) throw BeeStore.errors.err('INVALID_LINE', 'بند غير صالح');
+          if (seenLines.has(line.purchaseLineIndex)) {
+            throw BeeStore.errors.err('INVALID_LINE', 'لا يمكن تكرار بند الفاتورة في المرتجع نفسه');
+          }
+          seenLines.add(line.purchaseLineIndex);
           const qty = Math.floor(Number(line.qty) || 0);
           const maxReturn = pline.qty - (pline.returnedQty || 0);
           if (qty <= 0 || qty > maxReturn) {
@@ -74,13 +79,34 @@
           if (!settings.allowNegativeStock && variant.quantity - qty < 0) {
             throw BeeStore.errors.err('INSUFFICIENT_STOCK', 'لا يمكن الإرجاع: المخزون المتوفر من هذا الصنف أقل من الكمية المرتجعة');
           }
-          totalMinor += pline.unitCostMinor * qty;
+          // Refund value follows the net value the purchase carried after its
+          // invoice discount (v5 §3.1); the last returned unit takes the
+          // remaining value exactly so the parts sum to the line value.
+          const lineValue = pline.inventoryValueMinor != null
+            ? Math.round(Number(pline.inventoryValueMinor) || 0)
+            : BeeStore.money.mul(pline.unitCostMinor, pline.qty);
+          const alreadyQty = Number(pline.returnedQty) || 0;
+          const alreadyValue = Number(pline.returnedValueMinor) || 0;
+          const remainingQty = pline.qty - alreadyQty;
+          let allocatedValue;
+          if (qty === remainingQty) {
+            allocatedValue = lineValue - alreadyValue;
+          } else if (alreadyQty === 0) {
+            allocatedValue = Math.round(lineValue * qty / pline.qty);
+          } else {
+            allocatedValue = Math.round(
+              (lineValue - alreadyValue) * qty / remainingQty);
+          }
+          totalMinor += allocatedValue;
           lines.push({
             purchaseLineIndex: line.purchaseLineIndex,
             variantId: pline.variantId,
             qty,
             unitCostMinor: pline.unitCostMinor,
-            lineTotalMinor: pline.unitCostMinor * qty,
+            valueMinor: allocatedValue,
+            removedValueMinor: 0,
+            differenceMinor: 0,
+            lineTotalMinor: allocatedValue,
           });
         }
         if (lines.length === 0) throw BeeStore.errors.err('INVALID', 'أدخل كمية واحدة على الأقل');
@@ -105,30 +131,46 @@
           reason: data.reason || '',
           createdAt: BeeStore.dates.now(),
           updatedAt: BeeStore.dates.now(),
+          journalEntryIds: [],
         };
         tx.put('purchaseReturns', ret);
 
+        let removedValueTotal = 0;
+        const returnMovements = [];
         for (const line of lines) {
           const pline = purchase.lines[line.purchaseLineIndex];
           pline.returnedQty = (pline.returnedQty || 0) + line.qty;
+          pline.returnedValueMinor = (Number(pline.returnedValueMinor) || 0) + line.valueMinor;
           const variant = await tx.get('variants', line.variantId);
-          variant.quantity -= line.qty;
-          variant.updatedAt = BeeStore.dates.now();
+          // v5 §3.2: the value leaves inventory at the current tracked
+          // average; any refund difference is posted to 5030.
+          const change = BeeStore.stock.issue(variant, line.qty);
+          line.removedValueMinor = change.cogsMinor;
+          line.differenceMinor = line.valueMinor - change.cogsMinor;
+          removedValueTotal += change.cogsMinor;
           tx.put('variants', variant);
-          tx.put('stockMovements', {
+          const movement = {
             id: BeeStore.ids.randomId('stm'),
             variantId: line.variantId,
             date: ret.date,
             type: 'purchase_return',
             qtyChange: -line.qty,
-            unitCostMinor: line.unitCostMinor,
-            avgCostAfterMinor: variant.costMinor,
+            unitCostMinor: line.qty > 0
+              ? Math.round(change.cogsMinor / line.qty)
+              : line.unitCostMinor,
+            valueChangeMinor: change.valueChangeMinor,
+            valueAfterMinor: change.valueAfterMinor,
+            avgCostAfterMinor: change.avgCostAfterMinor,
+            estimated: !!change.estimated,
             refType: 'purchase_return',
             refId: ret.id,
             note: 'مرتجع مشتريات ' + ret.number,
             balanceAfter: variant.quantity,
+            journalEntryIds: [],
             createdAt: BeeStore.dates.now(),
-          });
+          };
+          tx.put('stockMovements', movement);
+          returnMovements.push(movement);
         }
 
         purchase.dueMinor = Math.max(0, (purchase.dueMinor || 0) - totalMinor);
@@ -136,6 +178,16 @@
           : ((purchase.paidMinor || 0) > 0 ? 'partial' : 'unpaid');
         purchase.updatedAt = BeeStore.dates.now();
         tx.put('purchases', purchase);
+
+        if (BeeStore.posting) {
+          const entry = await BeeStore.posting.purchaseReturn(
+            tx, ret, totalMinor, removedValueTotal);
+          if (entry) {
+            BeeStore.posting.linkAll([ret].concat(returnMovements), entry);
+            for (const movement of returnMovements) tx.put('stockMovements', movement);
+          }
+        }
+        tx.put('purchaseReturns', ret);
 
         return ret;
       });

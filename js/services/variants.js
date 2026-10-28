@@ -93,8 +93,10 @@
           costMinor: BeeStore.money.roundMinor(data.costMinor != null ? data.costMinor : (product.defaultCostMinor || 0)),
           priceMinor: BeeStore.money.roundMinor(data.priceMinor != null ? data.priceMinor : (product.defaultPriceMinor || 0)),
           quantity,
+          valueMinor: quantity * BeeStore.money.roundMinor(data.costMinor != null ? data.costMinor : (product.defaultCostMinor || 0)),
           lowStockThreshold: data.lowStockThreshold || null,
           active: true,
+          journalEntryIds: [],
           createdAt: BeeStore.dates.now(),
           updatedAt: BeeStore.dates.now(),
         };
@@ -104,20 +106,37 @@
         tx.put('variants', variant);
 
         if (quantity !== 0) {
-          tx.put('stockMovements', {
+          const movement = {
             id: BeeStore.ids.randomId('stm'),
             variantId: variant.id,
             date: data.date || BeeStore.dates.today(),
             type: 'opening',
             qtyChange: quantity,
             unitCostMinor: variant.costMinor,
+            valueChangeMinor: variant.valueMinor,
+            valueAfterMinor: variant.valueMinor,
             avgCostAfterMinor: variant.costMinor,
             refType: 'opening',
             refId: null,
             note: 'مخزون افتتاحي',
             balanceAfter: quantity,
+            journalEntryIds: [],
             createdAt: BeeStore.dates.now(),
-          });
+          };
+          tx.put('stockMovements', movement);
+          if (BeeStore.posting) {
+            const entry = await BeeStore.posting.openingStock(tx, {
+              date: movement.date,
+              sourceId: variant.id,
+              description: 'مخزون افتتاحي ' + (product.name || '') + ' ' + size + ' ' + color,
+              valueMinor: variant.valueMinor,
+            });
+            if (entry) {
+              BeeStore.posting.linkAll([variant, movement], entry);
+              tx.put('variants', variant);
+              tx.put('stockMovements', movement);
+            }
+          }
         }
         return variant;
       });
@@ -141,17 +160,66 @@
       return this.repo.transaction(async (tx) => {
         const v = await tx.get('variants', id);
         if (!v) throw BeeStore.errors.err('NOT_FOUND', 'الصنف غير موجود');
-        if (patch.priceMinor !== undefined && BeeStore.money.roundMinor(patch.priceMinor) <= 0) {
+        const changes = { ...(patch || {}) };
+        const revaluationDate = changes.date || BeeStore.dates.today();
+        const revaluationReason = changes.revaluationReason || '';
+        delete changes.date;
+        delete changes.revaluationReason;
+        if (changes.priceMinor !== undefined && BeeStore.money.roundMinor(changes.priceMinor) <= 0) {
           throw BeeStore.errors.err('INVALID', 'سعر البيع مطلوب - أدخل سعراً أكبر من صفر');
         }
-        if (patch.barcode !== undefined) {
-          const code = String(patch.barcode || '').trim();
+        if (changes.costMinor !== undefined && BeeStore.money.roundMinor(changes.costMinor) < 0) {
+          throw BeeStore.errors.err('INVALID', 'تكلفة الصنف لا يمكن أن تكون سالبة');
+        }
+        if (changes.barcode !== undefined) {
+          const code = String(changes.barcode || '').trim();
           if (code) {
             const clash = await tx.list('variants', o => o.barcode === code && o.id !== id);
             if (clash.length > 0) throw BeeStore.errors.err('DUPLICATE', 'الباركود مستخدم مسبقاً');
           }
         }
-        const updated = { ...v, ...patch, id, updatedAt: BeeStore.dates.now() };
+        const updated = { ...v, ...changes, id, updatedAt: BeeStore.dates.now() };
+        const newCost = changes.costMinor !== undefined
+          ? BeeStore.money.roundMinor(changes.costMinor)
+          : Number(v.costMinor) || 0;
+        if (changes.costMinor !== undefined && newCost !== (Number(v.costMinor) || 0)) {
+          if (BeeStore.periods && BeeStore.periods.assertOpen) {
+            await BeeStore.periods.assertOpen(tx, revaluationDate);
+          }
+          // v4 R1: a manual cost change revalues on-hand stock and posts the
+          // difference between 1200 and 5030. Quantity is untouched.
+          const change = BeeStore.stock.revalue(updated, newCost);
+          updated.costMinor = newCost;
+          tx.put('variants', updated);
+          const movement = {
+            id: BeeStore.ids.randomId('stm'),
+            variantId: id,
+            date: revaluationDate,
+            type: 'revaluation',
+            qtyChange: 0,
+            unitCostMinor: 0,
+            valueChangeMinor: change.valueChangeMinor,
+            valueAfterMinor: change.valueAfterMinor,
+            avgCostAfterMinor: change.avgCostAfterMinor,
+            refType: 'revaluation',
+            refId: id,
+            note: revaluationReason || 'تعديل تكلفة يدوي',
+            balanceAfter: updated.quantity,
+            journalEntryIds: [],
+            createdAt: BeeStore.dates.now(),
+          };
+          tx.put('stockMovements', movement);
+          if (BeeStore.posting) {
+            const entry = await BeeStore.posting.revaluation(
+              tx, movement, change.valueChangeMinor);
+            if (entry) {
+              BeeStore.posting.linkAll([updated, movement], entry);
+              tx.put('stockMovements', movement);
+            }
+          }
+          tx.put('variants', updated);
+          return updated;
+        }
         tx.put('variants', updated);
         return updated;
       });

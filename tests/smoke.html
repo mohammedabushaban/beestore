@@ -41,6 +41,7 @@
   <script src="../js/services/transactions.js"></script>
   <script src="../js/services/periods.js"></script>
   <script src="../js/services/journal.js"></script>
+  <script src="../js/services/posting.js"></script>
   <script src="../js/services/reports.js"></script>
   <script src="../js/services/maintenance.js"></script>
   <script>
@@ -70,7 +71,7 @@
       for (const name of ['settings', 'audit', 'accounts', 'chart', 'categories', 'products',
         'variants', 'stock', 'sales', 'customers', 'purchases', 'suppliers',
         'expenses', 'payroll', 'employees', 'transactions', 'periods', 'journal',
-        'reports', 'maintenance']) {
+        'posting', 'reports', 'maintenance']) {
         if (BeeStore[name]) BeeStore[name].repo = repo;
       }
 

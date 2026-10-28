@@ -438,8 +438,8 @@ test('A1 migration v3->v4 seeds the chart and preserves old records and links', 
     },
   };
   const out = await BeeStore.migrations.migrate(dump, BeeStore.schemaVersion);
-  assert.strictEqual(out.schemaVersion, 4);
-  assert.strictEqual(out.meta.schemaVersion, 4);
+  assert.strictEqual(out.schemaVersion, 5);
+  assert.strictEqual(out.meta.schemaVersion, 5);
   assert.strictEqual(out.collections.sales[0].id, 'sale_old');
   assert.strictEqual(out.collections.expenses[0].amountMinor, 500);
   assert.deepStrictEqual(out.collections.journalEntries, []);
@@ -480,7 +480,7 @@ test('A1 migration handles a v1 backup and repairs the JE counter from entries',
     meta: { id: 'meta', counters: {}, revision: 1 },
     collections: {},
   }, BeeStore.schemaVersion);
-  assert.strictEqual(v1.schemaVersion, 4);
+  assert.strictEqual(v1.schemaVersion, 5);
   assert.ok(v1.collections.chartOfAccounts.some(a => a.code === '1010'));
 
   const preview = {
@@ -504,7 +504,7 @@ test('A1 backup export/import preserves chart, entries and append-only behavior'
     { accountId: byCode('4010').id, creditMinor: 2500 },
   ]));
   const dump = await repo.exportAll();
-  assert.strictEqual(dump.schemaVersion, 4);
+  assert.strictEqual(dump.schemaVersion, 5);
   assert.strictEqual(dump.collections.chartOfAccounts.length > 0, true);
   assert.strictEqual(dump.collections.journalEntries.length, 1);
 

@@ -83,6 +83,26 @@
           throw BeeStore.errors.err('VALIDATION', 'خصم فاتورة الشراء غير صالح');
         }
         const totalMinor = subtotalMinor - discountMinor;
+        // v5 §3.1: invoice discount is allocated to lines by largest
+        // remainder so the parts sum exactly to the discount, and inventory
+        // is carried at the net line value (§4 row 5).
+        const grossValues = lines.map(l => BeeStore.money.mul(l.unitCostMinor, l.qty));
+        const discountParts = BeeStore.money.allocate(discountMinor, grossValues);
+        let allocatedValueMinor = 0;
+        for (let i = 0; i < lines.length; i++) {
+          const lineValue = grossValues[i] - discountParts[i];
+          lines[i].grossMinor = grossValues[i];
+          lines[i].discountMinor = discountParts[i];
+          lines[i].inventoryValueMinor = lineValue;
+          lines[i].netUnitCostMinor = lines[i].qty > 0
+            ? Math.round(lineValue / lines[i].qty)
+            : lines[i].unitCostMinor;
+          lines[i].returnedValueMinor = 0;
+          allocatedValueMinor += lineValue;
+        }
+        if (allocatedValueMinor !== totalMinor) {
+          throw BeeStore.errors.err('VALIDATION', 'توزيع خصم فاتورة الشراء غير متوازن');
+        }
 
         const payments = [];
         let paidMinor = 0;
@@ -121,36 +141,50 @@
           dueMinor,
           status,
           notes: data.notes || '',
+          inventoryValueMinor: totalMinor,
+          journalEntryIds: [],
           createdAt: BeeStore.dates.now(),
           updatedAt: BeeStore.dates.now(),
         };
 
         tx.put('purchases', purchase);
 
+        const purchaseMovements = [];
         for (const line of lines) {
           const variant = await tx.get('variants', line.variantId);
-          const oldQty = variant.quantity;
-          const oldCost = variant.costMinor;
-          const newQty = oldQty + line.qty;
-          const newCost = BeeStore.stock.blendCost(oldQty, oldCost, line.qty, line.unitCostMinor);
-          variant.quantity = newQty;
-          variant.costMinor = newCost;
-          variant.updatedAt = BeeStore.dates.now();
+          // v5 §3.2: receive the exact net value, average cost is derived.
+          const change = BeeStore.stock.receive(variant, line.qty, line.inventoryValueMinor);
           tx.put('variants', variant);
-          tx.put('stockMovements', {
+          const movement = {
             id: BeeStore.ids.randomId('stm'),
             variantId: line.variantId,
             date: purchase.date,
             type: 'purchase',
             qtyChange: line.qty,
-            unitCostMinor: line.unitCostMinor,
-            avgCostAfterMinor: newCost,
+            unitCostMinor: line.qty > 0
+              ? Math.round(line.inventoryValueMinor / line.qty)
+              : line.unitCostMinor,
+            valueChangeMinor: change.valueChangeMinor,
+            valueAfterMinor: change.valueAfterMinor,
+            avgCostAfterMinor: change.avgCostAfterMinor,
             refType: 'purchase',
             refId: purchase.id,
             note: 'مشتريات ' + purchase.number,
-            balanceAfter: newQty,
+            balanceAfter: variant.quantity,
+            journalEntryIds: [],
             createdAt: BeeStore.dates.now(),
-          });
+          };
+          tx.put('stockMovements', movement);
+          purchaseMovements.push(movement);
+        }
+
+        if (BeeStore.posting) {
+          const entry = await BeeStore.posting.purchase(tx, purchase, totalMinor);
+          if (entry) {
+            BeeStore.posting.linkAll([purchase].concat(purchaseMovements), entry);
+            tx.put('purchases', purchase);
+            for (const movement of purchaseMovements) tx.put('stockMovements', movement);
+          }
         }
 
         return purchase;
@@ -174,6 +208,7 @@
         }
         await BeeStore.periods.assertOpen(tx, p.date);
         await BeeStore.periods.assertOpen(tx, BeeStore.dates.today());
+        const settings = await tx.get('meta', 'settings') || {};
         // Unpaid purchase voids only move stock; paid ones reverse a payment.
         for (const pay of (p.payments || [])) {
           await BeeStore.periods.assertDayOpen(tx, pay.date || p.date);
@@ -182,30 +217,63 @@
         for (const line of p.lines) {
           const variant = await tx.get('variants', line.variantId);
           if (!variant) continue;
-          if (variant.quantity - line.qty < 0) {
+          if (!settings.allowNegativeStock && variant.quantity - line.qty < 0) {
             throw BeeStore.errors.err('STOCK_NEGATIVE', 'لا يمكن إلغاء الفاتورة: المخزون سيصبح سالباً');
+          }
+          const removedValue = line.inventoryValueMinor != null
+            ? Math.round(Number(line.inventoryValueMinor) || 0)
+            : BeeStore.money.mul(line.unitCostMinor, line.qty);
+          if (!settings.allowNegativeStock &&
+            BeeStore.stock.ensureValue(variant) - removedValue < 0) {
+            throw BeeStore.errors.err('STOCK_NEGATIVE',
+              'لا يمكن إلغاء الفاتورة: قيمة المخزون المتبقية ستكون سالبة');
           }
         }
 
+        const voidMovements = [];
         for (const line of p.lines) {
           const variant = await tx.get('variants', line.variantId);
+          if (!variant) continue;
+          const removedValue = line.inventoryValueMinor != null
+            ? Math.round(Number(line.inventoryValueMinor) || 0)
+            : BeeStore.money.mul(line.unitCostMinor, line.qty);
           variant.quantity -= line.qty;
+          variant.valueMinor = BeeStore.stock.ensureValue(variant) - removedValue;
+          BeeStore.stock.setAverageCost(variant);
           variant.updatedAt = BeeStore.dates.now();
           tx.put('variants', variant);
-          tx.put('stockMovements', {
+          const movement = {
             id: BeeStore.ids.randomId('stm'),
             variantId: line.variantId,
-            date: BeeStore.dates.today(),
+            date: p.date,
             type: 'void_purchase',
             qtyChange: -line.qty,
-            unitCostMinor: line.unitCostMinor,
+            unitCostMinor: line.qty > 0 ? Math.round(removedValue / line.qty) : 0,
+            valueChangeMinor: -removedValue,
+            valueAfterMinor: variant.valueMinor,
             avgCostAfterMinor: variant.costMinor,
             refType: 'void_purchase',
             refId: p.id,
             note: 'إلغاء مشتريات ' + p.number,
             balanceAfter: variant.quantity,
+            journalEntryIds: [],
             createdAt: BeeStore.dates.now(),
-          });
+          };
+          tx.put('stockMovements', movement);
+          voidMovements.push(movement);
+        }
+
+        if (BeeStore.posting) {
+          const reversals = await BeeStore.posting.reverseDocument(
+            tx, 'PURCHASE', p.id,
+            { description: 'إلغاء مشتريات ' + p.number },
+            { allowClosedDay: true });
+          if (reversals.length > 0) {
+            BeeStore.posting.linkAll([p].concat(voidMovements), reversals);
+            // Re-persist after linking: IndexedDB structured-clones at put
+            // time, so a later mutation of the staged object is not saved.
+            for (const movement of voidMovements) tx.put('stockMovements', movement);
+          }
         }
 
         p.status = 'void';

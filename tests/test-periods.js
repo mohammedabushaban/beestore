@@ -178,8 +178,8 @@ test('V2 migration v2->v3 backfills fields', async () => {
     },
   };
   const out = await BeeStore.migrations.migrate(dump, BeeStore.schemaVersion);
-  assert.strictEqual(out.schemaVersion, 4);
-  assert.strictEqual(out.meta.schemaVersion, 4);
+  assert.strictEqual(out.schemaVersion, 5);
+  assert.strictEqual(out.meta.schemaVersion, 5);
   assert.strictEqual(out.collections.expenses[0].month, '2026-08');
   assert.strictEqual(out.collections.expenses[0].voided, false);
   assert.deepStrictEqual(out.collections.expenses[0].allocation, { mode: 'single' });

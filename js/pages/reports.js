@@ -489,9 +489,9 @@
     const rows = d.variants.map(v => [
       v.size + ' / ' + v.color,
       String(v.quantity),
-      formatMoney(v.costMinor),
+      formatMoney(v.avgCostMinor != null ? v.avgCostMinor : v.costMinor),
       formatMoney(v.priceMinor),
-      formatMoney(v.quantity * v.costMinor),
+      formatMoney(v.valueMinor != null ? v.valueMinor : v.quantity * v.costMinor),
     ]);
 
     container.appendChild(el('div', { class: 'card' }, [

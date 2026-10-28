@@ -14,7 +14,7 @@
   // returned transiently in `days` (never persisted) so an as-of date inside
   // the current month can be computed from that month's documents without
   // scanning the whole history.
-  const VERSION = 3;
+  const VERSION = 4;
 
   const COLLECTIONS = [
     'accounts', 'sales', 'purchases', 'customerPayments', 'supplierPayments',
@@ -49,6 +49,7 @@
         cogs: 0,
         salaryExpense: 0,
         stockLosses: 0,
+        stockRevaluation: 0,
         tax: 0,
         expensesTotal: 0,
         spreadExpenses: 0,
@@ -226,7 +227,9 @@
           monthBucket.pnl.netSales += (Number(doc.totalMinor) || 0) - (Number(doc.taxMinor) || 0);
           monthBucket.pnl.tax += Number(doc.taxMinor) || 0;
           for (const line of (doc.lines || [])) {
-            monthBucket.pnl.cogs += (Number(line.unitCostMinor) || 0) * (Number(line.qty) || 0);
+            monthBucket.pnl.cogs += line.cogsMinor != null
+              ? Math.round(Number(line.cogsMinor) || 0)
+              : (Number(line.unitCostMinor) || 0) * (Number(line.qty) || 0);
           }
         }
         if (dayBucket) dayBucket.tax += Number(doc.taxMinor) || 0;
@@ -314,7 +317,9 @@
           monthBucket.pnl.netSales -= amount;
           for (const line of (doc.lines || [])) {
             if (line.restock) {
-              monthBucket.pnl.cogs -= (Number(line.unitCostMinor) || 0) * (Number(line.qty) || 0);
+              monthBucket.pnl.cogs -= line.restockCostMinor != null
+                ? Math.round(Number(line.restockCostMinor) || 0)
+                : (Number(line.unitCostMinor) || 0) * (Number(line.qty) || 0);
             }
           }
         }
@@ -339,14 +344,32 @@
         const qty = Number(doc.qtyChange) || 0;
         const unitCost = Number(doc.unitCostMinor) || 0;
         if (doc.type === 'opening' && monthBucket) {
-          const avg = doc.avgCostAfterMinor != null ? Number(doc.avgCostAfterMinor) : unitCost;
-          monthBucket.openingInventory += qty * avg;
-          if (dayBucket) dayBucket.openingInventory += qty * avg;
+          const openingValue = doc.valueChangeMinor != null
+            ? Number(doc.valueChangeMinor) || 0
+            : qty * (doc.avgCostAfterMinor != null ? Number(doc.avgCostAfterMinor) : unitCost);
+          monthBucket.openingInventory += openingValue;
+          if (dayBucket) dayBucket.openingInventory += openingValue;
         }
         if (monthBucket) {
-          if ((doc.type === 'adjustment' || doc.type === 'stocktake' || doc.type === 'sale_return') &&
-            qty < 0) {
+          if (doc.type === 'adjustment' || doc.type === 'stocktake') {
+            if (doc.valueChangeMinor != null) {
+              // Document-derived reports keep the v2 convention until the A3
+              // journal cut-over: only shortages are expenses. A count gain
+              // still posts Dr 1200 / Cr 5020 to the journal, but it never
+              // creates income in this legacy P&L.
+              const delta = Number(doc.valueChangeMinor) || 0;
+              if (delta < 0) monthBucket.pnl.stockLosses -= delta;
+            } else if (qty < 0) {
+              monthBucket.pnl.stockLosses += Math.abs(qty) * unitCost;
+            }
+          }
+          if (doc.type === 'sale_return' && qty < 0) {
             monthBucket.pnl.stockLosses += Math.abs(qty) * unitCost;
+          }
+          if (doc.type === 'revaluation') {
+            monthBucket.pnl.stockRevaluation -= doc.valueChangeMinor != null
+              ? Number(doc.valueChangeMinor) || 0
+              : 0;
           }
         }
         break;
@@ -364,8 +387,8 @@
       Object.keys(bucket.customers).length || Object.keys(bucket.suppliers).length) return false;
     if (bucket.capitalIn || bucket.withdrawals || bucket.openingInventory) return false;
     const pnl = bucket.pnl;
-    for (const key of ['netSales', 'cogs', 'salaryExpense', 'stockLosses', 'tax',
-      'expensesTotal', 'spreadExpenses', 'cashDifference']) {
+    for (const key of ['netSales', 'cogs', 'salaryExpense', 'stockLosses', 'stockRevaluation',
+      'tax', 'expensesTotal', 'spreadExpenses', 'cashDifference']) {
       if (pnl[key]) return false;
     }
     return Object.keys(pnl.expensesByCategory).length === 0;
@@ -487,7 +510,7 @@
    */
   function pnlRange(summary, fromMonth, toMonth) {
     let netSales = 0, cogs = 0, salaryExpense = 0, stockLosses = 0;
-    let expensesTotal = 0, cashDifference = 0;
+    let stockRevaluation = 0, expensesTotal = 0, cashDifference = 0;
     const expensesByCategory = {};
     for (const month of monthKeys(summary)) {
       if (month < fromMonth || month > toMonth) continue;
@@ -496,6 +519,7 @@
       cogs += pnl.cogs || 0;
       salaryExpense += pnl.salaryExpense || 0;
       stockLosses += pnl.stockLosses || 0;
+      stockRevaluation += pnl.stockRevaluation || 0;
       expensesTotal += pnl.expensesTotal || 0;
       cashDifference += pnl.cashDifference || 0;
       for (const key of Object.keys(pnl.expensesByCategory || {})) {
@@ -505,11 +529,12 @@
     const grossProfit = netSales - cogs;
     // Shortage (negative) increases operating expenses; surplus (positive)
     // reduces them. `cashDifference` keeps its signed form for the report.
-    const operatingExpenses = expensesTotal + salaryExpense + stockLosses - cashDifference;
+    const operatingExpenses = expensesTotal + salaryExpense + stockLosses +
+      stockRevaluation - cashDifference;
     return {
       netSales, cogs, grossProfit,
       margin: netSales > 0 ? (grossProfit / netSales * 100).toFixed(1) : '0.0',
-      operatingExpenses, salaryExpense, stockLosses, cashDifference,
+      operatingExpenses, salaryExpense, stockLosses, stockRevaluation, cashDifference,
       expensesByCategory,
       netProfit: grossProfit - operatingExpenses,
     };

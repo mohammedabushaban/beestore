@@ -89,7 +89,7 @@
       await del(DB);
       await del(UPGRADE_DB);
       BeeStore.config.dbName = DB;
-      BeeStore.config.dbVersion = 6;
+      BeeStore.config.dbVersion = 7;
 
       const sales = [
         { id: 'sale_jul', date: '2026-07-20', number: 'INV-1', status: 'paid', totalMinor: 100, dueMinor: 0, clientKey: 'key-jul' },
@@ -101,9 +101,9 @@
       let repo = new BeeStore.IdbRepository();
       await repo.open();
 
-      await test('fresh database opens on dbVersion 6 with date/field indexes', async () => {
+      await test('fresh database opens on dbVersion 7 with date/field indexes', async () => {
         assert(repo.opened, 'repository not opened');
-        eq(repo.db.version, 6, 'IndexedDB version');
+        eq(repo.db.version, 7, 'IndexedDB version');
         const stores = repo.db.objectStoreNames;
         assert(stores.contains('sales'), 'sales store missing');
         const tx = repo.db.transaction(['sales', 'stockMovements', 'cashAdjustments'], 'readonly');
@@ -119,6 +119,47 @@
         assert(adjustments.indexNames.contains('date'), 'cashAdjustments.date index missing');
         assert(adjustments.indexNames.contains('accountId'), 'cashAdjustments.accountId index missing');
         assert(adjustments.indexNames.contains('closingId'), 'cashAdjustments.closingId index missing');
+        // A1: chart of accounts and append-only journal.
+        assert(stores.contains('chartOfAccounts'), 'chartOfAccounts store missing');
+        assert(stores.contains('journalEntries'), 'journalEntries store missing');
+        const journalTx = repo.db.transaction(['journalEntries'], 'readonly');
+        const journal = journalTx.objectStore('journalEntries');
+        assert(journal.indexNames.contains('date'), 'journalEntries.date index missing');
+        assert(journal.indexNames.contains('number'), 'journalEntries.number index missing');
+        assert(journal.indexNames.contains('reversalOf'), 'journalEntries.reversalOf index missing');
+      });
+
+      await test('A1 journalEntries is append-only at the repository layer', async () => {
+        let code = null;
+        try {
+          await repo.transaction(async (tx) => {
+            tx.put('journalEntries', { id: 'je_direct', date: '2026-10-25', number: 'JE-000001', lines: [] });
+          });
+        } catch (e) { code = e.code; }
+        eq(code, 'APPEND_ONLY', 'put must reject journalEntries');
+
+        await repo.transaction(async (tx) => {
+          await tx.append('journalEntries', {
+            id: 'je_repo_test', date: '2026-10-25', number: 'JE-000001',
+            sourceType: 'MANUAL', lines: [],
+          });
+        });
+        code = null;
+        try {
+          await repo.transaction(async (tx) => {
+            await tx.append('journalEntries', {
+              id: 'je_repo_test', date: '2026-10-25', number: 'JE-000002',
+              sourceType: 'MANUAL', lines: [],
+            });
+          });
+        } catch (e) { code = e.code; }
+        eq(code, 'DUPLICATE', 'append must not overwrite an entry');
+
+        code = null;
+        try {
+          await repo.transaction(async (tx) => { tx.remove('journalEntries', 'je_repo_test'); });
+        } catch (e) { code = e.code; }
+        eq(code, 'APPEND_ONLY', 'remove must reject journalEntries');
       });
 
       await repo.transaction(async (tx) => {
@@ -387,9 +428,9 @@
       const upgraded = new BeeStore.IdbRepository();
       await upgraded.open();
 
-      await test('v3 → v6 upgrade adds stores/indexes without losing rows', async () => {
-        eq(upgraded.db.version, 6, 'upgraded IndexedDB version');
-        const tx = upgraded.db.transaction(['sales', 'stockMovements', 'cashAdjustments'], 'readonly');
+      await test('v3 → v7 upgrade adds stores/indexes without losing rows', async () => {
+        eq(upgraded.db.version, 7, 'upgraded IndexedDB version');
+        const tx = upgraded.db.transaction(['sales', 'stockMovements', 'cashAdjustments', 'chartOfAccounts', 'journalEntries'], 'readonly');
         const store = tx.objectStore('sales');
         assert(store.indexNames.contains('date'), 'date index missing after upgrade');
         assert(store.indexNames.contains('clientKey'), 'clientKey index missing after upgrade');
@@ -397,6 +438,8 @@
           'variantDate index missing after upgrade');
         const adjustments = tx.objectStore('cashAdjustments');
         assert(adjustments.indexNames.contains('date'), 'cashAdjustments.date index missing after upgrade');
+        assert(tx.objectStore('chartOfAccounts').indexNames.contains('code'), 'chartOfAccounts.code index missing after upgrade');
+        assert(tx.objectStore('journalEntries').indexNames.contains('number'), 'journalEntries.number index missing after upgrade');
         assert(adjustments.indexNames.contains('closingId'), 'cashAdjustments.closingId index missing after upgrade');
         const rows = await upgraded.list('sales');
         eq(rows.length, 1, 'row survived upgrade');

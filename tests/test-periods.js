@@ -177,14 +177,22 @@ test('V2 migration v2->v3 backfills fields', async () => {
       sales: [], purchases2: [],
     },
   };
-  const out = await BeeStore.migrations.migrate(dump, 3);
-  assert.strictEqual(out.schemaVersion, 3);
-  assert.strictEqual(out.meta.schemaVersion, 3);
+  const out = await BeeStore.migrations.migrate(dump, BeeStore.schemaVersion);
+  assert.strictEqual(out.schemaVersion, 4);
+  assert.strictEqual(out.meta.schemaVersion, 4);
   assert.strictEqual(out.collections.expenses[0].month, '2026-08');
   assert.strictEqual(out.collections.expenses[0].voided, false);
   assert.deepStrictEqual(out.collections.expenses[0].allocation, { mode: 'single' });
   assert.strictEqual(out.collections.purchases[0].lines[0].returnedQty, 0);
   assert.strictEqual(out.settings.systemStartDate, '2026-08-01');
+  // A1 chart seed travels with the migration and never creates tax account 2300.
+  const codes = out.collections.chartOfAccounts.map(a => a.code);
+  assert.ok(codes.includes('1010'));
+  assert.ok(codes.includes('4010'));
+  assert.ok(codes.includes('6010'));
+  assert.ok(!codes.includes('2300'));
+  assert.deepStrictEqual(out.collections.journalEntries, []);
+  assert.strictEqual(out.meta.counters.journal, 0);
 });
 
 test('V2 monthsWithData lists months with docs, sorted', async () => {

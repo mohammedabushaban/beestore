@@ -17,6 +17,7 @@
         'settings', 'auth', 'clockGuard', 'accounts', 'categories', 'products', 'variants', 'stock',
         'sales', 'returns', 'customers', 'suppliers', 'purchases', 'purchaseReturns',
         'expenses', 'employees', 'payroll', 'transactions', 'periods',
+        'chart', 'journal',
         'dailyClosing', 'reports', 'dashboard', 'backup', 'maintenance', 'audit',
         'accountingPackage',
       ];
@@ -245,6 +246,25 @@
       balance: async (id) => ok(await BeeStore.accounts.balance(id)),
       balanceAsOf: async (id, date) => ok(await BeeStore.accounts.balanceAsOf(id, date)),
       ledger: async (id, range) => ok(await BeeStore.accounts.getLedger(id, range)),
+    };
+
+    chart = {
+      list: async (options) => ok(await BeeStore.chart.list(options)),
+      get: async (id) => ok(await BeeStore.chart.get(id)),
+      byCode: async (code) => ok(await BeeStore.chart.byCode(code)),
+      bySystemKey: async (key) => ok(await BeeStore.chart.bySystemKey(key)),
+      create: async (data) => ok(await BeeStore.chart.create(data)),
+      update: async (id, patch) => ok(await BeeStore.chart.update(id, patch)),
+      deactivate: async (id) => ok(await BeeStore.chart.deactivate(id)),
+    };
+
+    journal = {
+      list: async (filters) => ok(await BeeStore.journal.list(filters)),
+      get: async (id) => ok(await BeeStore.journal.get(id)),
+      byNumber: async (number) => ok(await BeeStore.journal.byNumber(number)),
+      forSource: async (sourceType, sourceId) => ok(await BeeStore.journal.forSource(sourceType, sourceId)),
+      trialBalance: async (filters) => ok(await BeeStore.journal.trialBalance(filters)),
+      verify: async () => ok(await BeeStore.journal.verify()),
     };
 
     categories = {

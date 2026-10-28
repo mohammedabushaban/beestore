@@ -1,6 +1,7 @@
 (function (root) {
   'use strict';
   const BeeStore = root.BeeStore || (root.BeeStore = {});
+  if (!BeeStore.chartSeed && typeof require !== 'undefined') require('../core/chartSeed.js');
 
   const migrations = [
     {
@@ -86,6 +87,16 @@
           data.settings = settings;
         }
         return data;
+      },
+    },
+    {
+      // A1: seed the v5 chart and link legacy money/expense records. Existing
+      // documents are untouched; journalEntries starts empty for A3 replay.
+      from: 3,
+      to: 4,
+      migrate(data) {
+        if (!data.collections) data.collections = {};
+        return BeeStore.chartSeed.applyToData(data);
       },
     },
   ];

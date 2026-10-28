@@ -56,6 +56,18 @@
     BeeStore.backup = new BeeStore.BackupService(BeeStore.repo, BeeStore.fileSync);
 
     BeeStore.api = new BeeStore.Api(BeeStore.repo);
+
+    // A1: the chart is initialized for every install (fresh, migrated, or
+    // restored). It is idempotent and never rewrites existing chart records.
+    // Runs after the API binds services to the repository.
+    if (BeeStore.chart && BeeStore.chart.ensureSeeded) {
+      try {
+        await BeeStore.chart.ensureSeeded();
+      } catch (chartError) {
+        console.error('chart seeding failed', chartError);
+      }
+    }
+
     BeeStore.csv.repo = BeeStore.repo;
     BeeStore.audit.repo = BeeStore.repo;
     if (BeeStore.errorLog) {

@@ -256,6 +256,20 @@ Browser suites (headless Chromium, same day):
 - [x] Real app flow (`index.html`) — 10/10 (seed closed September, period page, package actions, final label, share sheet ZIP, integrity result with no errors)
 - [x] `tests/verify-offline.py` — 10/10 with CDP offline emulation (SW controls 97 cached files, shell starts offline, IndexedDB reads, invoice posts and survives a second offline reload)
 
+## v5 A1 Verification (2026-10-28)
+
+Automated Node suite: **205/205 passed** with `node --test --test-concurrency=1 tests/*.js`. `tests/test-journal.js` covers chart seeding/links, balanced append and gapless numbering with rollback, append-only enforcement, day/month/scheduled locks, trial balance ranges, exact reversals, randomized balanced/reversal invariants, tamper detection, v1/v3 migrations, and backup round-trip.
+
+Browser checks (headless Chromium, same day; each page in its own session):
+
+- [x] `tests/idb-lazy.html` — 18/18 (v3→v7 upgrade, chart/journal stores, append-only `put/remove/append` rejection, existing lazy-window/summary checks)
+- [x] `tests/smoke.html` — 11/11 (chart seed, balanced JE `JE-000001`, trial balance, append-only, verify on IndexedDB)
+- [x] `tests/ui-days.html` — 13/13 (unchanged L4 flow still green after schema 4)
+- [x] `tests/ui-package.html` — 11/11 (unchanged package flow still green after schema 4)
+- [x] `tests/verify-offline.py` — 10/10 (SW 100 files, offline shell/data/invoice + second reload)
+
+Not yet: document postings (A2/A3), journal/chart UI (A6), physical-phone performance after A1.
+
 ## Performance (L2)
 
 > Automated reference (headless Chromium, re-run after L8 on 2026-10-26): 523 ms cold start, 18 ms save, 276 ms dashboard, 227 ms window month, 244 ms old month, 37.1 MB. Physical-phone verification is still required and remains unverified.

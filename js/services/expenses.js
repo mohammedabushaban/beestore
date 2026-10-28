@@ -96,6 +96,10 @@
           updatedAt: BeeStore.dates.now(),
         };
         tx.put('expenseCategories', cat);
+        if (BeeStore.chart && BeeStore.chart.ensureSeededTx) {
+          await BeeStore.chart.ensureSeededTx(tx);
+          return (await tx.get('expenseCategories', cat.id)) || cat;
+        }
         return cat;
       });
     }

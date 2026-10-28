@@ -134,6 +134,24 @@
     }
 
     /**
+     * v5 Rule S: scheduled entries are future-dated but may only land in an
+     * open month and never before the system start date. The normal future-date
+     * block does not apply because scheduled entries must exist in advance.
+     * @param {object} tx active repository transaction
+     * @param {string} date business date YYYY-MM-DD
+     * @returns {Promise<true>}
+     */
+    async assertScheduledOpen(tx, date) {
+      const d = String(date || BeeStore.dates.today());
+      const settings = (await tx.get('meta', 'settings')) || {};
+      if (settings.systemStartDate && d < settings.systemStartDate) {
+        throw BeeStore.errors.err('VALIDATION',
+          'لا يمكن جدولة قيد قبل تاريخ بدء النظام (' + settings.systemStartDate + ')');
+      }
+      return this.assertMonthsOpen(tx, [_monthOf(d)]);
+    }
+
+    /**
      * @returns {Promise<object[]>} closing records, newest month first
      */
     async list() {
@@ -158,7 +176,7 @@
       for (const coll of ['sales', 'salesReturns', 'purchases', 'purchaseReturns',
         'customerPayments', 'supplierPayments', 'expenses', 'stockMovements',
         'ownerTransactions', 'transfers', 'dailyClosings', 'cashAdjustments',
-        'employeeAdvances']) {
+        'employeeAdvances', 'journalEntries']) {
         const rows = await tx.list(coll);
         for (const r of rows) add(r.date);
       }

@@ -15,6 +15,19 @@ All methods return `{ ok: true, data: ... }` or `{ ok: false, error: { code, mes
 | `accounts.update(id, patch)` | `PATCH /api/accounts/:id` | Update account |
 | `accounts.balance(id)` | `GET /api/accounts/:id/balance` | Get account balance |
 | `accounts.ledger(id, range)` | `GET /api/accounts/:id/ledger?from=&to=` | Get account ledger |
+| `chart.list(options)` | `GET /api/chart?activeOnly=` | List v5 chart accounts (sorted by code) |
+| `chart.get(id)` | `GET /api/chart/:id` | Get a chart account |
+| `chart.byCode(code)` | `GET /api/chart/code/:code` | Find chart account by code |
+| `chart.bySystemKey(key)` | `GET /api/chart/system/:key` | Find system account by key |
+| `chart.create(data)` | `POST /api/chart` | Create an owner expense account (`6xxx`) |
+| `chart.update(id, patch)` | `PATCH /api/chart/:id` | Rename/deactivate a non-system account |
+| `chart.deactivate(id)` | `POST /api/chart/:id/deactivate` | Deactivate (never delete) |
+| `journal.list(filters)` | `GET /api/journal?from=&to=&sourceType=&sourceId=&accountId=&search=` | List entries newest first |
+| `journal.get(id)` | `GET /api/journal/:id` | Get a journal entry |
+| `journal.byNumber(number)` | `GET /api/journal/number/:number` | Find by `JE-000001` |
+| `journal.forSource(type, id)` | `GET /api/journal/source/:type/:id` | Entries for one document |
+| `journal.trialBalance(filters)` | `GET /api/journal/trial-balance?from=&to=&asOf=` | Trial balance from the journal |
+| `journal.verify()` | `GET /api/journal/verify` | Read-only invariant check |
 | `categories.list()` | `GET /api/categories` | List categories |
 | `categories.create(data)` | `POST /api/categories` | Create category |
 | `categories.update(id, patch)` | `PATCH /api/categories/:id` | Update category |
@@ -183,3 +196,4 @@ Checks: base 9 (totals, stock, sale math, payroll, duplicates, references, count
 - The REST column is the intended server mapping for a future v3-Full, not a live HTTP server. Today every method is executed locally in the browser.
 - Facade calls never throw; every failure is `{ok:false, error:{code,message}}`.
 - `repo` is the raw storage interface and is intentionally excluded from facade wrapping. Do not call it from pages except for explicit diagnostic/developer paths.
+- **v5 A1:** journal posting is intentionally **not** exposed on the facade. Posting services call `BeeStore.journal.post(tx, entry)` inside their document transaction; only the read-only `journal` methods (`list/get/byNumber/forSource/trialBalance/verify`) are exposed. `journalEntries` rejects `put/remove` at the repository layer.

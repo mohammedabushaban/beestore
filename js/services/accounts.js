@@ -38,6 +38,10 @@
           updatedAt: BeeStore.dates.now(),
         };
         tx.put('accounts', account);
+        if (BeeStore.chart && BeeStore.chart.ensureSeededTx) {
+          await BeeStore.chart.ensureSeededTx(tx);
+          return (await tx.get('accounts', account.id)) || account;
+        }
         return account;
       });
     }
@@ -54,6 +58,15 @@
         if (!acc) throw BeeStore.errors.err('NOT_FOUND', 'الحساب غير موجود');
         const updated = { ...acc, ...patch, id, updatedAt: BeeStore.dates.now() };
         tx.put('accounts', updated);
+        if (acc.chartAccountId) {
+          const chartAccount = await tx.get('chartOfAccounts', acc.chartAccountId);
+          if (chartAccount && !chartAccount.system) {
+            if (patch && patch.name !== undefined) chartAccount.nameAr = String(patch.name || '').trim() || acc.name;
+            if (patch && patch.active !== undefined) chartAccount.active = patch.active !== false;
+            chartAccount.updatedAt = BeeStore.dates.now();
+            tx.put('chartOfAccounts', chartAccount);
+          }
+        }
         return updated;
       });
     }

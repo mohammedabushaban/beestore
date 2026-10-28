@@ -19,12 +19,14 @@
   <script src="../js/core/ids.js"></script>
   <script src="../js/core/validate.js"></script>
   <script src="../js/core/errors.js"></script>
+  <script src="../js/core/chartSeed.js"></script>
   <script src="../js/storage/repository.js"></script>
   <script src="../js/storage/summary.js"></script>
   <script src="../js/storage/idbRepository.js"></script>
   <script src="../js/services/settings.js"></script>
   <script src="../js/services/audit.js"></script>
   <script src="../js/services/accounts.js"></script>
+  <script src="../js/services/chartOfAccounts.js"></script>
   <script src="../js/services/categories.js"></script>
   <script src="../js/services/products.js"></script>
   <script src="../js/services/variants.js"></script>
@@ -38,6 +40,7 @@
   <script src="../js/services/employees.js"></script>
   <script src="../js/services/transactions.js"></script>
   <script src="../js/services/periods.js"></script>
+  <script src="../js/services/journal.js"></script>
   <script src="../js/services/reports.js"></script>
   <script src="../js/services/maintenance.js"></script>
   <script>
@@ -64,9 +67,9 @@
       const BeeStore = window.BeeStore;
       const repo = new BeeStore.IdbRepository();
       await repo.open();
-      for (const name of ['settings', 'audit', 'accounts', 'categories', 'products',
+      for (const name of ['settings', 'audit', 'accounts', 'chart', 'categories', 'products',
         'variants', 'stock', 'sales', 'customers', 'purchases', 'suppliers',
-        'expenses', 'payroll', 'employees', 'transactions', 'periods',
+        'expenses', 'payroll', 'employees', 'transactions', 'periods', 'journal',
         'reports', 'maintenance']) {
         if (BeeStore[name]) BeeStore[name].repo = repo;
       }
@@ -77,6 +80,35 @@
 
       await test('errorLog store exists (dbVersion upgrade)', async () => {
         assert(repo.db.objectStoreNames.contains('errorLog'), 'errorLog store missing');
+      });
+
+      await test('A1 chart seeds and the journal balances on IndexedDB', async () => {
+        await BeeStore.settings.save({ systemStartDate: '2026-01-01', blockFutureDates: true });
+        await BeeStore.chart.ensureSeeded();
+        const chart = await BeeStore.chart.list();
+        const cash = chart.find(a => a.code === '1010');
+        const revenue = chart.find(a => a.code === '4010');
+        assert(cash && revenue, 'chart seed missing system accounts');
+        assert(!chart.some(a => a.code === '2300'), 'tax payable must not be seeded');
+        assert(!chart.some(a => a.code === '1500'), 'fixed assets are disabled by default');
+        const entry = await repo.transaction(tx => BeeStore.journal.post(tx, {
+          date: '2026-01-05', sourceType: 'MANUAL', description: 'smoke journal',
+          lines: [
+            { accountId: cash.id, debitMinor: 100 },
+            { accountId: revenue.id, creditMinor: 100 },
+          ],
+        }));
+        assert(entry.number === 'JE-000001', 'first JE number, got ' + entry.number);
+        const tb = await BeeStore.journal.trialBalance({ asOf: '2026-01-31' });
+        assert(tb.balanced, 'trial balance unbalanced');
+        assert(tb.totalDebitMinor === 100 && tb.totalCreditMinor === 100, 'trial balance totals');
+        let blocked = false;
+        try {
+          await repo.transaction(async (tx) => { tx.put('journalEntries', entry); });
+        } catch (e) { blocked = e && e.code === 'APPEND_ONLY'; }
+        assert(blocked, 'journal update must be rejected');
+        const verify = await BeeStore.journal.verify();
+        assert(verify.ok, 'journal verify failed: ' + JSON.stringify(verify.errors));
       });
 
       await test('Can create and get product', async () => {

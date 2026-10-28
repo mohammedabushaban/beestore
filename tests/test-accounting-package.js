@@ -210,7 +210,7 @@ test('accountant package: contents, checksums, BOM CSV, watermark status and all
     assert.strictEqual(manifest.month, MONTH);
     assert.strictEqual(manifest.storeName, 'متجر النور');
     assert.strictEqual(manifest.currency.code, 'ILS');
-    assert.strictEqual(manifest.schemaVersion, 3);
+    assert.strictEqual(manifest.schemaVersion, BeeStore.schemaVersion);
     assert.strictEqual(manifest.files.length, entries.length - 1);
     for (const file of manifest.files) {
       const entry = findEntry(entries, file.path);

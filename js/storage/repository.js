@@ -9,8 +9,17 @@
     'expenseCategories', 'expenses', 'recurringExpenses',
     'employees', 'payroll', 'employeeAdvances',
     'ownerTransactions', 'transfers', 'dailyClosings', 'cashAdjustments',
+    'chartOfAccounts', 'journalEntries',
     'auditLog', 'meta', 'periodClosings', 'errorLog',
   ];
+
+  // v5 §5: journal entries are append-only. importAll()/restore bypasses the
+  // transaction API on purpose so legacy backups can still be loaded.
+  const APPEND_ONLY_COLLECTIONS = ['journalEntries'];
+
+  function isAppendOnly(collection) {
+    return APPEND_ONLY_COLLECTIONS.indexOf(collection) >= 0;
+  }
 
   // v3-Lite §5: only master data plus recent documents stay in memory. Every
   // other dated document is read from IndexedDB on demand. Keeping the policy
@@ -19,7 +28,7 @@
   const MASTER_COLLECTIONS = [
     'accounts', 'categories', 'products', 'variants', 'customers', 'suppliers',
     'expenseCategories', 'recurringExpenses', 'employees', 'periodClosings',
-    'meta', 'errorLog',
+    'chartOfAccounts', 'meta', 'errorLog',
   ];
   const DATED_COLLECTIONS = {
     stockMovements: 'date',
@@ -36,6 +45,7 @@
     transfers: 'date',
     dailyClosings: 'date',
     cashAdjustments: 'date',
+    journalEntries: 'date',
     auditLog: 'timestamp',
   };
 
@@ -61,6 +71,8 @@
     dailyClosings: [['date', 'date'], ['status', 'status']],
     cashAdjustments: [['date', 'date'], ['accountId', 'accountId'], ['closingId', 'closingId']],
     auditLog: [['timestamp', 'timestamp']],
+    chartOfAccounts: [['code', 'code'], ['type', 'type'], ['systemKey', 'systemKey'], ['legacyAccountId', 'legacyAccountId'], ['paymentMethodId', 'paymentMethodId']],
+    journalEntries: [['date', 'date'], ['number', 'number'], ['sourceId', 'sourceId'], ['sourceType', 'sourceType'], ['reversalOf', 'reversalOf']],
     variants: [['barcode', 'barcode'], ['productId', 'productId']],
     products: [['categoryId', 'categoryId']],
   };
@@ -120,10 +132,13 @@
 
   BeeStore.RepositoryInterface = RepositoryInterface;
   BeeStore.COLLECTIONS = COLLECTIONS;
+  BeeStore.APPEND_ONLY_COLLECTIONS = APPEND_ONLY_COLLECTIONS;
+  BeeStore.isAppendOnly = isAppendOnly;
   BeeStore.storagePolicy = {
     masterCollections: MASTER_COLLECTIONS,
     datedCollections: DATED_COLLECTIONS,
     indexes: INDEXES,
+    appendOnlyCollections: APPEND_ONLY_COLLECTIONS,
     dateFieldFor: dateFieldFor,
     memoryWindowMonths: memoryWindowMonths,
     windowBounds: windowBounds,
@@ -132,6 +147,7 @@
   };
   if (typeof module !== 'undefined') module.exports = {
     RepositoryInterface, COLLECTIONS, MASTER_COLLECTIONS, DATED_COLLECTIONS,
-    INDEXES, dateFieldFor, windowBounds, inMemoryWindow, inRange,
+    INDEXES, APPEND_ONLY_COLLECTIONS, isAppendOnly, dateFieldFor, windowBounds,
+    inMemoryWindow, inRange,
   };
 })(typeof window !== 'undefined' ? window : globalThis);

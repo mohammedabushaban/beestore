@@ -7,6 +7,12 @@
   const BATCH_SIZE = 500;
   const CACHE_LIMIT = 300;
 
+  function repoErr(code, message) {
+    return BeeStore.errors && BeeStore.errors.err
+      ? BeeStore.errors.err(code, message)
+      : Object.assign(new Error(message), { code });
+  }
+
   function isRange(value) {
     return !!(value && typeof value === 'object' && !(value instanceof Date));
   }
@@ -694,7 +700,10 @@
       const staged = { puts: [], removes: [] };
       const tx = {
         async get(collection, id) {
-          for (const p of staged.puts) {
+          // Later puts win: chart seeding may stage a link update right after
+          // the caller staged the record itself.
+          for (let i = staged.puts.length - 1; i >= 0; i--) {
+            const p = staged.puts[i];
             if (p.collection === collection && p.doc.id === id) return JSON.parse(JSON.stringify(p.doc));
           }
           for (const r of staged.removes) {
@@ -712,21 +721,26 @@
           const all = self._isLazy(collection)
             ? await self._dbGetAll(collection)
             : Array.from(self.data[collection] ? self.data[collection].values() : []).map(cloneDoc);
-          const stagedDocs = staged.puts.filter(p => p.collection === collection).map(p => p.doc);
-          const stagedIds = new Set(stagedDocs.map(d => d.id));
+          const stagedDocs = new Map();
+          for (const p of staged.puts) {
+            if (p.collection === collection) stagedDocs.set(p.doc.id, p.doc);
+          }
           const removedIds = new Set(staged.removes.filter(r => r.collection === collection).map(r => r.id));
-          const merged = all.filter(d => !removedIds.has(d.id) && !stagedIds.has(d.id)).concat(stagedDocs);
+          const merged = all.filter(d => !removedIds.has(d.id) && !stagedDocs.has(d.id))
+            .concat(Array.from(stagedDocs.values()));
           if (predicate) return merged.filter(predicate);
           return merged;
         },
         async listRange(collection, from, to, predicate) {
           const field = policy.dateFieldFor(collection);
           let base = field ? await self.listRange(collection, from, to) : await tx.list(collection);
-          const stagedDocs = staged.puts.filter(p => p.collection === collection).map(p => p.doc);
-          const stagedIds = new Set(stagedDocs.map(d => d.id));
+          const stagedDocs = new Map();
+          for (const p of staged.puts) {
+            if (p.collection === collection) stagedDocs.set(p.doc.id, p.doc);
+          }
           const removedIds = new Set(staged.removes.filter(r => r.collection === collection).map(r => r.id));
-          base = base.filter(d => !removedIds.has(d.id) && !stagedIds.has(d.id));
-          for (const doc of stagedDocs) {
+          base = base.filter(d => !removedIds.has(d.id) && !stagedDocs.has(d.id));
+          for (const doc of stagedDocs.values()) {
             if (!field || policy.inRange(doc, field, from, to)) base.push(doc);
           }
           if (predicate) base = base.filter(predicate);
@@ -753,6 +767,10 @@
           return Array.from(map.values());
         },
         put(collection, doc) {
+          if (BeeStore.isAppendOnly && BeeStore.isAppendOnly(collection)) {
+            throw repoErr('APPEND_ONLY',
+              'دفتر اليومية للإضافة فقط — لا يمكن تعديل أو حذف قيد. أنشئ قيداً عكسياً.');
+          }
           const d = JSON.parse(JSON.stringify(doc));
           if (!d.id) d.id = BeeStore.ids.randomId(collection.slice(0, 3));
           if (!d.createdAt) d.createdAt = BeeStore.dates.now();
@@ -760,7 +778,23 @@
           staged.puts.push({ collection, doc: d });
           return d;
         },
+        async append(collection, doc) {
+          const d = JSON.parse(JSON.stringify(doc));
+          if (!d.id) d.id = BeeStore.ids.randomId(collection.slice(0, 3));
+          const existing = await tx.get(collection, d.id);
+          if (existing) {
+            throw repoErr('DUPLICATE', 'لا يمكن إلحاق مستند بمعرّف موجود: ' + d.id);
+          }
+          if (!d.createdAt) d.createdAt = BeeStore.dates.now();
+          d.updatedAt = BeeStore.dates.now();
+          staged.puts.push({ collection, doc: d });
+          return d;
+        },
         remove(collection, id) {
+          if (BeeStore.isAppendOnly && BeeStore.isAppendOnly(collection)) {
+            throw repoErr('APPEND_ONLY',
+              'دفتر اليومية للإضافة فقط — لا يمكن تعديل أو حذف قيد. أنشئ قيداً عكسياً.');
+          }
           staged.removes.push({ collection, id });
         },
         async nextCounter(name) {
@@ -768,6 +802,15 @@
           if (!meta) return 1;
           if (!meta.counters) meta.counters = {};
           meta.counters[name] = (meta.counters[name] || 0) + 1;
+          return meta.counters[name];
+        },
+        async setCounter(name, value) {
+          const meta = self.data.meta.get('meta');
+          if (!meta) return 0;
+          if (!meta.counters) meta.counters = {};
+          const requested = Math.max(0, Math.floor(Number(value) || 0));
+          const current = Number(meta.counters[name]) || 0;
+          meta.counters[name] = Math.max(current, requested);
           return meta.counters[name];
         },
         _staged: staged,

@@ -166,7 +166,8 @@
     'inventoryValuation', 'receivablesAging', 'payablesAging', 'balanceSnapshot',
     'dailyClosing', 'integrityCheck', 'isDatabaseEmpty', 'daysInMonth',
     'unclosedDays', 'getLowStock', 'categories', 'recurring', 'advances',
-    'outstandingAdvances', 'inspect', 'list',
+    'outstandingAdvances', 'inspect', 'list', 'trialBalance', 'verify',
+    'byCode', 'bySystemKey', 'forSource',
   ]);
 
   class AuthService {

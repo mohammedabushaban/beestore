@@ -4,10 +4,10 @@
 
 ```json
 {
-  "schemaVersion": 3,
+  "schemaVersion": 4,
   "meta": {
-    "schemaVersion": 3,
-    "counters": { "invoice": 123, "purchase": 45, "return": 10 },
+    "schemaVersion": 4,
+    "counters": { "invoice": 123, "purchase": 45, "return": 10, "journal": 7 },
     "revision": 456,
     "savedAt": "2026-01-15T10:30:00.000Z",
     "deviceId": "dev_abc123"
@@ -37,12 +37,22 @@
     "transfers": [...],
     "dailyClosings": [...],
     "cashAdjustments": [...],
+    "chartOfAccounts": [...],
+    "journalEntries": [...],
     "periodClosings": [...],
     "errorLog": [...],
     "auditLog": [...]
   }
 }
 ```
+
+## v5 A1 Accounting Fields (schemaVersion 4, dbVersion 7)
+
+- `chartOfAccounts`: `id`, `code`, `nameAr`, `type` (`asset|liability|equity|revenue|expense|contra`), `normalSide` (`debit|credit`), `contra`, `system`, `active`, `parentCode`, optional `systemKey`, `legacyAccountId`, `legacyType`, `paymentMethodId`, `expenseCategoryId`, `clearing`, timestamps. System codes include `1010/1100/1150/1200/1300/2010/2020/2030/2100/2110/2120/2200/3010/3020/3030/4010/4020/4100/5010/5020/5030/6100/6110/6120/6200/6400/6410`; `6010–6095` are default expense categories; `1500/1590/4110/6300/6350` only when `settings.fixedAssetsEnabled`; tax account `2300` never exists.
+- Legacy `accounts` gain `chartAccountId`; `expenseCategories` gain `chartAccountId` and `code`; `settings.paymentMethods[]` gain `kind` (`cash|bank_direct|clearing|customer_credit`) and `chartAccountId`. Old `accountId` remains untouched.
+- `journalEntries`: `id`, `number` (`JE-000001`), `date`, `time`, `createdAt`, `sourceType`, `sourceId|null`, `description`, `lines[]`, `reversalOf|null`, `isScheduled`, `postingVersion`, `profile`. Each line is `{accountId, debitMinor, creditMinor, partyType|null, partyId|null, memo}` with exactly one positive integer side.
+- Journal is **append-only**: never update/delete a stored entry; void by a same-date exact reversal. `meta.counters.journal` drives numbering and must never go backwards.
+- Migration `3→4` seeds/links the chart, initializes `journalEntries: []`, and reconciles the JE counter from the largest existing number. Existing documents are not rewritten.
 
 ## v2 Period Fields (schemaVersion 3)
 

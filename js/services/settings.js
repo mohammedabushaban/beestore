@@ -119,7 +119,7 @@
      * @returns {Promise<object>} the ensured settings
      */
     async ensureDefaults() {
-      return this.repo.transaction(async (tx) => {
+      const ensured = await this.repo.transaction(async (tx) => {
         const accounts = await tx.list('accounts');
         let cashAcc = accounts.find(a => a.type === 'cash');
         let bankAcc = accounts.find(a => a.type === 'bank');
@@ -181,8 +181,13 @@
         }
         settings.id = 'settings';
         tx.put('meta', settings);
+        if (BeeStore.chart && BeeStore.chart.ensureSeededTx) {
+          await BeeStore.chart.ensureSeededTx(tx);
+          return (await tx.get('meta', 'settings')) || settings;
+        }
         return settings;
       });
+      return ensured;
     }
 
     /**

@@ -10,15 +10,16 @@
 | `ids.js` | Prefixed random IDs, barcode generation | `BeeStore.ids.{randomId,nextBarcode,eanCheckDigit}` | `namespace.js` |
 | `validate.js` | Field validation helpers (required, min, max, phone, email) | `BeeStore.validate.{required,isNumber,min,max,phone,email}` | `namespace.js` |
 | `errors.js` | Typed error class + factory | `BeeStore.errors.{BeeError,err}` | `namespace.js` |
+| `chartSeed.js` | v5 chart seed data + pure planning: system/expense/fixed-asset accounts, normal sides, legacy/category/payment-method links, JE number formatting, idempotent migration apply | `BeeStore.chartSeed.{POSTING_VERSION,SYSTEM_ACCOUNTS,plan,applyToData,formatNumber,parseNumber,nextExpenseCode,nextMoneyCode}` | `namespace.js` |
 
 ## Storage (js/storage/)
 | File | Responsibility | Exports | Depends On |
 |------|---------------|---------|------------|
-| `repository.js` | Repository interface contract + collection list + **storage policy** (master vs dated collections, `memoryWindowMonths`, `windowBounds`, `inMemoryWindow`, `inRange`, index definitions) | `BeeStore.RepositoryInterface`, `BeeStore.COLLECTIONS`, `BeeStore.storagePolicy` | `namespace.js`, `core/*` |
+| `repository.js` | Repository interface contract + collection list + **storage policy** (master vs dated collections, `memoryWindowMonths`, `windowBounds`, `inMemoryWindow`, `inRange`, index definitions) + append-only policy for `journalEntries` | `BeeStore.RepositoryInterface`, `BeeStore.COLLECTIONS`, `BeeStore.APPEND_ONLY_COLLECTIONS`, `BeeStore.isAppendOnly`, `BeeStore.storagePolicy` | `namespace.js`, `core/*` |
 | `summary.js` | Pure v2 materialized summary: all-time receivables/payables/account balances/unpaid installments + monthly buckets (P&L, flows, customers/suppliers, tax, capital, opening inventory) + transient day deltas for as-of dates; `apply`/`compute`/`pnlRange`/`accountBalanceAt`/`customerTotals`/`supplierTotals`/`overdue` | `BeeStore.summary` | `namespace.js`, `core/dates.js` |
 | `memoryRepository.js` | In-memory repo (tests) under the same window policy, serialized tx, once-per-commit index rebuild, cached `getSummary()` invalidated on commit; streamed export + counts | `BeeStore.MemoryRepository` | `repository.js`, `summary.js`, `core/*` |
-| `idbRepository.js` | IndexedDB repo: window load + lazy indexed reads (`listRange/get/query/latest/count/list`), 300-doc LRU, `onLazyRead` progress hook, materialized summary persisted in `meta` and updated inside each transaction, v6 indexes (date/field + compound `variantDate` + `cashAdjustments`), serialized tx; reports the **stored** `schemaVersion` so startup migrations are not skipped; streamed export/import + counts | `BeeStore.IdbRepository` | `repository.js`, `summary.js`, `core/*` |
-| `migrations.js` | Schema version upgrades | `BeeStore.migrations.{migrate,migrations}` | `namespace.js` |
+| `idbRepository.js` | IndexedDB repo: window load + lazy indexed reads (`listRange/get/query/latest/count/list`), 300-doc LRU, `onLazyRead` progress hook, materialized summary persisted in `meta` and updated inside each transaction, v7 indexes (date/field + compound `variantDate` + `chartOfAccounts`/`journalEntries`), append-only journal enforcement, serialized tx; reports the **stored** `schemaVersion` so startup migrations are not skipped; streamed export/import + counts | `BeeStore.IdbRepository` | `repository.js`, `summary.js`, `core/*` |
+| `migrations.js` | Schema version upgrades; v3→v4 seeds the v5 chart and links legacy records without changing documents | `BeeStore.migrations.{migrate,migrations}` | `namespace.js`, `core/chartSeed.js` |
 | `fileSync.js` | Folder handle, db.json mirror, dated backups, status + file info (name/size/lastModified) and folder/file path metadata | `BeeStore.FileSync` | `core/*`, `config.js` |
 
 ## Services (js/services/)
@@ -26,7 +27,8 @@
 |------|---------------|---------|------------|
 | `settings.js` | Settings CRUD + defaults + payment account map | `BeeStore.settings`, `BeeStore.SettingsService` | `core/*`, `storage/*` |
 | `audit.js` | Append-only audit log | `BeeStore.audit`, `BeeStore.AuditService` | `core/*`, `storage/*` |
-| `accounts.js` | Account CRUD + balance + ledger | `BeeStore.accounts`, `BeeStore.AccountsService` | `core/*`, `storage/*` |
+| `accounts.js` | Account CRUD + balance + ledger; creates/keeps the linked `chartAccountId` for money accounts | `BeeStore.accounts`, `BeeStore.AccountsService` | `core/*`, `storage/*`, `chartOfAccounts.js` |
+| `chartOfAccounts.js` | v5 chart service: idempotent seeding, list/get/byCode/bySystemKey, expense-account creation, rename/deactivate (system accounts immutable, no hard delete), legacy/category linking | `BeeStore.chart`, `BeeStore.ChartOfAccountsService` | `core/*`, `storage/*`, `chartSeed.js` |
 | `categories.js` | Product category CRUD | `BeeStore.categories`, `BeeStore.CategoriesService` | `core/*`, `storage/*` |
 | `products.js` | Product CRUD + grid create (size×color) | `BeeStore.products`, `BeeStore.ProductsService` | `core/*`, `storage/*`, `variants.js` |
 | `variants.js` | Variant CRUD, search, barcode lookup, low stock | `BeeStore.variants`, `BeeStore.VariantsService` | `core/*`, `storage/*`, `products.js` |
@@ -37,12 +39,13 @@
 | `purchases.js` | Purchase create (avg cost), list w/ {from,to,supplierId}, void | `BeeStore.purchases`, `BeeStore.PurchasesService` | `core/*`, `storage/*`, `variants.js`, `suppliers.js` |
 | `purchaseReturns.js` | Purchase returns (reduce_payable/cash_refund), stock decrease, payable reduction, list w/ {from,to} | `BeeStore.purchaseReturns`, `BeeStore.PurchaseReturnsService` | `core/*`, `storage/*`, `variants.js`, `purchases.js` |
 | `suppliers.js` | Supplier CRUD, balance, statement, payments (FIFO) | `BeeStore.suppliers`, `BeeStore.SuppliersService` | `core/*`, `storage/*`, `purchases.js` |
-| `expenses.js` | Expense CRUD + void w/ reason, spread allocation + shares/prepaid, recurring v2 (bounds/effectiveFrom/idempotent), reserved names | `BeeStore.expenses`, `BeeStore.ExpensesService` | `core/*`, `storage/*`, `settings.js` |
+| `expenses.js` | Expense CRUD + void w/ reason, spread allocation + shares/prepaid, recurring v2 (bounds/effectiveFrom/idempotent), reserved names; category creation links a `6xxx` chart account | `BeeStore.expenses`, `BeeStore.ExpensesService` | `core/*`, `storage/*`, `settings.js`, `chartOfAccounts.js` |
 | `payroll.js` | Payroll prepare (per month), update, pay (creates expense), advances | `BeeStore.payroll`, `BeeStore.PayrollService` | `core/*`, `storage/*`, `employees.js`, `expenses.js` |
 | `employees.js` | Employee CRUD | `BeeStore.employees`, `BeeStore.EmployeesService` | `core/*`, `storage/*` |
 | `transactions.js` | Owner transactions, transfers; legacy daily closing delegates to the full L4 service | `BeeStore.transactions`, `BeeStore.TransactionsService` | `core/*`, `storage/*`, `accounts.js`, `settings.js`, `dailyClosing.js` |
 | `dailyClosing.js` | v3-Lite L4 daily closing: cash-drawer preview, atomic close (difference adjustment + take-out transfer/withdrawal + retained float), get/list/report/text summary, day/month status, unclosed days, reopen latest with soft-void + audit | `BeeStore.dailyClosing`, `BeeStore.DailyClosingService` | `core/*`, `storage/*`, `accounts.js`, `settings.js`, `periods.js` |
-| `periods.js` | Month assertOpen gate, checklist (§7.2 full: blockers+warnings+info), close w/ snapshot, reopen-latest, monthsWithData | `BeeStore.periods`, `BeeStore.PeriodsService` | `core/*`, `storage/*`, `stock.js`, `reports.js`, `accounts.js` |
+| `periods.js` | Month assertOpen gate, checklist (§7.2 full: blockers+warnings+info), close w/ snapshot, reopen-latest, monthsWithData (+`journalEntries`), scheduled-entry gate (`assertScheduledOpen`) | `BeeStore.periods`, `BeeStore.PeriodsService` | `core/*`, `storage/*`, `stock.js`, `reports.js`, `accounts.js` |
+| `journal.js` | v5 append-only double-entry journal: validated balanced integer lines, source/party checks, day/month locks, gapless `JE-000001` counter with rollback, exact reversal helper, list/get/byNumber/forSource, trial balance, read-only invariant `verify()` | `BeeStore.journal`, `BeeStore.JournalService` | `core/*`, `storage/*`, `periods.js`, `chartOfAccounts.js` |
 | `reports.js` | P&L (accrual + spread shares + signed cash differences), sales + returns/net, inventory, aging, v2 balance snapshot, Month Review, Year Overview, profit-cash reconciliation, compare, legacy daily closing | `BeeStore.reports`, `BeeStore.ReportsService` | `core/*`, `storage/*`, `accounts.js`, `sales.js`, `expenses.js`, `payroll.js` |
 | `dashboard.js` | Dashboard KPIs (today + month from accrual P&L), charts data, recent invoices, L4 day status | `BeeStore.dashboard`, `BeeStore.DashboardService` | `core/*`, `storage/*`, `sales.js`, `expenses.js`, `accounts.js`, `reports.js`, `dailyClosing.js` |
 | `backup.js` | Backup orchestration: file-sync create/list, streamed payload + checksum/encryption, share/download, inspect/summary, safe restore with pre-restore snapshot, reminder status | `BeeStore.backup`, `BeeStore.BackupService` | `storage/*`, `fileSync.js`, `backupFile.js`, `snapshots.js`, `migrations.js` |
@@ -64,7 +67,7 @@
 ## API Facade (js/api/)
 | File | Responsibility | Exports | Depends On |
 |------|---------------|---------|------------|
-| `api.js` | Facade `BeeStore.api.<ns>.<method>` → `{ok,data\|error}` (never rejects; `_wrapAll` envelope); central L5 cashier allow-list, cost/profit stripping, PIN/profile stripping, clock posting block, cashier discount/return limits, cashier dashboard substitution, `security` namespace, L7 `accountingPackage` (read-only/clock-exempt) | `BeeStore.Api` | All services |
+| `api.js` | Facade `BeeStore.api.<ns>.<method>` → `{ok,data\|error}` (never rejects; `_wrapAll` envelope); central L5 cashier allow-list, cost/profit stripping, PIN/profile stripping, clock posting block, cashier discount/return limits, cashier dashboard substitution, `security` namespace, L7 `accountingPackage` (read-only/clock-exempt), v5 A1 read-only `chart`/`journal` namespaces | `BeeStore.Api` | All services |
 
 ## UI (js/ui/)
 | File | Responsibility | Exports | Depends On |
@@ -125,15 +128,16 @@
 | File | Responsibility |
 |------|---------------|
 | `test-storage-policy.js` | Window bounds, in-memory ranges, date fields, index definitions, `lastManyByIndex` (7 tests) |
+| `test-journal.js` | v5 A1: chart seeding/links/fixed assets, balanced append + gapless numbering/rollback, append-only enforcement, day/month/scheduled locks, trial balance ranges, exact reversal, inactive historical account, source queries, tamper detection, randomized balanced/reversal invariants, v3→v4/v1 migrations, backup round-trip (16 tests) |
 | `test-summary.js` | Summary totals, dated customer/supplier payments, reversible updates, installments, MemoryRepository cache (6 tests) |
 | `test-daily-closing.js` | L4 reference scenario (515 expected / 510 counted / −5 difference / 110 retained), day locks + allowed postings, close ordering + no-count catch-up, external totals warn only (4 tests) |
 | `test-auth.js` | L5 PIN hashing/verification, lockout, cashier discount/return limits, allow-list, sensitive-field stripping, cashier summary (8 tests) |
 | `test-accounting-package.js` | L7 SHA-256 vectors, package contents/checksums/BOM/formula guard/manifest/open→closed status, share/download/cashier denial (3 tests) |
 | `test-integrity-l8.js` | L8 clean closed-day recomputation + drawer/stale/backup/storage, tamper detection, adjustment void/amount tamper, reopen/re-close, clock anomaly (3 tests) |
 | `ui-package.html` | Browser L7/L8: open→closed package, Arabic Canvas PDF, 21 files/18 BOM CSVs, manifest checksums, share/download, cashier denial, 16-check integrity (11 tests) |
-| `idb-lazy.html` | Browser: v6 indexes + `cashAdjustments` + compound `variantDate`, window-only memory, lazy `get/list/listRange/query`, progress events, `lastManyByIndex`, streamed export byte-equality, summary update/rebuild on import, v3→v6 upgrade (17 tests) |
+| `idb-lazy.html` | Browser: v7 indexes + `chartOfAccounts`/`journalEntries` append-only + compound `variantDate`, window-only memory, lazy `get/list/listRange/query`, progress events, `lastManyByIndex`, streamed export byte-equality, summary update/rebuild on import, v3→v7 upgrade (18 tests) |
 | `ui-days.html` | Browser L4: dashboard day cards, Days table, wizard steps, denomination counter, no-count close, Day Report + print HTML, Day mode, Month Review, settings, accounts delegation, zero page errors (13 tests) |
-| `smoke.html` | Browser IndexedDB smoke: repository open, dbVersion upgrade, product/variant/stock, export, month lock/reopen, integrity, Month Review, clear (10 tests) |
-| `verify-offline.py` | L10 CDP offline check: SW controls the page, 97 cached files, offline shell start, IndexedDB reads, offline invoice, survives a second reload (10 checks; requires ChromeDriver) |
+| `smoke.html` | Browser IndexedDB smoke: repository open, dbVersion upgrade, v5 chart seed + balanced JE + append-only + verify, product/variant/stock, export, month lock/reopen, integrity, Month Review, clear (11 tests) |
+| `verify-offline.py` | L10 CDP offline check: SW controls the page, 100 cached files, offline shell start, IndexedDB reads, offline invoice, survives a second reload (10 checks; requires ChromeDriver) |
 | `perf.html` | Seeds 50,000 invoices + 50,000 stock movements, rebuilds the summary, measures cold start, dashboard, Month Review (window/old), save invoice, and diagnostic components |
 | `test-reports.js`, `test-asof.js` | Summary-vs-legacy P&L and balance-snapshot parity, plus v2 report/as-of suite |

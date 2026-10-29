@@ -300,6 +300,12 @@
             BeeStore.posting.linkAll([sale].concat(saleMovements), entry);
             for (const movement of saleMovements) tx.put('stockMovements', movement);
           }
+          // v5 §4 row 1: revenue/AR first, then each embedded receipt on its
+          // own date (cash-bank-clearing / AR, excess to customer credit).
+          const revenue = await BeeStore.posting.saleRevenue(tx, sale);
+          if (revenue) BeeStore.posting.link(sale, revenue);
+          const receipts = await BeeStore.posting.salePayments(tx, sale);
+          BeeStore.posting.linkAll([sale], receipts);
         }
         tx.put('sales', sale);
 

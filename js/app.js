@@ -68,6 +68,23 @@
       }
     }
 
+    // A3: the schema-6 migration cannot write journal entries itself (it runs
+    // on an export-shaped object). Replay every existing document once here,
+    // after the chart exists, so the journal becomes the single source of
+    // truth for an upgraded install. The flag is cleared by replayAll().
+    if (BeeStore.posting && BeeStore.posting.replayAll) {
+      BeeStore.posting.repo = BeeStore.repo;
+      try {
+        const meta = await BeeStore.repo.get('meta', 'meta');
+        if (meta && meta.journalReplay && meta.journalReplay.needed) {
+          const replay = await BeeStore.posting.replayAll();
+          if (!replay.ok) console.error('journal replay completed with errors', replay.errors);
+        }
+      } catch (replayError) {
+        console.error('journal replay failed', replayError);
+      }
+    }
+
     BeeStore.csv.repo = BeeStore.repo;
     BeeStore.audit.repo = BeeStore.repo;
     if (BeeStore.errorLog) {

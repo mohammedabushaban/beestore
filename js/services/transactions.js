@@ -28,6 +28,13 @@
           updatedAt: BeeStore.dates.now(),
         };
         tx.put('ownerTransactions', txRecord);
+        if (BeeStore.posting) {
+          const entry = await BeeStore.posting.ownerTransaction(tx, txRecord);
+          if (entry) {
+            BeeStore.posting.link(txRecord, entry);
+            tx.put('ownerTransactions', txRecord);
+          }
+        }
         return txRecord;
       });
     }
@@ -53,6 +60,13 @@
           updatedAt: BeeStore.dates.now(),
         };
         tx.put('transfers', transfer);
+        if (BeeStore.posting) {
+          const entry = await BeeStore.posting.transfer(tx, transfer);
+          if (entry) {
+            BeeStore.posting.link(transfer, entry);
+            tx.put('transfers', transfer);
+          }
+        }
         return transfer;
       });
     }

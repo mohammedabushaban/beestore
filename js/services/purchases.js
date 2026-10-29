@@ -182,9 +182,12 @@
           const entry = await BeeStore.posting.purchase(tx, purchase, totalMinor);
           if (entry) {
             BeeStore.posting.linkAll([purchase].concat(purchaseMovements), entry);
-            tx.put('purchases', purchase);
             for (const movement of purchaseMovements) tx.put('stockMovements', movement);
           }
+          // v5 §4 row 5: each embedded supplier payment clears AP on its date.
+          const paymentsPosted = await BeeStore.posting.purchasePayments(tx, purchase);
+          BeeStore.posting.linkAll([purchase], paymentsPosted);
+          tx.put('purchases', purchase);
         }
 
         return purchase;

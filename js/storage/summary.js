@@ -14,7 +14,7 @@
   // returned transiently in `days` (never persisted) so an as-of date inside
   // the current month can be computed from that month's documents without
   // scanning the whole history.
-  const VERSION = 4;
+  const VERSION = 6;
 
   const COLLECTIONS = [
     'accounts', 'sales', 'purchases', 'customerPayments', 'supplierPayments',
@@ -310,7 +310,10 @@
         if (doc.refundMode === 'cash_refund') {
           account('return_refund', doc.refundMethod, -amount);
         }
-        if (doc.refundMode === 'customer_credit' && doc.customerId) {
+        // A customer credit or exchange reduces the customer's net position
+        // (AR or 2030); a cash refund does not touch AR.
+        if ((doc.refundMode === 'customer_credit' || doc.refundMode === 'exchange') &&
+          doc.customerId) {
           addCustomer(out, monthBucket, dayBucket, doc.customerId, -amount);
         }
         if (monthBucket) {
@@ -329,8 +332,16 @@
         const amount = Number(doc.totalMinor) || 0;
         if (doc.mode === 'cash_refund') {
           account('purchase_return_refund', doc.accountId, amount);
+        } else {
+          // Only a payable reduction lowers AP; a cash refund leaves it intact.
+          addSupplier(out, monthBucket, dayBucket, doc.supplierId, -amount);
         }
-        addSupplier(out, monthBucket, dayBucket, doc.supplierId, -amount);
+        // v5 §4 row 7: refund value minus removed carrying value posts to 5030.
+        if (monthBucket) {
+          for (const line of (doc.lines || [])) {
+            monthBucket.pnl.stockRevaluation -= Number(line.differenceMinor) || 0;
+          }
+        }
         break;
       }
       case 'payroll':
@@ -353,18 +364,12 @@
         if (monthBucket) {
           if (doc.type === 'adjustment' || doc.type === 'stocktake') {
             if (doc.valueChangeMinor != null) {
-              // Document-derived reports keep the v2 convention until the A3
-              // journal cut-over: only shortages are expenses. A count gain
-              // still posts Dr 1200 / Cr 5020 to the journal, but it never
-              // creates income in this legacy P&L.
-              const delta = Number(doc.valueChangeMinor) || 0;
-              if (delta < 0) monthBucket.pnl.stockLosses -= delta;
+              // A3 aligns the derived P&L with 5020: a count gain is a
+              // negative expense, not silently ignored.
+              monthBucket.pnl.stockLosses -= Number(doc.valueChangeMinor) || 0;
             } else if (qty < 0) {
               monthBucket.pnl.stockLosses += Math.abs(qty) * unitCost;
             }
-          }
-          if (doc.type === 'sale_return' && qty < 0) {
-            monthBucket.pnl.stockLosses += Math.abs(qty) * unitCost;
           }
           if (doc.type === 'revaluation') {
             monthBucket.pnl.stockRevaluation -= doc.valueChangeMinor != null

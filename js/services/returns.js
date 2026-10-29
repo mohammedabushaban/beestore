@@ -225,6 +225,9 @@
             BeeStore.posting.linkAll([ret].concat(returnMovements), entry);
             for (const movement of returnMovements) tx.put('stockMovements', movement);
           }
+          // v5 §4 row 3: refund value against 4020 and the refund channel.
+          const refundEntry = await BeeStore.posting.saleReturn(tx, ret);
+          if (refundEntry) BeeStore.posting.link(ret, refundEntry);
         }
         tx.put('salesReturns', ret);
 
@@ -376,6 +379,10 @@
           BeeStore.posting.linkAll([sale].concat(saleMovements), entry);
           for (const movement of saleMovements) tx.put('stockMovements', movement);
         }
+        // The exchange sale is a real sale: post its revenue and AR. Its credit
+        // is carried by the return's AR credit, so it has no embedded receipts.
+        const revenue = await BeeStore.posting.saleRevenue(tx, sale);
+        if (revenue) BeeStore.posting.link(sale, revenue);
       }
       tx.put('sales', sale);
       return sale;

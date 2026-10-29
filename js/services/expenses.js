@@ -170,6 +170,13 @@
           updatedAt: BeeStore.dates.now(),
         };
         tx.put('expenses', expense);
+        if (BeeStore.posting) {
+          const entries = await BeeStore.posting.expense(tx, expense);
+          if (entries.length > 0) {
+            BeeStore.posting.linkAll([expense], entries);
+            tx.put('expenses', expense);
+          }
+        }
         return expense;
       });
     }
@@ -202,6 +209,16 @@
         const updated = { ...e, ...patch, id, updatedAt: BeeStore.dates.now() };
         if (patch.date) updated.month = String(patch.date).slice(0, 7);
         tx.put('expenses', updated);
+        if (BeeStore.posting) {
+          const reversals = await BeeStore.posting.reverseDocument(tx, 'EXPENSE', id, {
+            description: 'تعديل مصروف — عكس القيد السابق',
+            reason: 'update',
+          }, { allowClosedDay: true });
+          if (reversals.length > 0) BeeStore.posting.linkAll([updated], reversals);
+          const entries = await BeeStore.posting.expense(tx, updated);
+          if (entries.length > 0) BeeStore.posting.linkAll([updated], entries);
+          tx.put('expenses', updated);
+        }
         return updated;
       });
     }
@@ -231,6 +248,16 @@
         e.voidReason = String(reason).trim();
         e.updatedAt = BeeStore.dates.now();
         tx.put('expenses', e);
+        if (BeeStore.posting) {
+          const reversals = await BeeStore.posting.reverseDocument(tx, 'EXPENSE', id, {
+            description: 'إلغاء مصروف — ' + e.voidReason,
+            reason: e.voidReason,
+          }, { allowClosedDay: true });
+          if (reversals.length > 0) {
+            BeeStore.posting.linkAll([e], reversals);
+            tx.put('expenses', e);
+          }
+        }
         return e;
       });
       if (BeeStore.audit) {
@@ -366,6 +393,13 @@
             updatedAt: BeeStore.dates.now(),
           };
           tx.put('expenses', expense);
+          if (BeeStore.posting) {
+            const entries = await BeeStore.posting.expense(tx, expense);
+            if (entries.length > 0) {
+              BeeStore.posting.linkAll([expense], entries);
+              tx.put('expenses', expense);
+            }
+          }
           created.push(expense);
           r.lastGeneratedMonth = (!r.lastGeneratedMonth || ym > r.lastGeneratedMonth) ? ym : r.lastGeneratedMonth;
           r.updatedAt = BeeStore.dates.now();

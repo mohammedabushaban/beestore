@@ -26,14 +26,20 @@
     /**
      * Transaction-scoped variant used by posting code and first-run setup.
      * @param {object} tx active repository transaction
+     * @param {object} [options] {taxPayable} create 2300 when tax is needed
      * @returns {Promise<object>} applied plan
      */
-    async ensureSeededTx(tx) {
+    async ensureSeededTx(tx, options) {
+      options = options || {};
       const chart = await tx.list('chartOfAccounts');
       const accounts = await tx.list('accounts');
       const categories = await tx.list('expenseCategories');
       const settings = await tx.get('meta', 'settings');
       const now = BeeStore.dates.now();
+      const taxPayable = options.taxPayable === true ||
+        !!(settings && settings.taxEnabled) ||
+        chart.some(a => a && (a.systemKey === 'tax_payable' ||
+          String(a.code) === BeeStore.chartSeed.TAX_ACCOUNT.code));
 
       const result = BeeStore.chartSeed.plan({
         chart,
@@ -41,6 +47,7 @@
         categories,
         settings,
         fixedAssetsEnabled: !!(settings && settings.fixedAssetsEnabled),
+        taxPayable,
         now,
       });
 

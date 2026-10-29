@@ -205,6 +205,7 @@
         createdAt: BeeStore.dates.now(),
         sourceType,
         sourceId,
+        event: data.event ? String(data.event) : null,
         description,
         lines,
         reversalOf,
@@ -234,6 +235,10 @@
 
     async _assertLocks(tx, entry, options) {
       options = options || {};
+      // Historical replay reconstructs entries that may fall in months/days
+      // that are locked today. It is a one-time, audited rebuild and never
+      // used by a normal document transaction.
+      if (options.replay) return true;
       if (entry.isScheduled) {
         if (BeeStore.periods.assertScheduledOpen) {
           await BeeStore.periods.assertScheduledOpen(tx, entry.date);
@@ -346,6 +351,41 @@
         sourceType: meta && meta.sourceType ? meta.sourceType : sourceType,
         sourceId: meta && meta.sourceId !== undefined ? meta.sourceId : sourceId,
       }, options);
+    }
+
+    /**
+     * Reverses only the live (not yet reversed, non-reversal) entries of a
+     * source document. Used by reverse-and-repost updates so a second update
+     * never tries to reverse a previous reversal.
+     * @param {object} tx active transaction
+     * @param {string} sourceType source document type
+     * @param {string} sourceId source document id
+     * @param {object} [meta] description/reason/profile
+     * @param {object} [options] {allowClosedDay,replay}
+     * @returns {Promise<object[]>} reversal entries
+     */
+    async reverseActiveSourceTx(tx, sourceType, sourceId, meta, options) {
+      const entries = await this.activeForSourceTx(tx, sourceType, sourceId);
+      if (entries.length === 0) return [];
+      return this.reverseEntries(tx, entries, {
+        ...(meta || {}),
+        sourceType: meta && meta.sourceType ? meta.sourceType : sourceType,
+        sourceId: meta && meta.sourceId !== undefined ? meta.sourceId : sourceId,
+      }, options);
+    }
+
+    /**
+     * Live entries of a source document: original postings that have no
+     * reversal yet. Reversal entries themselves are excluded.
+     * @param {object} tx active transaction
+     * @param {string} [sourceType] source type
+     * @param {string} [sourceId] source id
+     * @returns {Promise<object[]>} live entries in number order
+     */
+    async activeForSourceTx(tx, sourceType, sourceId) {
+      const rows = await this._forSourceTx(tx, sourceType, sourceId);
+      const reversed = new Set(rows.filter(e => e.reversalOf).map(e => e.reversalOf));
+      return rows.filter(e => !e.reversalOf && !reversed.has(e.id));
     }
 
     /**

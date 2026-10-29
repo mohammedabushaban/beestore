@@ -301,6 +301,116 @@
         return data;
       },
     },
+    {
+      // A3: post the historical documents into the journal. The replay itself
+      // runs at startup (needs a live repository), so this migration only
+      // marks that it is required, fixes purchase dues to the v5 cash-refund
+      // rule and seeds the conditional tax account for legacy tax data.
+      from: 5,
+      to: 6,
+      migrate(data) {
+        if (!data.collections) data.collections = {};
+        const C = data.collections;
+        BeeStore.chartSeed.applyToData(data);
+        const round = (v) => Math.round(Number(v) || 0);
+
+        // v5 §4 row 7: only a payable-reducing return lowers the purchase
+        // due. Legacy cash refunds used to reduce it as well; add those back
+        // by recomputing from the invoice itself.
+        const reducedByPurchase = new Map();
+        for (const ret of (C.purchaseReturns || [])) {
+          if (ret.mode === 'cash_refund') continue;
+          const id = ret.purchaseId;
+          if (!id) continue;
+          reducedByPurchase.set(id, (reducedByPurchase.get(id) || 0) + round(ret.totalMinor));
+        }
+        for (const purchase of (C.purchases || [])) {
+          const total = purchase.totalMinor != null
+            ? round(purchase.totalMinor)
+            : round(purchase.inventoryValueMinor);
+          const paid = round(purchase.paidMinor);
+          const reduced = reducedByPurchase.get(purchase.id) || 0;
+          purchase.dueMinor = total - paid - reduced;
+          if (purchase.status !== 'void') {
+            purchase.status = purchase.dueMinor <= 0 ? 'paid'
+              : (paid > 0 ? 'partial' : 'unpaid');
+          }
+        }
+
+        // v5 §4 row 2: replay needs the AR/credit split of old collections.
+        // Reconstruct the customer position in date order: opening receivable,
+        // sales, embedded receipts, credit returns and then each collection.
+        // A payment only clears AR up to the positive balance; the rest is a
+        // 2030 credit, exactly like the live posting rule.
+        const paymentEvents = new Map();
+        const addEvent = (customerId, event) => {
+          if (!customerId) return;
+          if (!paymentEvents.has(customerId)) paymentEvents.set(customerId, []);
+          paymentEvents.get(customerId).push(event);
+        };
+        for (const sale of (C.sales || [])) {
+          if (sale.status === 'void' || sale.voided) continue;
+          addEvent(sale.customerId, {
+            date: sale.date || '', createdAt: sale.createdAt || '',
+            priority: 0, kind: 'sale', amount: round(sale.totalMinor), id: sale.id,
+          });
+          const payments = Array.isArray(sale.payments) ? sale.payments : [];
+          for (let i = 0; i < payments.length; i++) {
+            addEvent(sale.customerId, {
+              date: payments[i].date || sale.date || '',
+              createdAt: sale.createdAt || '',
+              priority: 1, order: i, kind: 'receipt',
+              amount: round(payments[i].amountMinor), id: sale.id,
+            });
+          }
+        }
+        for (const ret of (C.salesReturns || [])) {
+          if (ret.refundMode !== 'customer_credit' && ret.refundMode !== 'exchange') continue;
+          addEvent(ret.customerId, {
+            date: ret.date || '', createdAt: ret.createdAt || '',
+            priority: 2, kind: 'return', amount: round(ret.refundMinor), id: ret.id,
+          });
+        }
+        for (const payment of (C.customerPayments || [])) {
+          addEvent(payment.customerId, {
+            date: payment.date || '', createdAt: payment.createdAt || '',
+            priority: 3, kind: 'payment', amount: round(payment.amountMinor),
+            id: payment.id, payment,
+          });
+        }
+        const customerOpening = new Map((C.customers || []).map(c =>
+          [c.id, round(c.openingBalanceMinor)]));
+        for (const [customerId, events] of paymentEvents) {
+          events.sort((a, b) =>
+            String(a.date).localeCompare(String(b.date)) ||
+            String(a.createdAt).localeCompare(String(b.createdAt)) ||
+            (a.priority - b.priority) ||
+            ((a.order || 0) - (b.order || 0)) ||
+            String(a.id).localeCompare(String(b.id)));
+          let balance = customerOpening.get(customerId) || 0;
+          for (const event of events) {
+            if (event.kind === 'sale') balance += event.amount;
+            else if (event.kind === 'return' || event.kind === 'receipt') balance -= event.amount;
+            else {
+              if (event.payment.appliedMinor == null) {
+                event.payment.appliedMinor = Math.min(event.amount, Math.max(0, balance));
+              }
+              balance -= event.amount;
+            }
+          }
+        }
+
+        const meta = data.meta || (C.meta || []).find(m => m && m.id === 'meta');
+        if (meta) {
+          meta.journalReplay = {
+            ...(meta.journalReplay || {}),
+            needed: true,
+            version: 1,
+          };
+        }
+        return data;
+      },
+    },
   ];
 
   async function migrate(data, currentVersion) {

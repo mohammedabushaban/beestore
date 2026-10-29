@@ -37,6 +37,13 @@
           updatedAt: BeeStore.dates.now(),
         };
         tx.put('customers', customer);
+        if (BeeStore.posting) {
+          const entry = await BeeStore.posting.openingCustomer(tx, customer);
+          if (entry) {
+            BeeStore.posting.link(customer, entry);
+            tx.put('customers', customer);
+          }
+        }
         return customer;
       });
     }
@@ -48,8 +55,21 @@
       return this.repo.transaction(async (tx) => {
         const c = await tx.get('customers', id);
         if (!c) throw BeeStore.errors.err('NOT_FOUND', 'الزبون غير موجود');
+        const openingChanged = patch && patch.openingBalanceMinor !== undefined &&
+          BeeStore.money.roundMinor(patch.openingBalanceMinor) !==
+            (Number(c.openingBalanceMinor) || 0);
         const updated = { ...c, ...patch, id, updatedAt: BeeStore.dates.now() };
         tx.put('customers', updated);
+        if (openingChanged && BeeStore.posting) {
+          const entries = await BeeStore.posting.reverseDocument(tx, 'OPENING',
+            'open:customer:' + id,
+            { description: 'تعديل رصيد افتتاحي — ' + updated.name },
+            { allowClosedDay: true });
+          if (entries.length > 0) BeeStore.posting.linkAll([updated], entries);
+          const entry = await BeeStore.posting.openingCustomer(tx, updated);
+          if (entry) BeeStore.posting.link(updated, entry);
+          tx.put('customers', updated);
+        }
         return updated;
       });
     }
@@ -65,14 +85,22 @@
       if (!asOf) {
         let balance = customer.openingBalanceMinor || 0;
         // Indexed by customerId, so old invoices do not require a full scan.
+        // Use the invoice total minus every receipt, not the capped dueMinor:
+        // an overpayment is a real 2030 customer credit and must show as a
+        // negative (credit) balance, exactly like the journal's AR + 2030.
         const sales = (await this.repo.query('sales', 'customerId', customerId))
           .filter(s => s.status !== 'void');
         for (const s of sales) {
-          balance += s.dueMinor;
+          balance += s.totalMinor;
+          for (const p of (s.payments || [])) balance -= p.amountMinor;
         }
+        const payments = await this.repo.query('customerPayments', 'customerId', customerId);
+        for (const p of payments) balance -= p.amountMinor;
         const returns = await this.repo.query('salesReturns', 'customerId', customerId);
         for (const r of returns) {
-          if (r.refundMode === 'customer_credit') balance -= r.refundMinor;
+          if (r.refundMode === 'customer_credit' || r.refundMode === 'exchange') {
+            balance -= r.refundMinor;
+          }
         }
         return balance;
       }
@@ -91,7 +119,9 @@
       const returns = (await this.repo.query('salesReturns', 'customerId', customerId))
         .filter(r => r.date <= asOf);
       for (const r of returns) {
-        if (r.refundMode === 'customer_credit') balance -= r.refundMinor;
+        if (r.refundMode === 'customer_credit' || r.refundMode === 'exchange') {
+          balance -= r.refundMinor;
+        }
       }
       return balance;
     }
@@ -135,14 +165,54 @@
         };
         tx.put('customerPayments', payment);
 
+        // Customer position before this collection. The opening receivable is
+        // part of AR, and a credit return lowers the net position without
+        // lowering an invoice's gross due. Both facts decide how much of this
+        // payment clears AR and how much becomes a 2030 credit.
+        let balanceBefore = Math.max(0,
+          BeeStore.money.roundMinor(customer.openingBalanceMinor || 0));
+        let invoiceDues = 0;
+        const sales = (await tx.query('sales', 'customerId', data.customerId))
+          .filter(s => s.status !== 'void');
+        for (const s of sales) {
+          balanceBefore += BeeStore.money.roundMinor(s.totalMinor || 0);
+          for (const p of (s.payments || [])) {
+            balanceBefore -= BeeStore.money.roundMinor(p.amountMinor || 0);
+          }
+          if (s.dueMinor > 0) {
+            invoiceDues += BeeStore.money.roundMinor(s.dueMinor);
+          }
+        }
+        const priorPayments = (await tx.query('customerPayments', 'customerId', data.customerId))
+          .filter(p => p.id !== payment.id);
+        for (const p of priorPayments) {
+          balanceBefore -= BeeStore.money.roundMinor(p.amountMinor || 0);
+        }
+        const priorReturns = await tx.query('salesReturns', 'customerId', data.customerId);
+        for (const r of priorReturns) {
+          if (r.refundMode === 'customer_credit' || r.refundMode === 'exchange') {
+            balanceBefore -= BeeStore.money.roundMinor(r.refundMinor || 0);
+          }
+        }
+        const maxApply = Math.max(0, Math.min(payment.amountMinor, balanceBefore));
+
+        let appliedMinor = 0;
         if (!data.saleId) {
+          // An opening receivable is AR too: a general collection settles it
+          // before any later invoice. Its remaining share is the position
+          // that gross invoice dues do not already explain.
+          let remaining = maxApply;
+          const opening = Math.max(0, balanceBefore - invoiceDues);
+          if (remaining > 0 && opening > 0) {
+            const applyOpening = Math.min(remaining, opening);
+            appliedMinor += applyOpening;
+            remaining -= applyOpening;
+          }
           // Indexed by customerId: allocating a payment must not scan old
           // invoices that live outside the memory window.
-          const sales = (await tx.query('sales', 'customerId', data.customerId))
-            .filter(s => s.status !== 'void' && s.dueMinor > 0);
-          sales.sort((a, b) => a.date.localeCompare(b.date));
-          let remaining = payment.amountMinor;
-          for (const s of sales) {
+          const openSales = sales.filter(s => s.dueMinor > 0);
+          openSales.sort((a, b) => a.date.localeCompare(b.date));
+          for (const s of openSales) {
             if (remaining <= 0) break;
             const apply = Math.min(remaining, s.dueMinor);
             s.dueMinor -= apply;
@@ -153,11 +223,12 @@
             s.updatedAt = BeeStore.dates.now();
             tx.put('sales', s);
             remaining -= apply;
+            appliedMinor += apply;
           }
         } else {
           const sale = await tx.get('sales', data.saleId);
           if (sale && sale.customerId === data.customerId) {
-            const apply = Math.min(payment.amountMinor, sale.dueMinor);
+            const apply = Math.max(0, Math.min(maxApply, sale.dueMinor));
             sale.dueMinor -= apply;
             sale.paidMinor += apply;
             this._applyInstallmentPayment(sale, apply);
@@ -165,6 +236,24 @@
             else if (sale.paidMinor > 0) sale.status = 'partial';
             sale.updatedAt = BeeStore.dates.now();
             tx.put('sales', sale);
+            appliedMinor = apply;
+          }
+        }
+
+        // Persist the AR/credit split even when posting is unavailable; a
+        // later replay then reproduces the exact same allocation.
+        payment.appliedMinor = appliedMinor;
+        tx.put('customerPayments', payment);
+
+        if (BeeStore.posting) {
+          // v5 §4 row 2: the collected amount clears AR; any excess becomes a
+          // 2030 customer credit instead of disappearing.
+          const entry = await BeeStore.posting.customerPayment(tx, payment, {
+            appliedMinor,
+          });
+          if (entry) {
+            BeeStore.posting.link(payment, entry);
+            tx.put('customerPayments', payment);
           }
         }
 

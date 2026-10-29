@@ -159,8 +159,9 @@ test('A2 rounding: 3 units for 100.00 sell at 33.33 / 33.34 / 33.33 and end at z
     assert.strictEqual(balanceOf(tb, '1200'), [6667, 3333, 0][i],
       'journal inventory must equal the sub-ledger after each sale');
     assert.strictEqual(balanceOf(tb, '5010'), [3333, 6667, 10000][i]);
-    assert.strictEqual(sale.journalEntryIds.length, 1);
-    assert.strictEqual((await api.journal.forSource('SALE', sale.id)).data.length, 1);
+    // A3 sale = COGS + revenue/AR + embedded receipt.
+    assert.strictEqual(sale.journalEntryIds.length, 3);
+    assert.strictEqual((await api.journal.forSource('SALE', sale.id)).data.length, 3);
   }
   assert.deepStrictEqual(cogs, [3333, 3334, 3333]);
   assert.strictEqual(await inventoryControl(repo), 0);
@@ -206,7 +207,8 @@ test('A2 sale returns restock at the original exact COGS including the remainder
     restocked.push(ret.lines[0].restockCostMinor);
     assert.strictEqual(ret.restockCostMinor, ret.lines[0].restockCostMinor);
     assert.strictEqual(ret.lines[0].returnedCostMinor, restocked[i]);
-    assert.strictEqual((await api.journal.forSource('SALE_RETURN', ret.id)).data.length, 1);
+    // A3 return = restock cost + refund value.
+    assert.strictEqual((await api.journal.forSource('SALE_RETURN', ret.id)).data.length, 2);
   }
   assert.deepStrictEqual(restocked, [3333, 3334, 3333]);
 
@@ -444,7 +446,8 @@ test('A2 sale void restores the exact original COGS after later cost changes', a
 
   const voided = (await api.sales.void(sale.id, 'إلغاء')).data;
   assert.strictEqual(voided.status, 'void');
-  assert.strictEqual(voided.journalEntryIds.length, 2);
+  // Three original entries (cost, revenue, receipt) plus three reversals.
+  assert.strictEqual(voided.journalEntryIds.length, 6);
   const stored = (await api.variants.get(variant.id)).data;
   assert.strictEqual(stored.quantity, 2);
   assert.strictEqual(stored.valueMinor, 6000,
@@ -453,7 +456,7 @@ test('A2 sale void restores the exact original COGS after later cost changes', a
   assert.strictEqual(balanceOf(tb, '1200'), 6000);
   assert.strictEqual(balanceOf(tb, '5010'), 0, 'reversing entry clears COGS');
   const entries = (await api.journal.forSource('SALE', sale.id)).data;
-  assert.strictEqual(entries.length, 2);
+  assert.strictEqual(entries.length, 6);
   const reversal = entries.find(e => e.reversalOf);
   assert.ok(reversal);
   assert.strictEqual(reversal.date, sale.date, 'void reversal is dated the original sale date');
@@ -462,7 +465,8 @@ test('A2 sale void restores the exact original COGS after later cost changes', a
   assert.strictEqual(voidMovement.qtyChange, 1);
   assert.strictEqual(voidMovement.valueChangeMinor, 1000);
   assert.strictEqual(voidMovement.date, sale.date);
-  assert.strictEqual(voidMovement.journalEntryIds.length, 1);
+  assert.strictEqual(voidMovement.journalEntryIds.length, 3,
+    'the void links every reversing entry of the sale');
   await assertInvariants(repo, 'sale void');
 });
 
@@ -621,8 +625,8 @@ test('A2 migration 4->5 backfills tracked value without rewriting legacy gross v
   };
 
   const out = await BeeStore.migrations.migrate(dump, BeeStore.schemaVersion);
-  assert.strictEqual(out.schemaVersion, 5);
-  assert.strictEqual(out.meta.schemaVersion, 5);
+  assert.strictEqual(out.schemaVersion, 6);
+  assert.strictEqual(out.meta.schemaVersion, 6);
   assert.deepStrictEqual(out.collections.journalEntries, [], 'migration never invents journal entries');
 
   const variant = out.collections.variants[0];
@@ -663,7 +667,7 @@ test('A2 migration 4->5 backfills tracked value without rewriting legacy gross v
 
   // Idempotence: a dump already at the current version is returned intact.
   const again = await BeeStore.migrations.migrate(out, BeeStore.schemaVersion);
-  assert.strictEqual(again.schemaVersion, 5);
+  assert.strictEqual(again.schemaVersion, 6);
   assert.strictEqual(again.collections.stockMovements[1].valueAfterMinor, 8000);
   assert.strictEqual(again.collections.variants[0].valueMinor, 8000);
 });
@@ -689,7 +693,7 @@ test('A2 migration reconstructs discounts already refunded by legacy returns', a
     },
   };
   const out = await BeeStore.migrations.migrate(dump, BeeStore.schemaVersion);
-  assert.strictEqual(out.schemaVersion, 5);
+  assert.strictEqual(out.schemaVersion, 6);
   assert.strictEqual(out.collections.sales[0].lines[0].returnedDiscountMinor, 66,
     'legacy refunds already granted 33 + 33 of the 100 discount');
 });

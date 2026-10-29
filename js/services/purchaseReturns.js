@@ -173,11 +173,16 @@
           returnMovements.push(movement);
         }
 
-        purchase.dueMinor = Math.max(0, (purchase.dueMinor || 0) - totalMinor);
-        purchase.status = purchase.dueMinor <= 0 ? 'paid'
-          : ((purchase.paidMinor || 0) > 0 ? 'partial' : 'unpaid');
-        purchase.updatedAt = BeeStore.dates.now();
-        tx.put('purchases', purchase);
+        // v5 §4 row 7: a cash refund returns money and leaves the purchase
+        // payable untouched; only a payable reduction lowers it. The payable
+        // may go negative and then represents a supplier credit.
+        if (mode === 'reduce_payable') {
+          purchase.dueMinor = (Number(purchase.dueMinor) || 0) - totalMinor;
+          purchase.status = purchase.dueMinor <= 0 ? 'paid'
+            : ((purchase.paidMinor || 0) > 0 ? 'partial' : 'unpaid');
+          purchase.updatedAt = BeeStore.dates.now();
+          tx.put('purchases', purchase);
+        }
 
         if (BeeStore.posting) {
           const entry = await BeeStore.posting.purchaseReturn(

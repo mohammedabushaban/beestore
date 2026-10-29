@@ -17,7 +17,7 @@
         'settings', 'auth', 'clockGuard', 'accounts', 'categories', 'products', 'variants', 'stock',
         'sales', 'returns', 'customers', 'suppliers', 'purchases', 'purchaseReturns',
         'expenses', 'employees', 'payroll', 'transactions', 'periods',
-        'chart', 'journal',
+        'chart', 'journal', 'posting',
         'dailyClosing', 'reports', 'dashboard', 'backup', 'maintenance', 'audit',
         'accountingPackage',
       ];
@@ -424,7 +424,7 @@
     };
 
     reports = {
-      profitAndLoss: async (from, to) => ok(await BeeStore.reports.profitAndLoss(from, to)),
+      profitAndLoss: async (from, to, options) => ok(await BeeStore.reports.profitAndLoss(from, to, options)),
       monthReview: async (month) => ok(await BeeStore.reports.monthReview(month)),
       yearOverview: async (year) => ok(await BeeStore.reports.yearOverview(year)),
       profitCashReconciliation: async (month) => ok(await BeeStore.reports.profitCashReconciliation(month)),
@@ -433,8 +433,14 @@
       inventoryValuation: async () => ok(await BeeStore.reports.inventoryValuation()),
       receivablesAging: async () => ok(await BeeStore.reports.receivablesAging()),
       payablesAging: async () => ok(await BeeStore.reports.payablesAging()),
-      balanceSnapshot: async (asOf) => ok(await BeeStore.reports.balanceSnapshot(asOf)),
+      balanceSnapshot: async (asOf, options) => ok(await BeeStore.reports.balanceSnapshot(asOf, options)),
       dailyClosing: async (date) => ok(await BeeStore.reports.dailyClosing(date)),
+      journalProfitAndLoss: async (from, to) => ok(await BeeStore.reports._journalProfitAndLoss(from, to)),
+      journalBalanceSnapshot: async (asOf) => ok(await BeeStore.reports._journalBalanceSnapshot(asOf)),
+      parityReport: async (options) => ok(await BeeStore.reports.parityReport(options)),
+      approveJournal: async (options) => ok(await BeeStore.reports.approveJournal(options)),
+      revokeJournalApproval: async (reason) => ok(await BeeStore.reports.revokeJournalApproval(reason)),
+      journalStatus: async () => ok(await BeeStore.reports.journalReportStatus()),
     };
 
     dashboard = {

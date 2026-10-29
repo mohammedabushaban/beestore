@@ -37,6 +37,13 @@
           updatedAt: BeeStore.dates.now(),
         };
         tx.put('suppliers', supplier);
+        if (BeeStore.posting) {
+          const entry = await BeeStore.posting.openingSupplier(tx, supplier);
+          if (entry) {
+            BeeStore.posting.link(supplier, entry);
+            tx.put('suppliers', supplier);
+          }
+        }
         return supplier;
       });
     }
@@ -48,8 +55,21 @@
       return this.repo.transaction(async (tx) => {
         const s = await tx.get('suppliers', id);
         if (!s) throw BeeStore.errors.err('NOT_FOUND', 'المورد غير موجود');
+        const openingChanged = patch && patch.openingBalanceMinor !== undefined &&
+          BeeStore.money.roundMinor(patch.openingBalanceMinor) !==
+            (Number(s.openingBalanceMinor) || 0);
         const updated = { ...s, ...patch, id, updatedAt: BeeStore.dates.now() };
         tx.put('suppliers', updated);
+        if (openingChanged && BeeStore.posting) {
+          const entries = await BeeStore.posting.reverseDocument(tx, 'OPENING',
+            'open:supplier:' + id,
+            { description: 'تعديل رصيد افتتاحي — ' + updated.name },
+            { allowClosedDay: true });
+          if (entries.length > 0) BeeStore.posting.linkAll([updated], entries);
+          const entry = await BeeStore.posting.openingSupplier(tx, updated);
+          if (entry) BeeStore.posting.link(updated, entry);
+          tx.put('suppliers', updated);
+        }
         return updated;
       });
     }
@@ -69,7 +89,9 @@
         }
         return balance;
       }
-      // v2 §8: opening + invoiced − paid − returned (both modes cut the payable).
+      // v2 §8: opening + invoiced − paid − payable-reducing returns. A cash
+      // refund does not reduce AP: the supplier still owes the original
+      // invoice, but the money for the returned goods came back separately.
       let balance = supplier.openingBalanceMinor || 0;
       const purchases = (await this.repo.query('purchases', 'supplierId', supplierId))
         .filter(p => p.status !== 'void' && p.date <= asOf);
@@ -83,7 +105,7 @@
         .filter(p => p.date <= asOf);
       for (const p of payments) balance -= p.amountMinor;
       const returns = (await this.repo.query('purchaseReturns', 'supplierId', supplierId))
-        .filter(r => r.date <= asOf);
+        .filter(r => r.date <= asOf && r.mode !== 'cash_refund');
       for (const r of returns) balance -= r.totalMinor;
       return balance;
     }
@@ -154,6 +176,16 @@
             else if (purchase.paidMinor > 0) purchase.status = 'partial';
             purchase.updatedAt = BeeStore.dates.now();
             tx.put('purchases', purchase);
+          }
+        }
+
+        if (BeeStore.posting) {
+          // v5 §4 row 6: Dr AP / Cr money. Overpayment leaves a debit AP
+          // balance (supplier credit) exactly like the document sub-ledger.
+          const entry = await BeeStore.posting.supplierPayment(tx, payment);
+          if (entry) {
+            BeeStore.posting.link(payment, entry);
+            tx.put('supplierPayments', payment);
           }
         }
 

@@ -456,6 +456,13 @@
             updatedAt: now,
           };
           tx.put('cashAdjustments', adj);
+          if (BeeStore.posting) {
+            const entry = await BeeStore.posting.cashDifference(tx, adj);
+            if (entry) {
+              BeeStore.posting.link(adj, entry);
+              tx.put('cashAdjustments', adj);
+            }
+          }
           generated.push(adj.id);
         }
         if (takenOut > 0 && takenOutMode === 'bank_deposit') {
@@ -472,6 +479,13 @@
             updatedAt: now,
           };
           tx.put('transfers', transfer);
+          if (BeeStore.posting) {
+            const entry = await BeeStore.posting.transfer(tx, transfer);
+            if (entry) {
+              BeeStore.posting.link(transfer, entry);
+              tx.put('transfers', transfer);
+            }
+          }
           generated.push(transfer.id);
         } else if (takenOut > 0 && takenOutMode === 'owner_withdrawal') {
           const withdrawal = {
@@ -487,6 +501,13 @@
             updatedAt: now,
           };
           tx.put('ownerTransactions', withdrawal);
+          if (BeeStore.posting) {
+            const entry = await BeeStore.posting.ownerTransaction(tx, withdrawal);
+            if (entry) {
+              BeeStore.posting.link(withdrawal, entry);
+              tx.put('ownerTransactions', withdrawal);
+            }
+          }
           generated.push(withdrawal.id);
         }
 
@@ -572,7 +593,14 @@
         }
         const now = BeeStore.dates.now();
         let voidedCount = 0;
-        for (const coll of ['cashAdjustments', 'transfers', 'ownerTransactions']) {
+        const voidSources = [
+          ['cashAdjustments', 'CASH_ADJUSTMENT'],
+          ['transfers', 'TRANSFER'],
+          ['ownerTransactions', 'OWNER_TRANSACTION'],
+        ];
+        for (const pair of voidSources) {
+          const coll = pair[0];
+          const sourceType = pair[1];
           const docs = await tx.list(coll, x => x.closingId === rec.id && !x.voided);
           for (const doc of docs) {
             doc.voided = true;
@@ -580,6 +608,19 @@
             doc.voidedAt = now;
             doc.updatedAt = now;
             tx.put(coll, doc);
+            if (BeeStore.posting) {
+              // v5 §3.5: voiding never deletes history. The generated close
+              // entry is reversed on its own date so the journal stays
+              // append-only and the reopened day has no leftover effect.
+              const reversals = await BeeStore.posting.reverseDocument(tx, sourceType, doc.id, {
+                description: 'إعادة فتح يوم ' + d + ' — عكس ' + coll,
+                reason: doc.voidReason,
+              }, { allowClosedDay: true });
+              if (reversals.length > 0) {
+                BeeStore.posting.linkAll([doc], reversals);
+                tx.put(coll, doc);
+              }
+            }
             voidedCount++;
           }
         }

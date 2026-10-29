@@ -8,8 +8,14 @@
 
   const ACCOUNT_TYPES = ['asset', 'liability', 'equity', 'revenue', 'expense', 'contra'];
 
-  // v5 §2. Account 2300 (tax payable) is deliberately absent: VAT is out of
-  // scope until the shop registers. Fixed-asset accounts are conditional.
+  // v5 §2. Account 2300 (tax payable) is only seeded when the shop has legacy
+  // tax-enabled data; VAT itself is out of scope until registration. Fixed
+  // asset accounts are conditional on the module flag.
+  const TAX_ACCOUNT = {
+    code: '2300', nameAr: 'ضريبة القيمة المضافة المستحقة',
+    type: 'liability', normalSide: 'credit', systemKey: 'tax_payable',
+  };
+
   const SYSTEM_ACCOUNTS = [
     { code: '1010', nameAr: 'الصندوق', type: 'asset', normalSide: 'debit', systemKey: 'cash' },
     { code: '1100', nameAr: 'الذمم المدينة – الزبائن', type: 'asset', normalSide: 'debit', systemKey: 'ar' },
@@ -66,7 +72,9 @@
   const DEFAULT_EXPENSE_NAMES = DEFAULT_EXPENSE_ACCOUNTS.map(a => a.nameAr);
 
   const CORE_SYSTEM_KEYS = new Set(
-    SYSTEM_ACCOUNTS.map(a => a.systemKey).concat(FIXED_ASSET_ACCOUNTS.map(a => a.systemKey))
+    SYSTEM_ACCOUNTS.map(a => a.systemKey)
+      .concat([TAX_ACCOUNT.systemKey])
+      .concat(FIXED_ASSET_ACCOUNTS.map(a => a.systemKey))
   );
 
   function normalSideFor(type, contra) {
@@ -91,8 +99,11 @@
     return Number.isSafeInteger(n) && n > 0 ? n : null;
   }
 
-  function systemAccounts(fixedAssetsEnabled) {
-    return fixedAssetsEnabled ? SYSTEM_ACCOUNTS.concat(FIXED_ASSET_ACCOUNTS) : SYSTEM_ACCOUNTS.slice();
+  function systemAccounts(fixedAssetsEnabled, taxPayable) {
+    let out = SYSTEM_ACCOUNTS.slice();
+    if (taxPayable) out.push(TAX_ACCOUNT);
+    if (fixedAssetsEnabled) out = out.concat(FIXED_ASSET_ACCOUNTS);
+    return out;
   }
 
   function nextExpenseCode(usedCodes) {
@@ -140,6 +151,9 @@
     const fixedEnabled = input.fixedAssetsEnabled !== undefined
       ? !!input.fixedAssetsEnabled
       : !!(settingsIn && settingsIn.fixedAssetsEnabled);
+    const taxPayable = input.taxPayable !== undefined
+      ? !!input.taxPayable
+      : !!(settingsIn && settingsIn.taxEnabled);
 
     const chart = (input.chart || []).map(a => ({ ...a }));
     const additions = [];
@@ -233,7 +247,7 @@
     }
 
     // 1) Core system chart.
-    for (const seed of systemAccounts(fixedEnabled)) ensureSystem(seed);
+    for (const seed of systemAccounts(fixedEnabled, taxPayable)) ensureSystem(seed);
 
     // 2) Default v2 expense categories.
     for (const def of DEFAULT_EXPENSE_ACCOUNTS) {
@@ -374,6 +388,10 @@
       categories: C.expenseCategories,
       settings,
       fixedAssetsEnabled: settings ? !!settings.fixedAssetsEnabled : false,
+      taxPayable: !!(settings && settings.taxEnabled) ||
+        (C.sales || []).some(s => Number(s.taxMinor) > 0) ||
+        C.chartOfAccounts.some(a => a && (a.systemKey === 'tax_payable' ||
+          String(a.code) === TAX_ACCOUNT.code)),
       now: new Date().toISOString(),
     });
 
@@ -433,6 +451,7 @@
     POSTING_VERSION,
     ACCOUNT_TYPES,
     SYSTEM_ACCOUNTS,
+    TAX_ACCOUNT,
     FIXED_ASSET_ACCOUNTS,
     DEFAULT_EXPENSE_ACCOUNTS,
     DEFAULT_EXPENSE_NAMES,

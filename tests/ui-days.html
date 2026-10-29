@@ -200,7 +200,12 @@
           const rows = Array.from(root.querySelectorAll('#days-content tbody tr'));
           const todayRow = rows.find(tr => tr.querySelector('td') &&
             tr.querySelector('td').textContent.trim() === today);
-          if (!todayRow) throw new Error('صف اليوم غير موجود: ' + today);
+          if (!todayRow) {
+            const shown = rows.slice(0, 8)
+              .map(tr => ((tr.querySelector('td') || {}).textContent || '').trim());
+            throw new Error('صف اليوم غير موجود: ' + today +
+              ' — التواريخ الظاهرة: ' + shown.join(' | '));
+          }
           const reportBtn = byText(todayRow, 'button', 'تقرير');
           if (!reportBtn) throw new Error('زر تقرير اليوم غير موجود');
           reportBtn.click();

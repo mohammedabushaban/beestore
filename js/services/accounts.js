@@ -38,11 +38,19 @@
           updatedAt: BeeStore.dates.now(),
         };
         tx.put('accounts', account);
+        let stored = account;
         if (BeeStore.chart && BeeStore.chart.ensureSeededTx) {
           await BeeStore.chart.ensureSeededTx(tx);
-          return (await tx.get('accounts', account.id)) || account;
+          stored = (await tx.get('accounts', account.id)) || account;
         }
-        return account;
+        if (BeeStore.posting) {
+          const entry = await BeeStore.posting.openingAccount(tx, stored);
+          if (entry) {
+            BeeStore.posting.link(stored, entry);
+            tx.put('accounts', stored);
+          }
+        }
+        return stored;
       });
     }
 
@@ -56,6 +64,9 @@
       return this.repo.transaction(async (tx) => {
         const acc = await tx.get('accounts', id);
         if (!acc) throw BeeStore.errors.err('NOT_FOUND', 'الحساب غير موجود');
+        const openingChanged = patch && patch.openingBalanceMinor !== undefined &&
+          BeeStore.money.roundMinor(patch.openingBalanceMinor) !==
+            (Number(acc.openingBalanceMinor) || 0);
         const updated = { ...acc, ...patch, id, updatedAt: BeeStore.dates.now() };
         tx.put('accounts', updated);
         if (acc.chartAccountId) {
@@ -66,6 +77,18 @@
             chartAccount.updatedAt = BeeStore.dates.now();
             tx.put('chartOfAccounts', chartAccount);
           }
+        }
+        if (openingChanged && BeeStore.posting) {
+          // Opening balances are posted once per money account; an edit must
+          // reverse the old entry and append the corrected one (v5 §3.5).
+          const entries = await BeeStore.posting.reverseDocument(tx, 'OPENING',
+            'open:account:' + id,
+            { description: 'تعديل رصيد افتتاحي — ' + updated.name },
+            { allowClosedDay: true });
+          if (entries.length > 0) BeeStore.posting.linkAll([updated], entries);
+          const entry = await BeeStore.posting.openingAccount(tx, updated);
+          if (entry) BeeStore.posting.link(updated, entry);
+          tx.put('accounts', updated);
         }
         return updated;
       });

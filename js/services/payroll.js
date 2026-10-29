@@ -40,6 +40,13 @@
             updatedAt: BeeStore.dates.now(),
           };
           tx.put('payroll', record);
+          if (BeeStore.posting) {
+            const entry = await BeeStore.posting.payrollAccrual(tx, record);
+            if (entry) {
+              BeeStore.posting.link(record, entry);
+              tx.put('payroll', record);
+            }
+          }
           created.push(record);
         }
         return created;
@@ -73,10 +80,33 @@
       return this.repo.transaction(async (tx) => {
         const p = await tx.get('payroll', id);
         if (!p) throw BeeStore.errors.err('NOT_FOUND', 'سجل الراتب غير موجود');
+        const financialKeys = ['month', 'baseMinor', 'bonusMinor', 'overtimeMinor',
+          'deductionsMinor', 'advanceRepaymentMinor', 'status', 'paidDate',
+          'method', 'accountId'];
+        const touchesFinancials = Object.keys(patch || {}).some(k =>
+          financialKeys.indexOf(k) >= 0);
+        if (p.status === 'paid' && touchesFinancials) {
+          throw BeeStore.errors.err('VALIDATION',
+            'الراتب مدفوع — لا يمكن تعديل مبالغه أو شهره. أعد فتح الفترة أو صحّح بقيد جديد');
+        }
+        if (touchesFinancials) {
+          await BeeStore.periods.assertOpen(tx, String(patch.month || p.month) + '-01');
+        }
         const updated = { ...p, ...patch, id, updatedAt: BeeStore.dates.now() };
         updated.netMinor = updated.baseMinor + updated.bonusMinor + updated.overtimeMinor -
           updated.deductionsMinor - updated.advanceRepaymentMinor;
         tx.put('payroll', updated);
+        if (BeeStore.posting && touchesFinancials) {
+          // A draft accrual is reverse-and-reposted so 6100/2100 always match
+          // the record; a paid record never reaches this branch.
+          const reversals = await BeeStore.posting.reverseDocument(tx, 'PAYROLL', id, {
+            description: 'تعديل استحقاق راتب — عكس القيد السابق',
+          }, { allowClosedDay: true });
+          if (reversals.length > 0) BeeStore.posting.linkAll([updated], reversals);
+          const entry = await BeeStore.posting.payrollAccrual(tx, updated);
+          if (entry) BeeStore.posting.link(updated, entry);
+          tx.put('payroll', updated);
+        }
         return updated;
       });
     }
@@ -160,6 +190,14 @@
         p.netMinor = net;
         p.updatedAt = BeeStore.dates.now();
         tx.put('payroll', p);
+        if (BeeStore.posting) {
+          // v5 §7: Dr 2100 gross / Cr 1150 applied advances / Cr money net.
+          const entry = await BeeStore.posting.payrollPayment(tx, p);
+          if (entry) {
+            BeeStore.posting.link(p, entry);
+            tx.put('payroll', p);
+          }
+        }
         return p;
       });
       if (BeeStore.audit) {
@@ -198,6 +236,13 @@
           updatedAt: BeeStore.dates.now(),
         };
         tx.put('employeeAdvances', advance);
+        if (BeeStore.posting) {
+          const entry = await BeeStore.posting.employeeAdvance(tx, advance);
+          if (entry) {
+            BeeStore.posting.link(advance, entry);
+            tx.put('employeeAdvances', advance);
+          }
+        }
         return advance;
       });
     }

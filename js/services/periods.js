@@ -174,7 +174,7 @@
       const months = new Set();
       const add = (date) => { if (date && /^\d{4}-\d{2}/.test(date)) months.add(_monthOf(date)); };
       for (const coll of ['sales', 'salesReturns', 'purchases', 'purchaseReturns',
-        'customerPayments', 'supplierPayments', 'expenses', 'stockMovements',
+        'customerPayments', 'supplierPayments', 'expenses', 'expensePayments', 'stockMovements',
         'ownerTransactions', 'transfers', 'dailyClosings', 'cashAdjustments',
         'cardSettlements', 'employeeAdvances', 'journalEntries']) {
         const rows = await tx.list(coll);

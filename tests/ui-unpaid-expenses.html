@@ -1,0 +1,243 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="UTF-8">
+  <title>BeeStore A4.2 Unpaid Expense UI Tests</title>
+  <style>
+    body { font-family: monospace; padding: 16px; }
+    .pass { color: #15803d; }
+    .fail { color: #b91c1c; white-space: pre-wrap; }
+    iframe { width: 1200px; height: 900px; border: 1px solid #ccc; margin-top: 12px; }
+  </style>
+</head>
+<body>
+  <h1>BeeStore A4.2 UI Tests (Unpaid Expenses)</h1>
+  <div id="results"></div>
+  <iframe id="app-frame" src="../index.html"></iframe>
+  <script>
+    const results = document.getElementById('results');
+    let passed = 0, failed = 0;
+    const pageErrors = [];
+
+    function report(ok, name, detail) {
+      const div = document.createElement('div');
+      div.className = ok ? 'pass' : 'fail';
+      div.textContent = (ok ? '✓ ' : '✗ ') + name + (detail ? ': ' + detail : '');
+      results.appendChild(div);
+      if (ok) passed++; else failed++;
+    }
+
+    async function test(name, fn) {
+      try {
+        await fn();
+        report(true, name);
+      } catch (e) {
+        report(false, name, (e && e.message) || String(e));
+      }
+    }
+
+    function wait(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+    async function waitFor(fn, label, timeout) {
+      const deadline = Date.now() + (timeout || 20000);
+      let lastError = null;
+      while (Date.now() < deadline) {
+        try {
+          const value = await fn();
+          if (value) return value;
+        } catch (e) { lastError = e; }
+        await wait(150);
+      }
+      throw new Error('انتهت المهلة: ' + label + (lastError ? ' — ' + lastError.message : ''));
+    }
+
+    function frame() { return document.getElementById('app-frame'); }
+    function w() { return frame().contentWindow; }
+    function d() { return frame().contentDocument; }
+
+    function byText(root, selector, text) {
+      return Array.from(root.querySelectorAll(selector))
+        .find(node => (node.textContent || '').trim().indexOf(text) >= 0);
+    }
+
+    async function clickText(selector, text, label) {
+      const btn = await waitFor(() => {
+        const root = d();
+        return root ? byText(root, selector, text) : null;
+      }, label || ('زر ' + text));
+      btn.click();
+      return btn;
+    }
+
+    async function route(path, readyText) {
+      w().BeeStore.router.navigate(path);
+      await waitFor(() => {
+        const root = d();
+        if (!root) return false;
+        const content = root.getElementById('page-content');
+        return content && (content.textContent || '').indexOf(readyText) >= 0;
+      }, 'الصفحة ' + path);
+    }
+
+    async function boot() {
+      const frameEl = frame();
+      if (!(frameEl.contentDocument && frameEl.contentDocument.readyState === 'complete' &&
+        frameEl.contentWindow && frameEl.contentWindow.BeeStore)) {
+        await new Promise(resolve => { frameEl.addEventListener('load', resolve, { once: true }); });
+      }
+      const appWindow = w();
+      appWindow.addEventListener('error', e => pageErrors.push('error: ' + (e.message || '')));
+      appWindow.addEventListener('unhandledrejection', e => {
+        pageErrors.push('rejection: ' + ((e.reason && e.reason.message) || String(e.reason)));
+      });
+      await waitFor(() => appWindow.BeeStore && appWindow.BeeStore.repo && appWindow.BeeStore.repo.opened,
+        'فتح قاعدة البيانات');
+
+      const wizard = d().getElementById('first-run-wizard');
+      if (wizard && getComputedStyle(wizard).display !== 'none') {
+        await waitFor(() => {
+          d().getElementById('wizard-empty').click();
+          const step = d().getElementById('wizard-step-4');
+          return step && step.style.display === 'block';
+        }, 'خطوة رمز المالك');
+        const pin = d().getElementById('wizard-owner-pin');
+        if (pin) {
+          pin.value = '1357';
+          d().getElementById('wizard-owner-pin-confirm').value = '1357';
+          d().getElementById('wizard-start').click();
+        }
+      }
+      await waitFor(() => d().getElementById('app').style.display === 'block', 'بدء التطبيق');
+      await waitFor(() => d().querySelector('#page-content .page-title'), 'تحميل الصفحة الرئيسية');
+      await appWindow.BeeStore.settings.ensureDefaults();
+    }
+
+    (async function run() {
+      let api, money, today, expense, accruedId, cashId;
+      try {
+        await boot();
+        const appWindow = w();
+        const root = d();
+        api = appWindow.BeeStore.api;
+        money = appWindow.BeeStore.money;
+        today = appWindow.BeeStore.dates.today();
+
+        function ok(res, label) {
+          if (!res || res.ok !== true) {
+            throw new Error((label ? label + ': ' : '') +
+              (res && res.error ? res.error.message : 'فشل غير معروف'));
+          }
+          return res.data;
+        }
+
+        await test('Seeds an unpaid electricity expense and owner cash', async () => {
+          const settings = ok(await api.settings.get(), 'settings');
+          const cash = ok(await api.accounts.list(), 'accounts')
+            .find(a => a.type === 'cash' && a.active !== false);
+          if (!cash) throw new Error('لا يوجد حساب صندوق');
+          cashId = cash.chartAccountId;
+          const accrued = ok(await api.chart.bySystemKey('accrued_expenses'), '2020 account');
+          accruedId = accrued.id;
+          ok(await api.transactions.ownerTransaction({
+            date: today, type: 'capital_in', amountMinor: 100000,
+            accountId: cash.id, note: 'رأس مال اختبار',
+          }), 'opening cash');
+          expense = ok(await api.expenses.create({
+            date: today,
+            amountMinor: 12000,
+            categoryName: 'كهرباء',
+            description: 'فاتورة كهرباء غير مدفوعة',
+            payee: 'شركة الكهرباء',
+            dueDate: today,
+            paymentStatus: 'unpaid',
+            method: 'cash',
+            accountId: cash.id,
+          }), 'unpaid expense');
+          if (expense.paymentStatus !== 'unpaid' || expense.paidMinor !== 0) {
+            throw new Error('حالة المصروف غير صحيحة');
+          }
+          const settingsCash = settings.paymentMethods.find(m => m.id === 'cash');
+          if (!settingsCash) throw new Error('طريقة النقد غير مهيأة');
+        });
+
+        await test('Expense list shows the unpaid status, paid amount and remainder', async () => {
+          await route('/expenses', 'المصاريف');
+          const content = await waitFor(() => {
+            const node = root.getElementById('page-content');
+            return node && node.textContent.indexOf('فاتورة كهرباء غير مدفوعة') >= 0 ? node : null;
+          }, 'ظهور المصروف');
+          const row = Array.from(content.querySelectorAll('tbody tr'))
+            .find(tr => (tr.textContent || '').indexOf('فاتورة كهرباء غير مدفوعة') >= 0);
+          if (!row) throw new Error('صف المصروف غير موجود');
+          const text = row.textContent;
+          if (text.indexOf('غير مدفوع') < 0) throw new Error('حالة غير مدفوع غير ظاهرة');
+          if (text.indexOf(money.format(12000)) < 0) throw new Error('إجمالي المصروف غير ظاهر');
+          if (text.indexOf(money.format(0)) < 0) throw new Error('المدفوع صفر غير ظاهر');
+          if (text.indexOf('120.00') < 0) throw new Error('المتبقي غير ظاهر');
+        });
+
+        await test('Unpaid tab shows aging cards, the row and a prefilled payment dialog', async () => {
+          await clickText('.tabs .tab', 'مستحقات غير مدفوعة', 'تبويب المستحقات');
+          const content = root.getElementById('page-content');
+          await waitFor(() => content.textContent.indexOf('إجمالي المستحق') >= 0, 'بطاقة الإجمالي');
+          const totalCard = Array.from(content.querySelectorAll('.stat-card'))
+            .find(card => (card.textContent || '').indexOf('إجمالي المستحق') >= 0);
+          if (!totalCard || totalCard.textContent.indexOf(money.format(12000)) < 0) {
+            throw new Error('إجمالي المستحق غير صحيح');
+          }
+          const row = Array.from(content.querySelectorAll('tbody tr'))
+            .find(tr => (tr.textContent || '').indexOf('فاتورة كهرباء غير مدفوعة') >= 0);
+          if (!row) throw new Error('صف المستحق غير موجود');
+          if (row.textContent.indexOf('شركة الكهرباء') < 0) throw new Error('المستفيد غير ظاهر');
+          byText(row, 'button', 'دفع').click();
+          await waitFor(() => root.querySelector('.dialog'), 'حوار الدفع');
+          const amountInput = root.querySelector('.dialog input[type="number"]');
+          if (!amountInput) throw new Error('حقل مبلغ الدفعة غير موجود');
+          await waitFor(() => amountInput.value === '120.00', 'تعبئة مبلغ الدفعة');
+        });
+
+        await test('Saving the payment clears 2020 and the expense becomes paid', async () => {
+          await clickText('.dialog button', 'حفظ', 'حفظ الدفعة');
+          await waitFor(() => !root.querySelector('.dialog-overlay'), 'إغلاق حوار الدفع');
+          const content = root.getElementById('page-content');
+          await waitFor(() => content.textContent.indexOf('لا توجد مصاريف غير مدفوعة') >= 0,
+            'تصفير قائمة المستحقات');
+          const tb = ok(await api.journal.trialBalance({ asOf: today }), 'trial balance');
+          const accrued = tb.accounts.find(a => a.accountId === accruedId);
+          if (accrued && accrued.balanceMinor !== 0) {
+            throw new Error('رصيد 2020 لم يُصفَّر: ' + accrued.balanceMinor);
+          }
+          const cash = tb.accounts.find(a => a.accountId === cashId);
+          if (!cash || cash.balanceMinor !== 88000) {
+            throw new Error('رصيد النقد بعد الدفع غير صحيح: ' + (cash ? cash.balanceMinor : 'missing'));
+          }
+          if (ok(await api.expenses.unpaidAsOf(today)) !== 0) {
+            throw new Error('إجمالي المستحقات لم يُصفَّر');
+          }
+          await clickText('.tabs .tab', 'المصاريف', 'تبويب المصاريف');
+          await waitFor(() => {
+            const row = Array.from(root.querySelectorAll('#page-content tbody tr'))
+              .find(tr => (tr.textContent || '').indexOf('فاتورة كهرباء غير مدفوعة') >= 0);
+            return row && row.textContent.indexOf('مدفوع') >= 0 && row.textContent.indexOf('دفع') < 0;
+          }, 'تحديث المصروف إلى مدفوع');
+        });
+
+        await test('No uncaught page errors during the flow', async () => {
+          if (pageErrors.length > 0) throw new Error(pageErrors.slice(0, 5).join(' | '));
+        });
+
+        results.appendChild(Object.assign(document.createElement('h2'), {
+          textContent: 'Results: ' + passed + ' passed, ' + failed + ' failed',
+        }));
+      } catch (e) {
+        report(false, 'fatal', (e && e.message) || String(e));
+        results.appendChild(Object.assign(document.createElement('h2'), {
+          textContent: 'Results: ' + passed + ' passed, ' + failed + ' failed',
+        }));
+      } finally {
+        window.__testResults = { passed, failed, errors: pageErrors.slice() };
+      }
+    })();
+  </script>
+</body>
+</html>

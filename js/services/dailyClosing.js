@@ -11,6 +11,16 @@
     if (!key || !amount) return;
     map[key] = (map[key] || 0) + amount;
   }
+  function initialPaidMinor(expense) {
+    const amount = Math.max(0, Math.round(Number(expense && expense.amountMinor) || 0));
+    let paid = amount;
+    if (expense && expense.initialPaidMinor != null) {
+      paid = Math.round(Number(expense.initialPaidMinor) || 0);
+    } else if (expense && expense.paidMinor != null) {
+      paid = Math.round(Number(expense.paidMinor) || 0);
+    }
+    return Math.max(0, Math.min(amount, paid));
+  }
   function cleanMap(map) {
     const out = {};
     for (const key of Object.keys(map || {})) {
@@ -79,7 +89,7 @@
     _activityCollections() {
       return [
         'sales', 'salesReturns', 'customerPayments', 'supplierPayments',
-        'purchases', 'purchaseReturns', 'expenses', 'employeeAdvances',
+        'purchases', 'purchaseReturns', 'expenses', 'expensePayments', 'employeeAdvances',
         'ownerTransactions', 'transfers', 'cardSettlements',
       ];
     }
@@ -201,6 +211,7 @@
       const collections = await load('customerPayments');
       const supplierPayments = await load('supplierPayments');
       const expenses = (await load('expenses')).filter(e => !e.voided);
+      const expensePayments = (await load('expensePayments')).filter(p => !p.voided);
       const purchases = (await load('purchases')).filter(p => p.status !== 'void');
       const purchaseReturns = (await load('purchaseReturns')).filter(r => !r.voided);
       const advances = await load('employeeAdvances');
@@ -265,7 +276,16 @@
 
       let cashExpensesMinor = 0;
       for (const e of expenses) {
-        if (e.accountId === acc.drawer) cashExpensesMinor += Number(e.amountMinor) || 0;
+        if (e.accountId === acc.drawer) {
+          // A4.2: only the part actually paid when the expense was recorded is
+          // cash out today; the unpaid remainder waits in 2020.
+          cashExpensesMinor += initialPaidMinor(e);
+        }
+      }
+      for (const payment of expensePayments) {
+        if (payment.accountId === acc.drawer) {
+          cashExpensesMinor += Number(payment.amountMinor) || 0;
+        }
       }
 
       let cashInOtherMinor = 0;

@@ -145,7 +145,7 @@
       const from = month + '-01';
       const names = [
         'sales', 'customerPayments', 'supplierPayments', 'purchases', 'expenses',
-        'employeeAdvances', 'ownerTransactions', 'transfers', 'salesReturns',
+        'expensePayments', 'employeeAdvances', 'ownerTransactions', 'transfers', 'salesReturns',
         'purchaseReturns', 'cashAdjustments', 'cardSettlements',
       ];
       const totals = { accounts: {}, customers: {}, suppliers: {}, tax: 0 };
@@ -237,10 +237,22 @@
       const expenses = await fetch('expenses');
       for (const e of expenses) {
         if (e.voided) continue;
-        if (e.accountId === accountId) {
+        if (e.methodKind !== 'clearing' && e.accountId === accountId) {
           if (range && e.date < range.from) continue;
           if (range && e.date > range.to) continue;
-          movements.push({ date: e.date, amountMinor: -e.amountMinor, type: 'expense', refId: e.id, description: e.description || 'مصروف' });
+          const paid = BeeStore.expenses._initialPaid(e);
+          if (paid) {
+            movements.push({ date: e.date, amountMinor: -paid, type: 'expense', refId: e.id, description: e.description || 'مصروف' });
+          }
+        }
+      }
+      const expensePayments = await fetch('expensePayments');
+      for (const p of expensePayments) {
+        if (p.voided) continue;
+        if (p.methodKind !== 'clearing' && p.accountId === accountId) {
+          if (range && p.date < range.from) continue;
+          if (range && p.date > range.to) continue;
+          movements.push({ date: p.date, amountMinor: -p.amountMinor, type: 'expense_payment', refId: p.id, description: 'سداد مصروف مستحق' });
         }
       }
       const advances = await fetch('employeeAdvances');

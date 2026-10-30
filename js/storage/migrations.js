@@ -425,6 +425,40 @@
         return data;
       },
     },
+    {
+      // A4.2: every expense before this schema was paid in full at recording
+      // time. Preserve that exact economic meaning (and therefore historical
+      // journal routing) while introducing the unpaid/partial sub-ledger.
+      from: 7,
+      to: 8,
+      migrate(data) {
+        if (!data.collections) data.collections = {};
+        if (!Array.isArray(data.collections.expensePayments)) {
+          data.collections.expensePayments = [];
+        }
+        for (const expense of (data.collections.expenses || [])) {
+          if (!expense) continue;
+          const amount = Math.round(Number(expense.amountMinor) || 0);
+          if (expense.paidMinor === undefined || expense.paidMinor === null) {
+            expense.paidMinor = amount;
+          }
+          expense.paidMinor = Math.max(0, Math.min(amount,
+            Math.round(Number(expense.paidMinor) || 0)));
+          if (expense.initialPaidMinor === undefined || expense.initialPaidMinor === null) {
+            expense.initialPaidMinor = expense.paidMinor;
+          }
+          expense.initialPaidMinor = Math.max(0, Math.min(amount,
+            Math.round(Number(expense.initialPaidMinor) || 0)));
+          if (!expense.paymentStatus) {
+            expense.paymentStatus = expense.paidMinor >= amount ? 'paid'
+              : (expense.paidMinor > 0 ? 'partial' : 'unpaid');
+          }
+          if (expense.payee === undefined) expense.payee = '';
+          if (expense.dueDate === undefined) expense.dueDate = null;
+        }
+        return data;
+      },
+    },
   ];
 
   async function migrate(data, currentVersion) {

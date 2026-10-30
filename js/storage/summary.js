@@ -14,11 +14,11 @@
   // returned transiently in `days` (never persisted) so an as-of date inside
   // the current month can be computed from that month's documents without
   // scanning the whole history.
-  const VERSION = 7;
+  const VERSION = 8;
 
   const COLLECTIONS = [
     'accounts', 'sales', 'purchases', 'customerPayments', 'supplierPayments',
-    'expenses', 'employeeAdvances', 'ownerTransactions', 'transfers',
+    'expenses', 'expensePayments', 'employeeAdvances', 'ownerTransactions', 'transfers',
     'salesReturns', 'purchaseReturns', 'payroll', 'stockMovements',
     'cashAdjustments', 'cardSettlements',
   ];
@@ -29,6 +29,7 @@
       accountBalances: {},
       receivablesMinor: 0,
       payablesMinor: 0,
+      unpaidExpensesMinor: 0,
       installments: [],
       months: {},
       computedAt: null,
@@ -41,6 +42,7 @@
       flowTypes: {},
       customers: {},
       suppliers: {},
+      unpaidExpenses: 0,
       capitalIn: 0,
       withdrawals: 0,
       openingInventory: 0,
@@ -61,7 +63,7 @@
   }
 
   function emptyDay() {
-    return { accounts: {}, customers: {}, suppliers: {}, tax: 0, openingInventory: 0 };
+    return { accounts: {}, customers: {}, suppliers: {}, tax: 0, openingInventory: 0, unpaidExpenses: 0 };
   }
 
   function emptyContribution() {
@@ -69,6 +71,7 @@
       accounts: {},
       receivables: 0,
       payables: 0,
+      unpaidExpenses: 0,
       installments: null,
       months: {},
       days: {},
@@ -139,6 +142,29 @@
     if (!supplierId || !amount) return;
     if (monthBucket) addTo(monthBucket.suppliers, supplierId, amount);
     if (dayBucket) addTo(dayBucket.suppliers, supplierId, amount);
+  }
+
+  // A4.2: unpaid/partial expenses create a 2020 liability at the document
+  // date; later payments reduce it on their own dates.
+  function addUnpaidAt(out, amount, when) {
+    if (!amount) return;
+    const day = dayOf(when);
+    out.unpaidExpenses += amount;
+    const mb = ensureMonth(out, monthOf(day));
+    if (mb) mb.unpaidExpenses += amount;
+    const db = ensureDay(out, day);
+    if (db) db.unpaidExpenses += amount;
+  }
+
+  function initialPaidMinor(expense) {
+    const amount = Math.max(0, Math.round(Number(expense && expense.amountMinor) || 0));
+    let paid = amount;
+    if (expense && expense.initialPaidMinor != null) {
+      paid = Math.round(Number(expense.initialPaidMinor) || 0);
+    } else if (expense && expense.paidMinor != null) {
+      paid = Math.round(Number(expense.paidMinor) || 0);
+    }
+    return Math.max(0, Math.min(amount, paid));
   }
 
   // v2 §6.3 spread shares (kept local so summary does not depend on the
@@ -277,9 +303,21 @@
       }
       case 'expenses':
         if (doc.voided) break;
-        account('expense', doc.accountId, -(Number(doc.amountMinor) || 0));
-        if (doc.categoryName !== 'رواتب') addExpenseToMonths(out, doc);
+        {
+          const paid = initialPaidMinor(doc);
+          const amount = Math.max(0, Math.round(Number(doc.amountMinor) || 0));
+          if (doc.methodKind !== 'clearing') account('expense', doc.accountId, -paid);
+          addUnpaidAt(out, amount - paid, doc.date);
+          if (doc.categoryName !== 'رواتب') addExpenseToMonths(out, doc);
+        }
         break;
+      case 'expensePayments': {
+        if (doc.voided) break;
+        const amount = Math.round(Number(doc.amountMinor) || 0);
+        if (doc.methodKind !== 'clearing') account('expense_payment', doc.accountId, -amount);
+        addUnpaidAt(out, -amount, doc.date);
+        break;
+      }
       case 'employeeAdvances':
         account('advance', doc.accountId, -(Number(doc.amountMinor) || 0));
         break;
@@ -409,6 +447,7 @@
     if (Object.keys(bucket.accounts).length || Object.keys(bucket.flowTypes).length ||
       Object.keys(bucket.customers).length || Object.keys(bucket.suppliers).length) return false;
     if (bucket.capitalIn || bucket.withdrawals || bucket.openingInventory) return false;
+    if (bucket.unpaidExpenses) return false;
     const pnl = bucket.pnl;
     for (const key of ['netSales', 'cogs', 'salaryExpense', 'stockLosses', 'stockRevaluation',
       'cardFees', 'tax', 'expensesTotal', 'spreadExpenses', 'cashDifference']) {
@@ -424,7 +463,8 @@
     for (const key of Object.keys(out.days)) {
       const day = out.days[key];
       if (!Object.keys(day.accounts).length && !Object.keys(day.customers).length &&
-        !Object.keys(day.suppliers).length && !day.tax && !day.openingInventory) {
+        !Object.keys(day.suppliers).length && !day.tax && !day.openingInventory &&
+        !day.unpaidExpenses) {
         delete out.days[key];
       }
     }
@@ -443,6 +483,7 @@
     applyNumeric(summary.accountBalances, contrib.accounts, sign);
     summary.receivablesMinor += sign * (Number(contrib.receivables) || 0);
     summary.payablesMinor += sign * (Number(contrib.payables) || 0);
+    summary.unpaidExpensesMinor += sign * (Number(contrib.unpaidExpenses) || 0);
 
     for (const month of Object.keys(contrib.months)) {
       if (!summary.months[month]) {
@@ -462,6 +503,7 @@
       bucket.capitalIn += sign * (Number(source.capitalIn) || 0);
       bucket.withdrawals += sign * (Number(source.withdrawals) || 0);
       bucket.openingInventory += sign * (Number(source.openingInventory) || 0);
+      bucket.unpaidExpenses += sign * (Number(source.unpaidExpenses) || 0);
       for (const type of Object.keys(source.flowTypes)) {
         const flow = source.flowTypes[type];
         if (!bucket.flowTypes[type]) {
@@ -629,6 +671,10 @@
     return sumFieldThrough(summary, month, bucket => bucket.pnl.tax);
   }
 
+  function unpaidExpensesThrough(summary, month) {
+    return sumFieldThrough(summary, month, bucket => bucket.unpaidExpenses);
+  }
+
   function openingInventoryThrough(summary, month) {
     return sumFieldThrough(summary, month, bucket => bucket.openingInventory);
   }
@@ -671,6 +717,7 @@
     customerTotals,
     supplierTotals,
     taxThrough,
+    unpaidExpensesThrough,
     openingInventoryThrough,
     capitalThrough,
     overdue,

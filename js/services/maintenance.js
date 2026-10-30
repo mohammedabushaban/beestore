@@ -268,6 +268,7 @@
         ['sales', 'sale'], ['salesReturns', 'sale-return'], ['purchases', 'purchase'],
         ['purchaseReturns', 'purchase-return'], ['customerPayments', 'customer-payment'],
         ['supplierPayments', 'supplier-payment'], ['expenses', 'expense'],
+        ['expensePayments', 'expense-payment'],
         ['stockMovements', 'stock'], ['ownerTransactions', 'owner'],
         ['transfers', 'transfer'], ['dailyClosings', 'closing'],
         ['cashAdjustments', 'cash-adjustment'], ['cardSettlements', 'card-settlement'],
@@ -581,7 +582,7 @@
     async isDatabaseEmpty() {
       const collections = [
         'products', 'variants', 'sales', 'salesReturns', 'customers', 'customerPayments',
-        'suppliers', 'supplierPayments', 'purchases', 'expenses', 'expenseCategories',
+        'suppliers', 'supplierPayments', 'purchases', 'expenses', 'expensePayments', 'expenseCategories',
         'employees', 'payroll', 'employeeAdvances', 'accounts', 'ownerTransactions',
         'transfers', 'recurringExpenses', 'stockMovements', 'cardSettlements',
       ];

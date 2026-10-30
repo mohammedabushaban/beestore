@@ -14,10 +14,34 @@
   ];
 
   const MONTH_RE = /^\d{4}-(0[1-9]|1[0-2])$/;
+  const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 
   class ExpensesService {
     constructor(repo) {
       this.repo = repo;
+    }
+
+    _initialPaid(expense) {
+      const amount = Math.max(0, Math.round(Number(expense && expense.amountMinor) || 0));
+      let paid = amount;
+      if (expense && expense.initialPaidMinor != null) {
+        paid = Math.round(Number(expense.initialPaidMinor) || 0);
+      } else if (expense && expense.paidMinor != null) {
+        paid = Math.round(Number(expense.paidMinor) || 0);
+      }
+      return Math.max(0, Math.min(amount, paid));
+    }
+
+    _status(paidMinor, amountMinor) {
+      const amount = Math.max(0, Math.round(Number(amountMinor) || 0));
+      const paid = Math.max(0, Math.min(amount, Math.round(Number(paidMinor) || 0)));
+      if (paid >= amount) return 'paid';
+      return paid > 0 ? 'partial' : 'unpaid';
+    }
+
+    async _activePayments(reader, expenseId) {
+      return (reader || this.repo).list('expensePayments',
+        p => p.expenseId === expenseId && !p.voided);
     }
 
     // Pure: monthly profit shares of an expense (v2 §6.3). Spread shares sum
@@ -128,6 +152,7 @@
      * @throws {BeeError} VALIDATION|PERIOD_CLOSED on bad amount/month or closed period
      */
     async create(data) {
+      data = data || {};
       return this.repo.transaction(async (tx) => {
         const settings = await tx.get('meta', 'settings') || {};
         const categories = await tx.list('expenseCategories');
@@ -136,9 +161,8 @@
         const method = data.method || 'cash';
         const date = data.date || BeeStore.dates.today();
         const accountId = data.accountId || BeeStore.settings.resolvePaymentAccount(settings, method);
+        const methodKind = data.methodKind || BeeStore.settings.methodKind(settings, method);
         await BeeStore.periods.assertOpen(tx, date);
-        // v3-Lite §4.5: cash expenses are day-locked; non-cash accruals are not.
-        await BeeStore.periods.assertCashDayOpen(tx, date, accountId);
         // v2 §6.3 spread: one payment covering N months.
         let allocation = { mode: 'single' };
         let month = date.slice(0, 7);
@@ -152,6 +176,37 @@
         }
         const amountMinor = BeeStore.money.roundMinor(data.amountMinor);
         if (amountMinor <= 0) throw BeeStore.errors.err('VALIDATION', 'مبلغ المصروف يجب أن يكون أكبر من صفر');
+
+        // A4.2 §7.1: paidMinor/initialPaidMinor describe money actually paid
+        // at recording time. The unpaid remainder becomes the 2020 liability.
+        let initialPaidMinor;
+        if (data.paidMinor !== undefined && data.paidMinor !== null && data.paidMinor !== '') {
+          initialPaidMinor = BeeStore.money.roundMinor(data.paidMinor);
+        } else if (data.paymentStatus === 'unpaid') {
+          initialPaidMinor = 0;
+        } else if (data.paymentStatus === 'partial') {
+          throw BeeStore.errors.err('VALIDATION',
+            'المصروف المدفوع جزئياً يحتاج المبلغ المدفوع');
+        } else {
+          // Legacy API/UI behaviour: an expense without payment fields is paid
+          // in full at recording time.
+          initialPaidMinor = amountMinor;
+        }
+        if (initialPaidMinor < 0 || initialPaidMinor > amountMinor) {
+          throw BeeStore.errors.err('VALIDATION',
+            'المبلغ المدفوع يجب أن يكون بين صفر وإجمالي المصروف');
+        }
+        if (initialPaidMinor > 0) {
+          // v3-Lite §4.5: only the cash-paid part is day-locked.
+          await BeeStore.periods.assertCashDayOpen(tx, date, accountId);
+        }
+        const dueDate = data.dueDate == null || data.dueDate === ''
+          ? null : String(data.dueDate);
+        if (dueDate && !DATE_RE.test(dueDate)) {
+          throw BeeStore.errors.err('VALIDATION', 'تاريخ الاستحقاق غير صالح');
+        }
+        const payee = String(data.payee || '').trim();
+        const paymentStatus = this._status(initialPaidMinor, amountMinor);
         const expense = {
           id: BeeStore.ids.randomId('exp'),
           date,
@@ -160,7 +215,14 @@
           categoryName: data.categoryName || (data.categoryId ? (catMap[data.categoryId] || '') : '') || 'أخرى',
           amountMinor,
           method,
+          methodKind,
           accountId,
+          payee,
+          payeeSupplierId: data.payeeSupplierId || data.supplierId || null,
+          dueDate,
+          paymentStatus,
+          initialPaidMinor,
+          paidMinor: initialPaidMinor,
           description: data.description || '',
           recurringId: data.recurringId || null,
           allocation,
@@ -188,26 +250,64 @@
      * @throws {BeeError} NOT_FOUND|ALREADY_VOID|PERIOD_CLOSED
      */
     async update(id, patch) {
+      patch = patch || {};
       return this.repo.transaction(async (tx) => {
         const e = await tx.get('expenses', id);
         if (!e) throw BeeStore.errors.err('NOT_FOUND', 'المصروف غير موجود');
         if (e.voided) throw BeeStore.errors.err('ALREADY_VOID', 'المصروف ملغي — لا يمكن تعديله');
+        // A4.2: once later payments exist the document and its sub-ledger must
+        // stay frozen; void the payments first if the whole expense is wrong.
+        const payments = await this._activePayments(tx, id);
+        if (payments.length > 0) {
+          throw BeeStore.errors.err('VALIDATION',
+            'لا يمكن تعديل مصروف له دفعات مسجلة — ألغِ الدفعات أولاً');
+        }
+        for (const key of ['paidMinor', 'initialPaidMinor', 'paymentStatus']) {
+          if (patch[key] !== undefined) {
+            throw BeeStore.errors.err('VALIDATION',
+              'سجّل الدفعات من شاشة المدفوعات ولا تعدّل حالة الدفع مباشرة');
+          }
+        }
         await BeeStore.periods.assertOpen(tx, e.date);
         if (patch.date) await BeeStore.periods.assertOpen(tx, patch.date);
-        await BeeStore.periods.assertCashDayOpen(tx, e.date, e.accountId);
-        if (patch.date || patch.accountId) {
-          await BeeStore.periods.assertCashDayOpen(tx, patch.date || e.date,
-            patch.accountId !== undefined ? patch.accountId : e.accountId);
+        const currentPaid = this._initialPaid(e);
+        if (currentPaid > 0) {
+          await BeeStore.periods.assertCashDayOpen(tx, e.date, e.accountId);
+        }
+        const nextAmount = patch.amountMinor !== undefined
+          ? BeeStore.money.roundMinor(patch.amountMinor) : e.amountMinor;
+        if (nextAmount <= 0) {
+          throw BeeStore.errors.err('VALIDATION', 'مبلغ المصروف يجب أن يكون أكبر من صفر');
+        }
+        if (nextAmount < currentPaid) {
+          throw BeeStore.errors.err('VALIDATION',
+            'لا يمكن أن يقل إجمالي المصروف عن المبلغ المدفوع');
+        }
+        const nextAccount = patch.accountId !== undefined ? patch.accountId : e.accountId;
+        if (currentPaid > 0) {
+          await BeeStore.periods.assertCashDayOpen(tx, patch.date || e.date, nextAccount);
         }
         // v2 §6.3: a spread expense can change only while ALL its months open.
         if ((e.allocation || {}).mode === 'spread') {
           await BeeStore.periods.assertMonthsOpen(tx, this.spreadMonths(e));
         }
-        if (patch.amountMinor !== undefined && BeeStore.money.roundMinor(patch.amountMinor) <= 0) {
-          throw BeeStore.errors.err('VALIDATION', 'مبلغ المصروف يجب أن يكون أكبر من صفر');
-        }
         const updated = { ...e, ...patch, id, updatedAt: BeeStore.dates.now() };
         if (patch.date) updated.month = String(patch.date).slice(0, 7);
+        if (patch.method && patch.methodKind === undefined) {
+          const settings = await tx.get('meta', 'settings') || {};
+          updated.methodKind = BeeStore.settings.methodKind(settings, patch.method);
+        }
+        updated.amountMinor = nextAmount;
+        updated.initialPaidMinor = currentPaid;
+        updated.paidMinor = currentPaid;
+        updated.paymentStatus = this._status(currentPaid, nextAmount);
+        updated.payee = patch.payee !== undefined ? String(patch.payee || '').trim() : (e.payee || '');
+        if (patch.dueDate !== undefined) {
+          if (patch.dueDate && !DATE_RE.test(String(patch.dueDate))) {
+            throw BeeStore.errors.err('VALIDATION', 'تاريخ الاستحقاق غير صالح');
+          }
+          updated.dueDate = patch.dueDate || null;
+        }
         tx.put('expenses', updated);
         if (BeeStore.posting) {
           const reversals = await BeeStore.posting.reverseDocument(tx, 'EXPENSE', id, {
@@ -239,8 +339,15 @@
         if (!reason || !String(reason).trim()) {
           throw BeeStore.errors.err('VALIDATION', 'سبب الإلغاء مطلوب');
         }
+        const payments = await this._activePayments(tx, id);
+        if (payments.length > 0) {
+          throw BeeStore.errors.err('VALIDATION',
+            'لا يمكن إلغاء مصروف له دفعات مسجلة — ألغِ الدفعات أولاً');
+        }
         await BeeStore.periods.assertOpen(tx, e.date);
-        await BeeStore.periods.assertCashDayOpen(tx, e.date, e.accountId);
+        if (this._initialPaid(e) > 0) {
+          await BeeStore.periods.assertCashDayOpen(tx, e.date, e.accountId);
+        }
         if ((e.allocation || {}).mode === 'spread') {
           await BeeStore.periods.assertMonthsOpen(tx, this.spreadMonths(e));
         }
@@ -266,7 +373,227 @@
       return expense;
     }
 
-    /** Lists recurring expense templates.
+    /**
+     * Lists the payment records of one expense, oldest first.
+     * @param {string} expenseId expense id
+     * @returns {Promise<Array>} active and voided payments
+     */
+    async listPayments(expenseId) {
+      const rows = await this.repo.list('expensePayments', p => p.expenseId === expenseId);
+      rows.sort((a, b) => String(a.date).localeCompare(String(b.date)) ||
+        String(a.createdAt || '').localeCompare(String(b.createdAt || '')));
+      return rows;
+    }
+
+    /**
+     * Records a later payment of a previously unpaid/partial expense:
+     * v5 §4 rule 9 Dr 2020 / Cr Cash|Bank.
+     * @param {string} expenseId expense id
+     * @param {Object} data {amountMinor,date,method,accountId,note}
+     * @returns {Promise<{payment:Object,expense:Object}>} payment + updated expense
+     * @throws {BeeError} NOT_FOUND|VALIDATION|PERIOD_CLOSED|DAY_CLOSED
+     */
+    async pay(expenseId, data) {
+      data = data || {};
+      return this.repo.transaction(async (tx) => {
+        const e = await tx.get('expenses', expenseId);
+        if (!e) throw BeeStore.errors.err('NOT_FOUND', 'المصروف غير موجود');
+        if (e.voided) throw BeeStore.errors.err('ALREADY_VOID', 'المصروف ملغي — لا يمكن دفع مبلغ له');
+        const amountMinor = BeeStore.money.roundMinor(data.amountMinor);
+        if (amountMinor <= 0) {
+          throw BeeStore.errors.err('VALIDATION', 'مبلغ الدفعة يجب أن يكون أكبر من صفر');
+        }
+        const paid = Math.round(Number(e.paidMinor) || 0);
+        const remaining = Math.max(0, Math.round(Number(e.amountMinor) || 0) - paid);
+        if (remaining <= 0) {
+          throw BeeStore.errors.err('VALIDATION', 'هذا المصروف مدفوع بالكامل');
+        }
+        if (amountMinor > remaining) {
+          throw BeeStore.errors.err('VALIDATION',
+            'الدفعة تتجاوز المتبقي (' + (remaining / 100).toFixed(2) + ')');
+        }
+        const date = data.date || BeeStore.dates.today();
+        if (!DATE_RE.test(String(date))) {
+          throw BeeStore.errors.err('VALIDATION', 'تاريخ الدفعة غير صالح');
+        }
+        if (date < e.date) {
+          throw BeeStore.errors.err('VALIDATION', 'لا يمكن دفع المصروف قبل تاريخه');
+        }
+        await BeeStore.periods.assertOpen(tx, date);
+        const settings = await tx.get('meta', 'settings') || {};
+        const method = data.method || 'cash';
+        const accountId = data.accountId ||
+          BeeStore.settings.resolvePaymentAccount(settings, method);
+        const methodKind = data.methodKind ||
+          BeeStore.settings.methodKind(settings, method);
+        await BeeStore.periods.assertCashDayOpen(tx, date, accountId);
+        const payment = {
+          id: BeeStore.ids.randomId('epay'),
+          expenseId: e.id,
+          date,
+          time: BeeStore.dates.nowTime ? BeeStore.dates.nowTime() : '',
+          amountMinor,
+          method,
+          methodKind,
+          accountId,
+          note: data.note || '',
+          voided: false,
+          voidReason: null,
+          createdAt: BeeStore.dates.now(),
+          updatedAt: BeeStore.dates.now(),
+        };
+        tx.put('expensePayments', payment);
+        if (BeeStore.posting) {
+          const entry = await BeeStore.posting.expensePayment(tx, payment);
+          if (entry) {
+            BeeStore.posting.link(payment, entry);
+            tx.put('expensePayments', payment);
+          }
+        }
+        e.paidMinor = paid + amountMinor;
+        e.paymentStatus = this._status(e.paidMinor, e.amountMinor);
+        e.updatedAt = BeeStore.dates.now();
+        tx.put('expenses', e);
+        return { payment, expense: e };
+      });
+    }
+
+    /**
+     * Voids one later payment and reverses its exact journal entry.
+     * The expense returns to partial/unpaid automatically.
+     * @param {string} paymentId expense payment id
+     * @param {string} reason mandatory reason
+     * @returns {Promise<{payment:Object,expense:Object}>}
+     */
+    async voidPayment(paymentId, reason) {
+      if (!reason || !String(reason).trim()) {
+        throw BeeStore.errors.err('VALIDATION', 'سبب الإلغاء مطلوب');
+      }
+      return this.repo.transaction(async (tx) => {
+        const payment = await tx.get('expensePayments', paymentId);
+        if (!payment) throw BeeStore.errors.err('NOT_FOUND', 'الدفعة غير موجودة');
+        if (payment.voided) throw BeeStore.errors.err('ALREADY_VOID', 'الدفعة ملغاة مسبقاً');
+        const e = await tx.get('expenses', payment.expenseId);
+        if (!e) throw BeeStore.errors.err('NOT_FOUND', 'المصروف غير موجود');
+        // The reversal mirrors the payment date, so that month/day must be
+        // open. A cash-drawer payment is day-locked like the original payment.
+        await BeeStore.periods.assertOpen(tx, payment.date);
+        await BeeStore.periods.assertCashDayOpen(tx, payment.date, payment.accountId);
+        payment.voided = true;
+        payment.voidReason = String(reason).trim();
+        payment.updatedAt = BeeStore.dates.now();
+        tx.put('expensePayments', payment);
+        if (BeeStore.posting) {
+          const reversals = await BeeStore.posting.reverseDocument(tx, 'EXPENSE_PAYMENT', payment.id, {
+            description: 'إلغاء دفعة مصروف — ' + payment.voidReason,
+            reason: payment.voidReason,
+          }, { allowClosedDay: true });
+          if (reversals.length > 0) {
+            BeeStore.posting.linkAll([payment], reversals);
+            tx.put('expensePayments', payment);
+          }
+        }
+        e.paidMinor = Math.max(0,
+          Math.round(Number(e.paidMinor) || 0) - (Math.round(Number(payment.amountMinor) || 0)));
+        e.paymentStatus = this._status(e.paidMinor, e.amountMinor);
+        e.updatedAt = BeeStore.dates.now();
+        tx.put('expenses', e);
+        return { payment, expense: e };
+      });
+    }
+
+    /**
+     * Total unpaid expense liability as of a date (v5 §7.1 / §9).
+     * Only payments dated on or before `asOf` reduce the liability.
+     * @param {string} asOf YYYY-MM-DD
+     * @returns {Promise<number>} remaining payable in minor units
+     */
+    async unpaidAsOf(asOf) {
+      const date = String(asOf);
+      const expenses = await this.repo.list('expenses',
+        e => !e.voided && e.date <= date);
+      const payments = await this.repo.list('expensePayments',
+        p => !p.voided && p.date <= date);
+      const paidLater = {};
+      for (const p of payments) {
+        paidLater[p.expenseId] = (paidLater[p.expenseId] || 0) +
+          (Math.round(Number(p.amountMinor) || 0));
+      }
+      let total = 0;
+      for (const e of expenses) {
+        const amount = Math.round(Number(e.amountMinor) || 0);
+        total += amount - this._initialPaid(e) - (paidLater[e.id] || 0);
+      }
+      return BeeStore.money.roundMinor(total);
+    }
+
+    /**
+     * Unpaid-expense rows with aging buckets for the reports/UI.
+     * @param {string} [asOf] YYYY-MM-DD (defaults to today)
+     * @returns {Promise<Array>} rows sorted by due date then document date
+     */
+    async unpaidList(asOf) {
+      const date = asOf || BeeStore.dates.today();
+      const expenses = await this.repo.list('expenses',
+        e => !e.voided && e.date <= date);
+      const payments = await this.repo.list('expensePayments',
+        p => !p.voided && p.date <= date);
+      const paidLater = {};
+      for (const p of payments) {
+        paidLater[p.expenseId] = (paidLater[p.expenseId] || 0) +
+          (Math.round(Number(p.amountMinor) || 0));
+      }
+      const rows = [];
+      for (const e of expenses) {
+        const amount = Math.round(Number(e.amountMinor) || 0);
+        const initial = this._initialPaid(e);
+        const later = paidLater[e.id] || 0;
+        const remaining = amount - initial - later;
+        if (remaining <= 0) continue;
+        const base = e.dueDate || e.date;
+        const days = Math.max(0, BeeStore.dates.diffDays(base, date));
+        const bucket = days <= 30 ? '0-30' : (days <= 60 ? '31-60' : (days <= 90 ? '61-90' : '90+'));
+        rows.push({
+          expenseId: e.id,
+          date: e.date,
+          dueDate: e.dueDate || null,
+          categoryName: e.categoryName || 'أخرى',
+          description: e.description || '',
+          payee: e.payee || '',
+          amountMinor: amount,
+          paidMinor: initial + later,
+          remainingMinor: remaining,
+          daysPastDue: days,
+          overdue: !!(e.dueDate && e.dueDate < date),
+          bucket,
+        });
+      }
+      rows.sort((a, b) => String(a.dueDate || a.date).localeCompare(String(b.dueDate || b.date)) ||
+        String(a.date).localeCompare(String(b.date)) ||
+        String(a.expenseId).localeCompare(String(b.expenseId)));
+      return rows;
+    }
+
+    /**
+     * Unpaid-expense aging totals.
+     * @param {string} [asOf] YYYY-MM-DD
+     * @returns {Promise<{asOf:string,rows:Array,buckets:Object,totalMinor:number}>}
+     */
+    async aging(asOf) {
+      const date = asOf || BeeStore.dates.today();
+      const rows = await this.unpaidList(date);
+      const buckets = { '0-30': 0, '31-60': 0, '61-90': 0, '90+': 0 };
+      let totalMinor = 0;
+      for (const row of rows) {
+        buckets[row.bucket] += row.remainingMinor;
+        totalMinor += row.remainingMinor;
+      }
+      return { asOf: date, rows, buckets, totalMinor };
+    }
+
+
+    /**
+     * Lists recurring expense templates.
      * @returns {Promise<Array>} all recurring templates
      */
     async getRecurring() {
@@ -373,6 +700,7 @@
           const date = ym + '-' + String(day).padStart(2, '0');
           const method = r.method || 'cash';
           const accountId = r.accountId || BeeStore.settings.resolvePaymentAccount(settings, method);
+          const methodKind = BeeStore.settings.methodKind(settings, method);
           await BeeStore.periods.assertOpen(tx, date);
           await BeeStore.periods.assertCashDayOpen(tx, date, accountId);
           const expense = {
@@ -383,7 +711,14 @@
             categoryName: (r.categoryId ? catMap[r.categoryId] : '') || r.description || 'دوري',
             amountMinor: r.amountMinor,
             method,
+            methodKind,
             accountId,
+            payee: '',
+            payeeSupplierId: null,
+            dueDate: null,
+            paymentStatus: 'paid',
+            initialPaidMinor: r.amountMinor,
+            paidMinor: r.amountMinor,
             description: r.description || '',
             recurringId: r.id,
             allocation: { mode: 'single' },

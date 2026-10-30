@@ -523,14 +523,17 @@ test('A3 expenses: prepaid spread schedules, update reversal and void reversal',
   assert.strictEqual(activeSpread.length, 4, 'one active entry set after the update');
 
   tb = await trialBalance(api, { to: '2026-10-31' });
-  assert.strictEqual(balance(tb, '1010'), 10000, 'cash reflects the updated spread');
+  // A4.2: the update keeps the 6000 already paid. The extra 3000 becomes an
+  // unpaid expense liability instead of being silently paid from cash.
+  assert.strictEqual(balance(tb, '1010'), 13000, 'cash keeps the originally paid amount');
   assert.strictEqual(balance(tb, '1300'), 6000, 'updated prepaid balance');
   assert.strictEqual(balance(tb, '6010'), 3000, 'updated October release');
+  assert.strictEqual(balance(tb, '2020'), -3000, 'the increased amount stays unpaid');
 
   const voided = ok(await api.expenses.void(electricity.id, 'إدخال خاطئ'), 'void expense');
   assert.strictEqual(voided.voided, true);
   tb = await trialBalance(api, { to: '2026-10-31' });
-  assert.strictEqual(balance(tb, '1010'), 11000, 'void restored the expense cash');
+  assert.strictEqual(balance(tb, '1010'), 14000, 'void restored the expense cash');
   assert.strictEqual(balance(tb, '6020'), 0, 'voided expense net is zero');
   assert.strictEqual(balance(tb, '6010'), 3000, 'spread expense is unaffected');
   assert.strictEqual((await activeEntries(api, 'EXPENSE', electricity.id)).length, 0);

@@ -31,6 +31,7 @@
     EXPENSE: 'EXPENSE',
     EXPENSE_PREPAID: 'EXPENSE_PREPAID',
     EXPENSE_RELEASE: 'EXPENSE_RELEASE',
+    EXPENSE_PAYMENT: 'EXPENSE_PAYMENT',
     PAYROLL_ACCRUAL: 'PAYROLL_ACCRUAL',
     PAYROLL_PAYMENT: 'PAYROLL_PAYMENT',
     EMPLOYEE_ADVANCE: 'EMPLOYEE_ADVANCE',
@@ -54,6 +55,7 @@
     PURCHASE_RETURN: 'PURCHASE_RETURN',
     SUPPLIER_PAYMENT: 'SUPPLIER_PAYMENT',
     EXPENSE: 'EXPENSE',
+    EXPENSE_PAYMENT: 'EXPENSE_PAYMENT',
     PAYROLL: 'PAYROLL',
     EMPLOYEE_ADVANCE: 'EMPLOYEE_ADVANCE',
     OWNER_TRANSACTION: 'OWNER_TRANSACTION',
@@ -70,6 +72,19 @@
 
   function maxDate(a, b) {
     return String(a) > String(b) ? String(a) : String(b);
+  }
+
+  // A4.2: the cash/bank portion paid when the expense was recorded. Older
+  // expenses had no such field and were always paid in full.
+  function initialPaidMinor(expense) {
+    const amount = Math.max(0, round(expense && expense.amountMinor));
+    let paid = amount;
+    if (expense && expense.initialPaidMinor != null) {
+      paid = round(expense.initialPaidMinor);
+    } else if (expense && expense.paidMinor != null) {
+      paid = round(expense.paidMinor);
+    }
+    return Math.max(0, Math.min(amount, paid));
   }
 
   class PostingService {
@@ -880,9 +895,14 @@
     // ---------------------------------------------------------------------
 
     /**
-     * Posts an expense. A spread expense first debits 1300 prepaid, then one
-     * scheduled release per month (rule S). Payroll-generated net-pay records
-     * are skipped because the payroll payment itself is the cash entry.
+     * Posts an expense.
+     *
+     * v5 §4 rules 8/8b/S: the full expense is recognized at the document date
+     * (or debited to 1300 prepaid for a spread), while only the part actually
+     * paid at recording time credits Cash/Bank. The remaining unpaid amount is
+     * credited to 2020 other payables and settled later by expensePayment().
+     * Payroll-generated net-pay records are skipped because the payroll
+     * payment itself is the cash entry.
      * @param {object} tx active transaction
      * @param {object} expense expenses record
      * @param {object} [options] {replay}
@@ -894,13 +914,22 @@
       if (expense.categoryName === 'رواتب') return [];
       const amount = round(expense.amountMinor);
       if (amount <= 0) return [];
-      const money = await this.moneyAccount(tx, {
-        legacyAccountId: expense.accountId,
-        method: expense.method || 'cash',
-      });
-      const drawer = await this.isCashDrawerAccount(tx, money);
+      const initialPaid = initialPaidMinor(expense);
+      const unpaid = amount - initialPaid;
+      let money = null;
+      let drawer = false;
+      if (initialPaid > 0) {
+        money = await this.moneyAccount(tx, {
+          legacyAccountId: expense.accountId,
+          method: expense.method || 'cash',
+          methodKind: expense.methodKind,
+        });
+        drawer = await this.isCashDrawerAccount(tx, money);
+      }
       const expenseAccount = await this.expenseAccount(tx, expense);
       const out = [];
+      const paidLine = initialPaid > 0 ? [{ accountId: money.id, credit: initialPaid }] : [];
+      const unpaidLine = unpaid > 0 ? [{ key: 'accrued_expenses', credit: unpaid }] : [];
       const spread = (expense.allocation || {}).mode === 'spread';
       if (!spread) {
         const entry = await this.postParts(tx, {
@@ -913,7 +942,8 @@
           replay: options.replay,
           parts: [
             { accountId: expenseAccount.id, debit: amount },
-            { accountId: money.id, credit: amount },
+            ...paidLine,
+            ...unpaidLine,
           ],
         });
         if (entry) out.push(entry);
@@ -930,7 +960,8 @@
         replay: options.replay,
         parts: [
           { key: 'prepaid', debit: amount },
-          { accountId: money.id, credit: amount },
+          ...paidLine,
+          ...unpaidLine,
         ],
       });
       if (prepaid) out.push(prepaid);
@@ -958,6 +989,39 @@
         if (release) out.push(release);
       }
       return out;
+    }
+
+    /**
+     * Pays a previously unpaid expense: v5 §4 rule 9 Dr 2020 / Cr Cash|Bank.
+     * @param {object} tx active transaction
+     * @param {object} payment expensePayments record
+     * @param {object} [options] {replay}
+     * @returns {Promise<object|null>} entry
+     */
+    async expensePayment(tx, payment, options) {
+      options = options || {};
+      if (!payment || payment.voided) return null;
+      const amount = round(payment.amountMinor);
+      if (amount <= 0) return null;
+      const money = await this.moneyAccount(tx, {
+        legacyAccountId: payment.accountId,
+        method: payment.method || 'cash',
+        methodKind: payment.methodKind,
+      });
+      const drawer = await this.isCashDrawerAccount(tx, money);
+      return this.postParts(tx, {
+        date: payment.date,
+        sourceType: SOURCE.EXPENSE_PAYMENT,
+        sourceId: payment.id,
+        event: EVENTS.EXPENSE_PAYMENT,
+        description: 'سداد مصروف مستحق' + (payment.note ? ' — ' + payment.note : ''),
+        allowClosedDay: !drawer,
+        replay: options.replay,
+        parts: [
+          { key: 'accrued_expenses', debit: amount },
+          { accountId: money.id, credit: amount },
+        ],
+      });
     }
 
     /**
@@ -1352,6 +1416,7 @@
         ['cardSettlements', null],
         ['supplierPayments', null],
         ['expenses', null],
+        ['expensePayments', null],
         ['employeeAdvances', null],
         ['payroll', null],
         ['ownerTransactions', null],
@@ -1566,6 +1631,16 @@
           }
           const nowActive = await this._sourceActive(tx, SOURCE.EXPENSE, doc.id);
           await this._linkActive(tx, 'expenses', doc, nowActive);
+          return posted;
+        }
+        case 'expensePayments': {
+          if (await reverseIfVoided(SOURCE.EXPENSE_PAYMENT, 'expensePayments')) return posted;
+          const active = await this._sourceActive(tx, SOURCE.EXPENSE_PAYMENT, doc.id);
+          if (active.length === 0) {
+            add(await this.expensePayment(tx, doc, { replay: true }));
+          }
+          const nowActive = await this._sourceActive(tx, SOURCE.EXPENSE_PAYMENT, doc.id);
+          await this._linkActive(tx, 'expensePayments', doc, nowActive);
           return posted;
         }
         case 'employeeAdvances': {

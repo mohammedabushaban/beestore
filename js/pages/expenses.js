@@ -13,6 +13,7 @@
 
     const tabs = el('div', { class: 'tabs' }, [
       el('button', { class: 'tab active', onclick: function () { _showTab('expenses', content); _setActiveTab(this); } }, 'المصاريف'),
+      el('button', { class: 'tab', onclick: function () { _showTab('unpaid', content); _setActiveTab(this); } }, 'مستحقات غير مدفوعة'),
       el('button', { class: 'tab', onclick: function () { _showTab('categories', content); _setActiveTab(this); } }, 'التصنيفات'),
       el('button', { class: 'tab', onclick: function () { _showTab('recurring', content); _setActiveTab(this); } }, 'المصاريف المتكررة'),
     ]);
@@ -29,6 +30,7 @@
   function _showTab(tab, container) {
     container.innerHTML = '';
     if (tab === 'expenses') _renderExpenses(container);
+    else if (tab === 'unpaid') _renderUnpaid(container);
     else if (tab === 'categories') _renderCategories(container);
     else if (tab === 'recurring') _renderRecurring(container);
   }
@@ -55,34 +57,173 @@
       }
       const res = await BeeStore.api.expenses.list(filters);
       if (!res.ok) { toast(res.error.message, 'error'); return; }
-      _renderExpenseRows(listDiv, res.data);
+      _renderExpenseRows(listDiv, res.data, async () => {
+        container.innerHTML = '';
+        await _renderExpenses(container);
+      });
     }
     await _load();
   }
 
-  function _renderExpenseRows(listDiv, data) {
+  function _paidOf(e) {
+    if (e.paidMinor !== undefined && e.paidMinor !== null) return Number(e.paidMinor) || 0;
+    return Number(e.amountMinor) || 0;
+  }
+
+  function _statusLabel(status) {
+    if (status === 'paid') return 'مدفوع';
+    if (status === 'partial') return 'مدفوع جزئياً';
+    return 'غير مدفوع';
+  }
+
+  function _renderExpenseRows(listDiv, data, reload) {
     listDiv.innerHTML = '';
     if (data.length === 0) {
       listDiv.appendChild(el('p', { class: 'empty-state' }, 'لا توجد مصاريف'));
       return;
     }
-    const rows = data.map(e => [
-      formatDate(e.date),
-      e.categoryName || '-',
-      e.description || '-',
-      formatMoney(e.amountMinor),
-      el('button', { class: 'btn btn-sm btn-danger', onclick: () => _deleteExpense(e.id) }, 'إلغاء'),
-    ]);
+    const rows = data.map(e => {
+      const paid = _paidOf(e);
+      const remaining = Math.max(0, (Number(e.amountMinor) || 0) - paid);
+      const actions = [];
+      if (remaining > 0) {
+        actions.push(el('button', {
+          class: 'btn btn-sm btn-success',
+          onclick: () => _payExpense(e, remaining, reload),
+        }, 'دفع'));
+      }
+      actions.push(el('button', {
+        class: 'btn btn-sm btn-danger',
+        onclick: () => _deleteExpense(e.id),
+      }, 'إلغاء'));
+      return [
+        formatDate(e.date),
+        e.categoryName || '-',
+        e.description || '-',
+        formatMoney(e.amountMinor),
+        formatMoney(paid),
+        remaining > 0 ? formatMoney(remaining) : '-',
+        _statusLabel(e.paymentStatus || (remaining > 0 ? 'unpaid' : 'paid')),
+        el('div', { class: 'row-actions' }, actions),
+      ];
+    });
 
     listDiv.appendChild(el('div', { class: 'table-wrapper' },
       el('table', { class: 'data-table' }, [
         el('thead', {}, el('tr', {}, [
           el('th', {}, 'التاريخ'), el('th', {}, 'التصنيف'), el('th', {}, 'الوصف'),
-          el('th', {}, 'المبلغ'), el('th', {}, ''),
+          el('th', {}, 'المبلغ'), el('th', {}, 'المدفوع'), el('th', {}, 'المتبقي'),
+          el('th', {}, 'الحالة'), el('th', {}, ''),
         ])),
         el('tbody', {}, rows.map(r => el('tr', {}, r.map(c => el('td', {}, c))))),
       ])
     ));
+  }
+
+  async function _renderUnpaid(container) {
+    container.innerHTML = '';
+    const asOfInput = input('date', BeeStore.dates.today());
+    const body = el('div');
+    container.appendChild(el('div', { class: 'filter-row' }, [
+      formField('حتى تاريخ', asOfInput),
+      el('button', {
+        class: 'btn btn-secondary',
+        onclick: () => _loadUnpaid(body, asOfInput.value || BeeStore.dates.today()),
+      }, 'عرض'),
+    ]));
+    container.appendChild(body);
+    await _loadUnpaid(body, asOfInput.value || BeeStore.dates.today());
+  }
+
+  async function _loadUnpaid(body, asOf) {
+    body.innerHTML = '';
+    const res = await BeeStore.api.expenses.aging(asOf);
+    if (!res.ok) { toast(res.error.message, 'error'); return; }
+    const data = res.data;
+    const bucketLabels = { '0-30': '0–30 يوم', '31-60': '31–60 يوم', '61-90': '61–90 يوم', '90+': 'أكثر من 90' };
+    const cards = Object.keys(bucketLabels).map(key =>
+      el('div', { class: 'stat-card' }, [
+        el('div', { class: 'stat-label' }, bucketLabels[key]),
+        el('div', { class: 'stat-value' }, formatMoney(data.buckets[key] || 0)),
+      ]));
+    cards.push(el('div', { class: 'stat-card' }, [
+      el('div', { class: 'stat-label' }, 'إجمالي المستحق'),
+      el('div', { class: 'stat-value' }, formatMoney(data.totalMinor || 0)),
+    ]));
+    body.appendChild(el('div', { class: 'stats-grid' }, cards));
+
+    if (data.rows.length === 0) {
+      body.appendChild(el('p', { class: 'empty-state' }, 'لا توجد مصاريف غير مدفوعة حتى هذا التاريخ'));
+      return;
+    }
+    const rows = data.rows.map(row => [
+      formatDate(row.date),
+      row.dueDate ? formatDate(row.dueDate) : '-',
+      row.categoryName,
+      row.description || '-',
+      row.payee || '-',
+      formatMoney(row.amountMinor),
+      formatMoney(row.paidMinor),
+      formatMoney(row.remainingMinor),
+      String(row.daysPastDue),
+      el('button', {
+        class: 'btn btn-sm btn-success',
+        onclick: () => _payExpense(row, row.remainingMinor, () => _loadUnpaid(body, asOf)),
+      }, 'دفع'),
+    ]);
+    body.appendChild(el('div', { class: 'table-wrapper' },
+      el('table', { class: 'data-table' }, [
+        el('thead', {}, el('tr', {}, [
+          el('th', {}, 'التاريخ'), el('th', {}, 'الاستحقاق'), el('th', {}, 'التصنيف'),
+          el('th', {}, 'الوصف'), el('th', {}, 'المستفيد'), el('th', {}, 'المبلغ'),
+          el('th', {}, 'المدفوع'), el('th', {}, 'المتبقي'), el('th', {}, 'العمر'),
+          el('th', {}, ''),
+        ])),
+        el('tbody', {}, rows.map(r => el('tr', {}, r.map(c => el('td', {}, c))))),
+      ])
+    ));
+  }
+
+  function _payExpense(expenseRow, remaining, done) {
+    const expenseId = expenseRow.expenseId || expenseRow.id;
+    const amountInput = input('number', BeeStore.money.toMajor(remaining), { min: 0, step: 0.01 });
+    const dateInput = input('date', BeeStore.dates.today());
+    const noteInput = input('text', '', { placeholder: 'مرجع / ملاحظة' });
+    const methodSelect = select([{ value: 'cash', label: 'نقداً' }], 'cash');
+    BeeStore.settings.get().then(settings => {
+      methodSelect.innerHTML = '';
+      for (const m of BeeStore.settings.methodOptions(settings)) {
+        const pm = BeeStore.settings.paymentMethod(settings, m.value);
+        if (pm && pm.kind === 'customer_credit') continue;
+        methodSelect.appendChild(el('option', { value: m.value }, m.label));
+      }
+      const cashDefault = BeeStore.settings.resolvePaymentAccount(settings, 'cash');
+      if (cashDefault) methodSelect.value = 'cash';
+    });
+    const { overlay } = BeeStore.dialogs.openDialog('دفع مصروف مستحق', [
+      formField('التاريخ', dateInput, true),
+      formField('المبلغ', amountInput, true),
+      formField('طريقة الدفع', methodSelect),
+      formField('ملاحظة', noteInput),
+      el('button', {
+        class: 'btn btn-primary',
+        onclick: async () => {
+          const amount = BeeStore.money.fromMajor(amountInput.value);
+          if (amount <= 0) { toast('أدخل مبلغاً صحيحاً', 'error'); return; }
+          const res = await BeeStore.api.expenses.pay(expenseId, {
+            date: dateInput.value || BeeStore.dates.today(),
+            amountMinor: amount,
+            method: methodSelect.value,
+            note: noteInput.value.trim(),
+          });
+          if (res.ok) {
+            toast('تم تسجيل الدفعة');
+            overlay.remove();
+            if (done) done();
+          } else toast(res.error.message, 'error');
+        },
+      }, 'حفظ'),
+    ]);
   }
 
   async function _renderCategories(container) {
@@ -145,6 +286,19 @@
 
     const amountInput = input('number', '', { min: 0, step: 0.01 });
     const descInput = input('text', '', { placeholder: 'الوصف' });
+    const payeeInput = input('text', '', { placeholder: 'اسم المستفيد / المورد' });
+    const dueDateInput = input('date', '');
+    const statusSelect = select([
+      { value: 'paid', label: 'مدفوع بالكامل' },
+      { value: 'partial', label: 'مدفوع جزئياً' },
+      { value: 'unpaid', label: 'غير مدفوع (مستحق)' },
+    ], 'paid');
+    const paidInput = input('number', '', { min: 0, step: 0.01 });
+    const paidWrap = formField('المبلغ المدفوع الآن', paidInput);
+    paidWrap.style.display = 'none';
+    statusSelect.addEventListener('change', () => {
+      paidWrap.style.display = statusSelect.value === 'partial' ? '' : 'none';
+    });
     const methodSelect = select([
       { value: 'cash', label: 'نقداً' },
       { value: 'card', label: 'بطاقة' },
@@ -170,6 +324,10 @@
       formField('التاريخ', dateInput, true),
       dateNotice,
       formField('المبلغ', amountInput, true),
+      formField('حالة الدفع', statusSelect),
+      paidWrap,
+      formField('المستفيد', payeeInput),
+      formField('تاريخ الاستحقاق', dueDateInput),
       formField('التصنيف', catSelect),
       formField('الوصف', descInput),
       formField('طريقة الدفع', methodSelect),
@@ -179,6 +337,16 @@
         onclick: async () => {
           const amount = BeeStore.money.fromMajor(amountInput.value);
           if (amount <= 0) { toast('أدخل مبلغاً صحيحاً', 'error'); return; }
+          const status = statusSelect.value;
+          let paidMinor = amount;
+          if (status === 'unpaid') paidMinor = 0;
+          if (status === 'partial') {
+            paidMinor = BeeStore.money.fromMajor(paidInput.value);
+            if (paidMinor <= 0 || paidMinor >= amount) {
+              toast('المبلغ المدفوع يجب أن يكون أكبر من صفر وأقل من الإجمالي', 'error');
+              return;
+            }
+          }
           const res = await BeeStore.api.expenses.create({
             date: dateInput.value || BeeStore.dates.today(),
             amountMinor: amount,
@@ -186,6 +354,10 @@
             description: descInput.value.trim(),
             method: methodSelect.value,
             accountId: accSelect.value || null,
+            paymentStatus: status,
+            paidMinor,
+            payee: payeeInput.value.trim(),
+            dueDate: dueDateInput.value || null,
           });
           if (res.ok) { toast('تم إضافة المصروف'); overlay.remove(); render(document.getElementById('page-content')); }
           else toast(res.error.message, 'error');

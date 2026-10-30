@@ -4,9 +4,9 @@
 
 ```json
 {
-  "schemaVersion": 7,
+  "schemaVersion": 8,
   "meta": {
-    "schemaVersion": 7,
+    "schemaVersion": 8,
     "counters": { "invoice": 123, "purchase": 45, "return": 10, "journal": 7 },
     "revision": 456,
     "savedAt": "2026-01-15T10:30:00.000Z",
@@ -29,6 +29,7 @@
     "supplierPayments": [...],
     "expenseCategories": [...],
     "expenses": [...],
+    "expensePayments": [...],
     "recurringExpenses": [...],
     "employees": [...],
     "payroll": [...],
@@ -89,6 +90,15 @@
 - `summary.VERSION 7` adds `pnl.cardFees` per month (and the Arabic category row), keeps clearing receipts out of legacy money-account buckets, and books settlement net to the bank account. Reports add `cardFees` to P&L, and balance snapshots expose `assets.clearingOutstanding` (document path) / `clearingOutstanding` (journal path) as a cash equivalent.
 - Migration `6→7` initializes `cardSettlements: []`. Chart seeding adds a clearing account per clearing method and writes `chartAccountId` back onto `settings.paymentMethods`; historical documents are not rewritten.
 
+## v5 A4.2 Unpaid Expense Fields (schemaVersion 8, dbVersion 9)
+
+- `expenses` gain `paymentStatus` (`paid|partial|unpaid`), `paidMinor` (total paid including later payments), `initialPaidMinor` (the part paid at recording time), `payee` (free text), `payeeSupplierId` (optional supplier link), `dueDate` (`YYYY-MM-DD|null`) and `methodKind` (the routing snapshot of the original payment method). `paidMinor` never exceeds `amountMinor`; `paymentStatus` is derived from the two amounts.
+- New `expensePayments` records: `id`, `expenseId`, `date`, `time`, `amountMinor`, `method`, `methodKind`, `accountId`, `note`, `voided`, `voidReason`, `journalEntryIds[]`, timestamps. Indexes: `date`, `expenseId`, `accountId`. A payment is capped at `amountMinor − paidMinor`, cannot predate the expense, and is day/month locked like other cash postings.
+- Posting: a normal expense follows rule 8b (Dr `6xxx` full amount / Cr Cash-Bank for `initialPaidMinor` + Cr `2020` for the remainder). A later payment follows rule 9 (Dr `2020` / Cr Cash-Bank). A spread expense debits the full amount to `1300` at posting and credits Cash-Bank/`2020` for the paid/unpaid split; its monthly scheduled releases stay Dr `6xxx` / Cr `1300`, independent of payment state.
+- Update and void of an expense are rejected while any active later `expensePayments` exist. `voidPayment` appends an exact same-date reversal and recalculates `paidMinor`/`paymentStatus`. Historical (pre-A4.2) expenses are migrated as fully paid (`initialPaidMinor = paidMinor = amountMinor`) so their original journal routing and parity results do not change.
+- Summary VERSION 8 tracks `unpaidExpenses` by month and day: each expense contributes its unpaid remainder on its document date and each active payment removes its amount on the payment date. Reports expose `liabilities.unpaidExpenses` in both document and journal balance snapshots, and parity compares it.
+- Migration `7→8` initializes `expensePayments: []`, fills the new expense fields, clamps payment amounts to the expense total, and marks all legacy expenses `paid` without creating or rewriting journal entries. Clearing the original account routing is preserved through `methodKind` on new payments; expenses paid through a clearing method reduce `clearingOutstanding` on their payment dates.
+
 ## v2 Period Fields (schemaVersion 3)
 
 - `settings.systemStartDate` (`YYYY-MM-DD`): no document may predate it. `settings.blockFutureDates` (default true).
@@ -138,7 +148,7 @@ The package is generated in memory and never written to the database. Its manife
   "status": "closed",
   "final": true,
   "generatedAt": "2026-10-31T18:00:00.000Z",
-  "appVersion": "3.4.0-lite",
+  "appVersion": "3.4.1-lite",
   "files": [{ "path": "accounting.xlsx", "size": 12345, "sha256": "..." }],
   "checks": [{ "id": "pnl-month-review", "status": "pass", "message": "..." }]
 }

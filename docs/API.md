@@ -87,8 +87,14 @@ All methods return `{ ok: true, data: ... }` or `{ ok: false, error: { code, mes
 | `purchases.void(id)` | `POST /api/purchases/:id/void` | Void purchase |
 | `expenses.list(filters)` | `GET /api/expenses?from=&to=&categoryId=` | List expenses |
 | `expenses.create(data)` | `POST /api/expenses` | Create expense |
-| `expenses.update(id, patch)` | `PATCH /api/expenses/:id` | Update expense |
-| `expenses.remove(id)` | `DELETE /api/expenses/:id` | Remove expense |
+| `expenses.update(id, patch)` | `PATCH /api/expenses/:id` | Update expense (blocked while later payments exist) |
+| `expenses.void(id, reason)` | `POST /api/expenses/:id/void` | Void an expense with an exact reversal |
+| `expenses.unpaid(asOf)` | `GET /api/expenses/unpaid?asOf=` | Unpaid-expense rows with aging data |
+| `expenses.unpaidAsOf(asOf)` | `GET /api/expenses/unpaid/total?asOf=` | Total unpaid-expense liability as of a date |
+| `expenses.aging(asOf)` | `GET /api/expenses/aging?asOf=` | Unpaid-expense aging buckets and totals |
+| `expenses.payments(expenseId)` | `GET /api/expenses/:id/payments` | List the payment records of one expense |
+| `expenses.pay(expenseId, data)` | `POST /api/expenses/:id/pay` | Post Dr `2020` / Cr Cash/Bank for a later payment |
+| `expenses.voidPayment(paymentId, reason)` | `POST /api/expenses/payments/:id/void` | Reverse one payment and recompute status |
 | `expenses.categories()` | `GET /api/expenses/categories` | List expense categories |
 | `expenses.createCategory(data)` | `POST /api/expenses/categories` | Create category |
 | `expenses.recurring()` | `GET /api/expenses/recurring` | List recurring expenses |
@@ -124,6 +130,7 @@ All methods return `{ ok: true, data: ... }` or `{ ok: false, error: { code, mes
 | `reports.inventoryValuation()` | `GET /api/reports/inventory` | Inventory valuation |
 | `reports.receivablesAging()` | `GET /api/reports/receivables-aging` | Receivables aging |
 | `reports.payablesAging()` | `GET /api/reports/payables-aging` | Payables aging |
+| `reports.unpaidExpensesAging(asOf)` | `GET /api/reports/unpaid-expenses-aging?asOf=` | Unpaid-expense aging (`2020`) |
 | `reports.balanceSnapshot(asOf)` | `GET /api/reports/balance?asOf=` | Balance snapshot |
 | `reports.dailyClosing(date)` | `GET /api/reports/daily-closing?date=` | Legacy daily closing figures (kept for compatibility) |
 | `reports.monthReview(month)` | `GET /api/reports/month-review?month=` | v2 Month Review (§9.1) |

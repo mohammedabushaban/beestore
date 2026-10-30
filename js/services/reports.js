@@ -263,6 +263,15 @@
       return result;
     }
 
+    /**
+     * Unpaid expense aging as of a date (v5 §7.1, §10).
+     * @param {string} [asOf] YYYY-MM-DD
+     * @returns {Promise<{asOf:string,rows:Array,buckets:Object,totalMinor:number}>}
+     */
+    async unpaidExpensesAging(asOf) {
+      return BeeStore.expenses.aging(asOf || BeeStore.dates.today());
+    }
+
     // v2 §9.1 Month Review: the owner's main monthly report (data only).
     async monthReview(month) {
       const { from, to } = BeeStore.dates.monthRange(month);
@@ -350,6 +359,7 @@
         inventory: [snapOpen.assets.inventoryValue, snapClose.assets.inventoryValue],
         receivables: [snapOpen.assets.receivables, snapClose.assets.receivables],
         payables: [snapOpen.liabilities.payables, snapClose.liabilities.payables],
+        unpaidExpenses: [snapOpen.liabilities.unpaidExpenses, snapClose.liabilities.unpaidExpenses],
         prepaid: [snapOpen.assets.prepaid, snapClose.assets.prepaid],
         accrued: [snapOpen.liabilities.accruedSalaries, snapClose.liabilities.accruedSalaries],
         advances: [snapOpen.assets.advancesOutstanding, snapClose.assets.advancesOutstanding],
@@ -466,6 +476,14 @@
       const settlements = await this.repo.listRange('cardSettlements', '0000-01-01', asOf,
         doc => !doc.voided);
       for (const doc of settlements) clearing -= Number(doc.grossMinor) || 0;
+      // A4.2: an expense paid through a clearing method credits that same
+      // waiting asset. Keep document parity with the journal route.
+      const expenses = await this.repo.listRange('expenses', '0000-01-01', asOf,
+        e => !e.voided && e.methodKind === 'clearing');
+      for (const expense of expenses) clearing -= BeeStore.expenses._initialPaid(expense);
+      const expensePayments = await this.repo.listRange('expensePayments', '0000-01-01', asOf,
+        p => !p.voided && p.methodKind === 'clearing');
+      for (const payment of expensePayments) clearing -= Number(payment.amountMinor) || 0;
       return BeeStore.money.roundMinor(clearing);
     }
 
@@ -529,6 +547,12 @@
       const prepaid = await BeeStore.expenses.prepaidAsOf(asOf);
       const accrued = await BeeStore.payroll.accruedAsOf(asOf);
       const advancesOutstanding = await BeeStore.payroll.advancesOutstandingAsOf(asOf);
+      let unpaidExpenses = 0;
+      if (useSummary) {
+        unpaidExpenses = BeeStore.summary.unpaidExpensesThrough(summary, month);
+      } else {
+        unpaidExpenses = await BeeStore.expenses.unpaidAsOf(asOf);
+      }
 
       let taxPayable = 0;
       if (settings.taxEnabled) {
@@ -587,7 +611,7 @@
       }
 
       const assets = cashBalance + inventoryValue + receivables + prepaid.total + advancesOutstanding;
-      const liabilities = payables + customerCredits + accrued.total + taxPayable;
+      const liabilities = payables + customerCredits + accrued.total + taxPayable + unpaidExpenses;
       const equityTotal = openingEquity + capitalIn - withdrawals + cumulativeProfit;
       const retained = equityTotal - (capitalIn - withdrawals) - openingEquity;
       const balanced = Math.abs(assets - (liabilities + equityTotal)) < 1;
@@ -599,7 +623,7 @@
           receivables, prepaid: prepaid.total, advancesOutstanding, total: assets,
         },
         liabilities: {
-          payables, customerCredits,
+          payables, customerCredits, unpaidExpenses,
           accruedSalaries: accrued.total, taxPayable, total: liabilities,
         },
         equity: {
@@ -756,6 +780,7 @@
       const customerCredits = -this._ctxSystemBalance(ctx, 'customer_credits', '2030');
       const payables = -this._ctxSystemBalance(ctx, 'ap', '2010');
       const prepaid = this._ctxSystemBalance(ctx, 'prepaid', '1300');
+      const unpaidExpenses = -this._ctxSystemBalance(ctx, 'accrued_expenses', '2020');
       const accruedSalaries = -this._ctxSystemBalance(ctx, 'accrued_salaries', '2100');
       const taxPayable = -this._ctxSystemBalance(ctx, 'tax_payable', '2300');
       const advancesOutstanding = this._ctxSystemBalance(ctx, 'employee_advances', '1150');
@@ -766,7 +791,8 @@
 
       const assets = cashBalance + inventoryValue + receivables + prepaid +
         advancesOutstanding;
-      const liabilities = payables + customerCredits + accruedSalaries + taxPayable;
+      const liabilities = payables + customerCredits + accruedSalaries + taxPayable +
+        unpaidExpenses;
       const equityTotal = openingEquity + capitalIn - withdrawals + cumulativeProfit;
       return {
         asOf,
@@ -775,7 +801,7 @@
           receivables, prepaid, advancesOutstanding, total: assets,
         },
         liabilities: {
-          payables, customerCredits,
+          payables, customerCredits, unpaidExpenses,
           accruedSalaries, taxPayable, total: liabilities,
         },
         equity: {
@@ -901,6 +927,7 @@
         ['assets.total', documentSnap.assets.total, journalSnap.assets.total],
         ['liabilities.payables', documentSnap.liabilities.payables, journalSnap.liabilities.payables],
         ['liabilities.customerCredits', documentSnap.liabilities.customerCredits, journalSnap.liabilities.customerCredits],
+        ['liabilities.unpaidExpenses', documentSnap.liabilities.unpaidExpenses, journalSnap.liabilities.unpaidExpenses],
         ['liabilities.accruedSalaries', documentSnap.liabilities.accruedSalaries, journalSnap.liabilities.accruedSalaries],
         ['liabilities.taxPayable', documentSnap.liabilities.taxPayable, journalSnap.liabilities.taxPayable],
         ['liabilities.total', documentSnap.liabilities.total, journalSnap.liabilities.total],

@@ -411,6 +411,20 @@
         return data;
       },
     },
+    {
+      // A4: card/wallet settlements are new documents. Historical receipts
+      // deliberately keep their legacy account routing; only documents created
+      // from this schema onward carry an explicit clearing method snapshot.
+      from: 6,
+      to: 7,
+      migrate(data) {
+        if (!data.collections) data.collections = {};
+        if (!Array.isArray(data.collections.cardSettlements)) {
+          data.collections.cardSettlements = [];
+        }
+        return data;
+      },
+    },
   ];
 
   async function migrate(data, currentVersion) {

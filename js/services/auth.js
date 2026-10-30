@@ -167,7 +167,7 @@
     'dailyClosing', 'integrityCheck', 'isDatabaseEmpty', 'daysInMonth',
     'unclosedDays', 'getLowStock', 'categories', 'recurring', 'advances',
     'outstandingAdvances', 'inspect', 'list', 'trialBalance', 'verify',
-    'byCode', 'bySystemKey', 'forSource',
+    'byCode', 'bySystemKey', 'forSource', 'quote', 'overview',
   ]);
 
   class AuthService {

@@ -146,7 +146,7 @@
       const names = [
         'sales', 'customerPayments', 'supplierPayments', 'purchases', 'expenses',
         'employeeAdvances', 'ownerTransactions', 'transfers', 'salesReturns',
-        'purchaseReturns', 'cashAdjustments',
+        'purchaseReturns', 'cashAdjustments', 'cardSettlements',
       ];
       const totals = { accounts: {}, customers: {}, suppliers: {}, tax: 0 };
       const add = (target, source) => {
@@ -200,7 +200,7 @@
       for (const s of allSales) {
         if (s.status === 'void') continue;
         for (const p of (s.payments || [])) {
-          if (p.accountId === accountId) {
+          if (p.methodKind !== 'clearing' && p.accountId === accountId) {
             if (range && p.date < range.from) continue;
             if (range && p.date > range.to) continue;
             movements.push({ date: p.date, amountMinor: p.amountMinor, type: 'sale_payment', refId: s.id, refNumber: s.number, description: 'تحصيل فاتورة ' + s.number });
@@ -209,7 +209,7 @@
       }
       const customerPayments = await fetch('customerPayments');
       for (const p of customerPayments) {
-        if (p.accountId === accountId) {
+        if (p.methodKind !== 'clearing' && p.accountId === accountId) {
           if (range && p.date < range.from) continue;
           if (range && p.date > range.to) continue;
           movements.push({ date: p.date, amountMinor: p.amountMinor, type: 'customer_payment', refId: p.id, description: 'دفعة زبون' });
@@ -276,7 +276,8 @@
       }
       const salesReturns = await fetch('salesReturns');
       for (const r of salesReturns) {
-        if (r.refundMode === 'cash_refund' && r.refundMethod === accountId) {
+        if (r.refundMode === 'cash_refund' && r.refundMethodKind !== 'clearing' &&
+          r.refundMethod === accountId) {
           if (range && r.date < range.from) continue;
           if (range && r.date > range.to) continue;
           movements.push({ date: r.date, amountMinor: -r.refundMinor, type: 'return_refund', refId: r.id, refNumber: r.number, description: 'مرتجع ' + r.number });
@@ -289,6 +290,19 @@
           if (range && r.date > range.to) continue;
           movements.push({ date: r.date, amountMinor: r.totalMinor, type: 'purchase_return_refund', refId: r.id, refNumber: r.number, description: 'استرداد مرتجع مشتريات ' + r.number });
         }
+      }
+      const settlements = await fetch('cardSettlements');
+      for (const settlement of settlements) {
+        if (settlement.voided || settlement.bankAccountId !== accountId) continue;
+        movements.push({
+          date: settlement.date,
+          amountMinor: settlement.netReceivedMinor,
+          type: 'card_settlement',
+          refId: settlement.id,
+          refNumber: settlement.number,
+          description: 'تسوية ' + (settlement.methodName || settlement.method) +
+            ' — صافي بعد العمولة',
+        });
       }
       const adjustments = await fetch('cashAdjustments');
       for (const a of adjustments) {

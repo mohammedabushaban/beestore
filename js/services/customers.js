@@ -157,6 +157,7 @@
           date: data.date || BeeStore.dates.today(),
           amountMinor: BeeStore.money.roundMinor(data.amountMinor),
           method: data.method,
+          methodKind: BeeStore.settings.methodKind(settings, data.method),
           accountId: data.accountId || BeeStore.settings.resolvePaymentAccount(settings, data.method),
           payerName: (data.payerName || '').trim(),
           payerPhone: (data.payerPhone || '').trim(),

@@ -21,13 +21,15 @@
     labelSize: '50x30',
     defaultLowStockThreshold: 3,
     allowNegativeStock: false,
+    // v5 §6: `kind` decides the money account at posting time. Clearing
+    // methods collect on their own asset account until a settlement arrives.
     paymentMethods: [
-      { id: 'cash', name: 'نقداً', accountId: null },
-      { id: 'card', name: 'بطاقة', accountId: null },
-      { id: 'bank', name: 'تحويل بنكي', accountId: null },
-      { id: 'wallet', name: 'محفظة إلكترونية', accountId: null },
-      { id: 'jawwal', name: 'جوال باي', accountId: null },
-      { id: 'palpay', name: 'بال باي', accountId: null },
+      { id: 'cash', name: 'نقداً', kind: 'cash', accountId: null, feeBasisPoints: 0, feeFixedMinor: 0, settlementDays: 0 },
+      { id: 'card', name: 'بطاقة', kind: 'clearing', accountId: null, feeBasisPoints: 0, feeFixedMinor: 0, settlementDays: 0 },
+      { id: 'bank', name: 'تحويل بنكي', kind: 'bank_direct', accountId: null, feeBasisPoints: 0, feeFixedMinor: 0, settlementDays: 0 },
+      { id: 'wallet', name: 'محفظة إلكترونية', kind: 'clearing', accountId: null, feeBasisPoints: 0, feeFixedMinor: 0, settlementDays: 0 },
+      { id: 'jawwal', name: 'جوال باي', kind: 'clearing', accountId: null, feeBasisPoints: 0, feeFixedMinor: 0, settlementDays: 0 },
+      { id: 'palpay', name: 'بال باي', kind: 'clearing', accountId: null, feeBasisPoints: 0, feeFixedMinor: 0, settlementDays: 0 },
     ],
     sizes: ['Newborn', '0-3M', '3-6M', '6-9M', '9-12M', '12-18M', '18-24M', '2Y', '3Y', '4Y', '5Y', '6Y', '7Y', '8Y', '9Y', '10Y', '12Y', '14Y', 'Free size'],
     colors: [
@@ -75,6 +77,26 @@
     largeFont: false,
   };
 
+  const METHOD_KINDS = ['cash', 'bank_direct', 'clearing', 'customer_credit'];
+
+  function inferKind(id) {
+    if (id === 'cash') return 'cash';
+    if (id === 'bank') return 'bank_direct';
+    if (id === 'customer_credit') return 'customer_credit';
+    return 'clearing';
+  }
+
+  function normaliseMethod(pm) {
+    const method = { ...(pm || {}) };
+    method.kind = METHOD_KINDS.indexOf(method.kind) >= 0
+      ? method.kind
+      : inferKind(method.id);
+    method.feeBasisPoints = Math.max(0, Number(method.feeBasisPoints) || 0);
+    method.feeFixedMinor = Math.max(0, Math.round(Number(method.feeFixedMinor) || 0));
+    method.settlementDays = Math.max(0, Math.floor(Number(method.settlementDays) || 0));
+    return method;
+  }
+
   class SettingsService {
     constructor(repo) {
       this.repo = repo;
@@ -97,6 +119,9 @@
       return this.repo.transaction(async (tx) => {
         const existing = await tx.get('meta', 'settings');
         const updated = { ...DEFAULT_SETTINGS, ...existing, ...settings, id: 'settings' };
+        if (Array.isArray(updated.paymentMethods)) {
+          updated.paymentMethods = updated.paymentMethods.map(normaliseMethod);
+        }
         tx.put('meta', updated);
         return updated;
       });
@@ -169,7 +194,10 @@
         for (const pm of methods) {
           if (!pm.accountId) pm.accountId = pm.id === 'cash' ? cashAcc.id : bankAcc.id;
         }
-        settings.paymentMethods = methods;
+        // v5 §6: every method carries its routing kind and fee metadata. An
+        // existing install's methods are upgraded in place; account ids and
+        // historical documents are untouched.
+        settings.paymentMethods = methods.map(normaliseMethod);
         // v3-Lite §4: the cash drawer is the account the closing counts. Fall
         // back to the cash account for installs that predate this setting.
         const drawerValid = accounts.some(a => a.id === settings.cashDrawerAccountId);
@@ -206,6 +234,70 @@
       const methods = (settings && settings.paymentMethods) || [];
       const pm = methods.find(m => m.id === method);
       return pm ? (pm.accountId || null) : null;
+    }
+
+    /**
+     * Payment-method definition with v5 §6 defaults applied.
+     * @param {object} settings settings record (may be null)
+     * @param {string} method payment-method id
+     * @returns {object|null} normalised method definition
+     */
+    paymentMethod(settings, method) {
+      const methods = (settings && Array.isArray(settings.paymentMethods))
+        ? settings.paymentMethods
+        : DEFAULT_SETTINGS.paymentMethods;
+      const found = methods.find(m => m.id === method);
+      return found ? normaliseMethod(found) : null;
+    }
+
+    /**
+     * v5 §6 routing kind: cash drawer, direct bank, clearing, or credit.
+     * Unknown methods fall back to `cash` so legacy behaviour is preserved.
+     * @param {object} settings settings record (may be null)
+     * @param {string} method payment-method id
+     * @returns {string} kind
+     */
+    methodKind(settings, method) {
+      const pm = this.paymentMethod(settings, method);
+      return pm ? pm.kind : 'cash';
+    }
+
+    /** @returns {boolean} true when receipts wait in a clearing account */
+    isClearingMethod(settings, method) {
+      return this.methodKind(settings, method) === 'clearing';
+    }
+
+    /**
+     * Resolves the payment method behind a legacy money account. Used by
+     * refunds whose historical shape stores an account id, not a method id.
+     * @param {object} settings settings record
+     * @param {string} accountId legacy accounts id
+     * @returns {object|null} normalised method
+     */
+    methodForAccount(settings, accountId) {
+      if (!accountId) return null;
+      const methods = (settings && Array.isArray(settings.paymentMethods))
+        ? settings.paymentMethods
+        : DEFAULT_SETTINGS.paymentMethods;
+      const found = methods.find(m => m.accountId === accountId);
+      return found ? normaliseMethod(found) : null;
+    }
+
+    /**
+     * Expected provider fee for a receipt under a method definition.
+     * @param {object} settings settings record
+     * @param {string} method payment-method id
+     * @param {number} grossMinor receipt amount
+     * @returns {{feeMinor:number,basisPoints:number,fixedMinor:number}}
+     */
+    expectedFee(settings, method, grossMinor) {
+      const pm = this.paymentMethod(settings, method);
+      const gross = Math.max(0, Math.round(Number(grossMinor) || 0));
+      const basisPoints = pm ? pm.feeBasisPoints : 0;
+      const fixedMinor = pm ? pm.feeFixedMinor : 0;
+      const feeMinor = Math.min(gross,
+        Math.round(gross * basisPoints / 10000) + fixedMinor);
+      return { feeMinor, basisPoints, fixedMinor };
     }
 
     /**

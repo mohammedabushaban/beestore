@@ -4,9 +4,9 @@
 
 ```json
 {
-  "schemaVersion": 6,
+  "schemaVersion": 7,
   "meta": {
-    "schemaVersion": 6,
+    "schemaVersion": 7,
     "counters": { "invoice": 123, "purchase": 45, "return": 10, "journal": 7 },
     "revision": 456,
     "savedAt": "2026-01-15T10:30:00.000Z",
@@ -37,6 +37,7 @@
     "transfers": [...],
     "dailyClosings": [...],
     "cashAdjustments": [...],
+    "cardSettlements": [...],
     "chartOfAccounts": [...],
     "journalEntries": [...],
     "periodClosings": [...],
@@ -77,6 +78,16 @@
 - `meta.journalReplay`: `{ needed, version, ok, startedAt, finishedAt, completedAt, counts, errors }`. `needed: true` triggers `posting.replayAll()` at boot; replay is idempotent and links voided documents to their reversals.
 - `meta.journalApproval`: `{ status: "approved"|"revoked", approvedAt, approvedBy, from, to, parity, revokedAt?, revokeReason? }`. Journal P&L/balance reports activate only for an approved record with no pending replay or parity failures.
 - Migration `5→6` conditionally seeds system accounts, recomputes purchase dues, backfills `customerPayments.appliedMinor`, and sets `meta.journalReplay.needed = true`. Existing journals/documents are preserved; replay adds only missing entries.
+
+## v5 A4 Clearing & Settlement Fields (schemaVersion 7, dbVersion 8)
+
+- `settings.paymentMethods[]` now carries `kind` (`cash|bank_direct|clearing|customer_credit`), `feeBasisPoints` (200 = 2.00%), `feeFixedMinor`, `settlementDays`, and `chartAccountId`. Clearing methods own a dedicated `chartOfAccounts` account (`clearing: true`, `paymentMethodId`); the legacy `accountId` stays linked but is never used for new clearing receipts.
+- `sales.payments[]` and `customerPayments` carry `methodKind` from this schema onward. `methodKind: "clearing"` routes the receipt to the method's clearing account (Dr Clearing / Cr AR or revenue) instead of the legacy bank/wallet account. Records created before A4 have no `methodKind` and keep their historic legacy-account routing during replay and parity.
+- `salesReturns` carry `refundPaymentMethod` and `refundMethodKind` for `cash_refund`; a clearing refund credits the same clearing account. `refundMethod` (legacy account id) is retained for old records and statements.
+- `cardSettlements`: `id`, `number` (`SET-000001`), `method`, `methodName`, `date`, `time`, `grossMinor`, `feeMinor`, `netReceivedMinor`, `expectedFeeMinor`, `feeDifferenceMinor` (actual − expected), `bankAccountId`, `reference`, `note`, `overSettled`, `overSettlementFlag` (`null|"OVER_SETTLED"`), `createdByProfile`, `voided`, `voidReason`, `voidedAt`, `journalEntryIds[]`, timestamps. Indexes: `date`, `number`, `method`, `bankAccountId`.
+- Settlement posting (`CARD_SETTLEMENT`): Dr bank net + Dr `6200` fees / Cr clearing gross. `gross = fee + net` is enforced; `gross` may exceed the unsettled clearing balance only with `overSettlementFlag: "OVER_SETTLED"` and an authenticated owner. Voids append an exact same-date reversal. Partial settlements are allowed and the remainder stays in clearing.
+- `summary.VERSION 7` adds `pnl.cardFees` per month (and the Arabic category row), keeps clearing receipts out of legacy money-account buckets, and books settlement net to the bank account. Reports add `cardFees` to P&L, and balance snapshots expose `assets.clearingOutstanding` (document path) / `clearingOutstanding` (journal path) as a cash equivalent.
+- Migration `6→7` initializes `cardSettlements: []`. Chart seeding adds a clearing account per clearing method and writes `chartAccountId` back onto `settings.paymentMethods`; historical documents are not rewritten.
 
 ## v2 Period Fields (schemaVersion 3)
 
@@ -127,7 +138,7 @@ The package is generated in memory and never written to the database. Its manife
   "status": "closed",
   "final": true,
   "generatedAt": "2026-10-31T18:00:00.000Z",
-  "appVersion": "3.3.0-lite",
+  "appVersion": "3.4.0-lite",
   "files": [{ "path": "accounting.xlsx", "size": 12345, "sha256": "..." }],
   "checks": [{ "id": "pnl-month-review", "status": "pass", "message": "..." }]
 }

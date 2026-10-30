@@ -176,7 +176,7 @@
       for (const coll of ['sales', 'salesReturns', 'purchases', 'purchaseReturns',
         'customerPayments', 'supplierPayments', 'expenses', 'stockMovements',
         'ownerTransactions', 'transfers', 'dailyClosings', 'cashAdjustments',
-        'employeeAdvances', 'journalEntries']) {
+        'cardSettlements', 'employeeAdvances', 'journalEntries']) {
         const rows = await tx.list(coll);
         for (const r of rows) add(r.date);
       }

@@ -375,7 +375,12 @@ test('L4 external totals only warn and never post to the ledger', async () => {
     assert.strictEqual(close.ok, true, close.ok ? '' : close.error.message);
     assert.deepStrictEqual(close.data.externalTotals, { card: 12000 });
     assert.deepStrictEqual(close.data.externalDifferences, { card: 2000 });
-    assert.strictEqual((await api.accounts.balanceAsOf(base.card.id, '2026-11-02')).data, 10000);
+    // A4: card receipts wait in the clearing asset until a settlement, not in
+    // the retired legacy wallet account.
+    assert.strictEqual((await api.accounts.balanceAsOf(base.card.id, '2026-11-02')).data, 0);
+    const snapshot = (await api.reports.balanceSnapshot('2026-11-02')).data;
+    assert.strictEqual(snapshot.assets.clearingOutstanding, 10000);
+    assert.strictEqual(snapshot.balanced, true);
     assert.strictEqual((await api.repo.list('cashAdjustments')).length, 0);
     assert.strictEqual((await api.repo.list('transfers')).length, 0);
 

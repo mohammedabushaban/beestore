@@ -193,6 +193,7 @@
             const accountId = p.accountId || BeeStore.settings.resolvePaymentAccount(settings, p.method);
             const entry = {
               method: p.method,
+              methodKind: BeeStore.settings.methodKind(settings, p.method),
               accountId: accountId,
               amountMinor: amt,
               date: p.date || data.date || BeeStore.dates.today(),

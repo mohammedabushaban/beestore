@@ -80,7 +80,7 @@
       return [
         'sales', 'salesReturns', 'customerPayments', 'supplierPayments',
         'purchases', 'purchaseReturns', 'expenses', 'employeeAdvances',
-        'ownerTransactions', 'transfers',
+        'ownerTransactions', 'transfers', 'cardSettlements',
       ];
     }
 
@@ -235,7 +235,8 @@
         if (!r.refundMethod || r.refundMethod === acc.drawer) {
           returnsCashRefundMinor += amount;
         }
-        const method = this._methodForAccount(settings, r.refundMethod, acc.drawer);
+        const method = r.refundPaymentMethod ||
+          this._methodForAccount(settings, r.refundMethod, acc.drawer);
         addTo(salesByMethod, method, -amount);
       }
       for (const key of Object.keys(salesByMethod)) {

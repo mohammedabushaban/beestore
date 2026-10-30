@@ -625,8 +625,8 @@ test('A2 migration 4->5 backfills tracked value without rewriting legacy gross v
   };
 
   const out = await BeeStore.migrations.migrate(dump, BeeStore.schemaVersion);
-  assert.strictEqual(out.schemaVersion, 6);
-  assert.strictEqual(out.meta.schemaVersion, 6);
+  assert.strictEqual(out.schemaVersion, BeeStore.schemaVersion);
+  assert.strictEqual(out.meta.schemaVersion, BeeStore.schemaVersion);
   assert.deepStrictEqual(out.collections.journalEntries, [], 'migration never invents journal entries');
 
   const variant = out.collections.variants[0];
@@ -667,7 +667,7 @@ test('A2 migration 4->5 backfills tracked value without rewriting legacy gross v
 
   // Idempotence: a dump already at the current version is returned intact.
   const again = await BeeStore.migrations.migrate(out, BeeStore.schemaVersion);
-  assert.strictEqual(again.schemaVersion, 6);
+  assert.strictEqual(again.schemaVersion, BeeStore.schemaVersion);
   assert.strictEqual(again.collections.stockMovements[1].valueAfterMinor, 8000);
   assert.strictEqual(again.collections.variants[0].valueMinor, 8000);
 });
@@ -693,7 +693,7 @@ test('A2 migration reconstructs discounts already refunded by legacy returns', a
     },
   };
   const out = await BeeStore.migrations.migrate(dump, BeeStore.schemaVersion);
-  assert.strictEqual(out.schemaVersion, 6);
+  assert.strictEqual(out.schemaVersion, BeeStore.schemaVersion);
   assert.strictEqual(out.collections.sales[0].lines[0].returnedDiscountMinor, 66,
     'legacy refunds already granted 33 + 33 of the 100 discount');
 });

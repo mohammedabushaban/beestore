@@ -9,7 +9,7 @@
     'expenseCategories', 'expenses', 'recurringExpenses',
     'employees', 'payroll', 'employeeAdvances',
     'ownerTransactions', 'transfers', 'dailyClosings', 'cashAdjustments',
-    'chartOfAccounts', 'journalEntries',
+    'cardSettlements', 'chartOfAccounts', 'journalEntries',
     'auditLog', 'meta', 'periodClosings', 'errorLog',
   ];
 
@@ -45,6 +45,7 @@
     transfers: 'date',
     dailyClosings: 'date',
     cashAdjustments: 'date',
+    cardSettlements: 'date',
     journalEntries: 'date',
     auditLog: 'timestamp',
   };
@@ -70,6 +71,7 @@
     transfers: [['date', 'date'], ['fromAccountId', 'fromAccountId'], ['toAccountId', 'toAccountId']],
     dailyClosings: [['date', 'date'], ['status', 'status']],
     cashAdjustments: [['date', 'date'], ['accountId', 'accountId'], ['closingId', 'closingId']],
+    cardSettlements: [['date', 'date'], ['number', 'number'], ['method', 'method'], ['bankAccountId', 'bankAccountId']],
     auditLog: [['timestamp', 'timestamp']],
     chartOfAccounts: [['code', 'code'], ['type', 'type'], ['systemKey', 'systemKey'], ['legacyAccountId', 'legacyAccountId'], ['paymentMethodId', 'paymentMethodId']],
     journalEntries: [['date', 'date'], ['number', 'number'], ['sourceId', 'sourceId'], ['sourceType', 'sourceType'], ['reversalOf', 'reversalOf']],

@@ -191,7 +191,8 @@
           await waitFor(() => !root.querySelector('.dialog-overlay'), 'إغلاق النافذة');
           await waitFor(() => {
             const content = root.getElementById('days-content');
-            return content && content.textContent.indexOf('مُقفل') >= 0;
+            return content && content.querySelector('tbody tr') &&
+              content.textContent.indexOf('مُقفل') >= 0;
           }, 'حالة اليوم بعد الإقفال');
         });
 

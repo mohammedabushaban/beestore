@@ -28,6 +28,12 @@ All methods return `{ ok: true, data: ... }` or `{ ok: false, error: { code, mes
 | `journal.forSource(type, id)` | `GET /api/journal/source/:type/:id` | Entries for one document |
 | `journal.trialBalance(filters)` | `GET /api/journal/trial-balance?from=&to=&asOf=` | Trial balance from the journal |
 | `journal.verify()` | `GET /api/journal/verify` | Read-only invariant check |
+| `settlements.list(filters)` | `GET /api/settlements?from=&to=&method=` | List card/wallet settlements newest first |
+| `settlements.get(id)` | `GET /api/settlements/:id` | Get a settlement |
+| `settlements.quote(method, options)` | `GET /api/settlements/quote?method=&date=&grossMinor=&feeMinor=` | Unsettled clearing balance, aging receipts, expected fee and fee difference |
+| `settlements.overview(date)` | `GET /api/settlements/overview?date=` | Per-method unsettled totals, aging, monthly fees and effective fee rate |
+| `settlements.create(data)` | `POST /api/settlements` | Post Dr bank net + Dr `6200` fees / Cr clearing gross; owner-only, supports `overSettlementFlag` |
+| `settlements.void(id, reason)` | `POST /api/settlements/:id/void` | Append an exact reversal and soft-void the document |
 | `categories.list()` | `GET /api/categories` | List categories |
 | `categories.create(data)` | `POST /api/categories` | Create category |
 | `categories.update(id, patch)` | `PATCH /api/categories/:id` | Update category |
@@ -163,7 +169,7 @@ All methods return `{ ok: true, data: ... }` or `{ ok: false, error: { code, mes
 
 ## Local profiles and permissions (v3-Lite L5)
 
-`api.js` wraps every namespace and enforces an explicit **cashier allow-list**. The list covers sales/payment creation, product/variant/price reads, returns within `cashierMaxReturnMinor`, own-day summary, price check, and the minimum reads needed by those screens. Everything else is **owner-only**: reports, expenses, payroll, accounts, settings, backups, closings/reopen, voids, stock adjustments, product/price edits, audit, maintenance, and the accountant package.
+`api.js` wraps every namespace and enforces an explicit **cashier allow-list**. The list covers sales/payment creation, product/variant/price reads, returns within `cashierMaxReturnMinor`, own-day summary, price check, and the minimum reads needed by those screens. Everything else is **owner-only**: reports, expenses, payroll, accounts, settings, backups, closings/reopen, voids, stock adjustments, product/price edits, audit, maintenance, the accountant package, and settlement creation/voiding. Cashiers may call the read-only `settlements.quote`/`overview` needed by the shared screen.
 
 - Cashier responses are stripped of `cost`, `unitCostMinor`, `profit`, `margin`, `cogs`, and related keys at every depth.
 - `settings.profiles` and all PIN hash fields never leave the facade; owner settings expose only `pinSet`.

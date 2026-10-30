@@ -44,6 +44,8 @@
       const purchaseReturns = await this.repo.listRange('purchaseReturns', from, to);
       const cashAdjustments = await this.repo.listRange('cashAdjustments', from, to,
         a => !a.voided);
+      const cardSettlements = await this.repo.listRange('cardSettlements', from, to,
+        settlement => !settlement.voided);
 
       let netSales = 0;
       let cogs = 0;
@@ -130,17 +132,20 @@
 
       let cashDifference = 0;
       for (const a of cashAdjustments) cashDifference += Number(a.amountMinor) || 0;
+      let cardFees = 0;
+      for (const settlement of cardSettlements) cardFees += Number(settlement.feeMinor) || 0;
+      if (cardFees) expensesByCategory['عمولات البطاقات والمحافظ'] = cardFees;
       // v3-Lite §4.3: shortages increase operating expenses, surpluses reduce
       // them. The signed line is returned for the Day/Period reports.
       const operatingExpenses = singleTotal + salaryExpense + stockLosses +
-        stockRevaluation - cashDifference;
+        stockRevaluation + cardFees - cashDifference;
       const netProfit = grossProfit - operatingExpenses;
 
       return {
         from, to,
         netSales, cogs, grossProfit, margin,
-        operatingExpenses, salaryExpense, stockLosses, stockRevaluation, cashDifference,
-        expensesByCategory,
+        operatingExpenses, salaryExpense, stockLosses, stockRevaluation, cardFees,
+        cashDifference, expensesByCategory,
         netProfit,
       };
     }
@@ -425,6 +430,45 @@
       return this._documentBalanceSnapshot(asOf, options);
     }
 
+    /**
+     * Gross receipts still held by card/wallet providers (A4 clearing).
+     * Document reports keep clearing-method receipts out of legacy money
+     * accounts, so the balance sheet adds the unsettled amount back as a
+     * cash-equivalent asset. Derived only from document snapshots so parity
+     * with the journal stays meaningful.
+     * @param {string} asOf YYYY-MM-DD
+     * @returns {Promise<number>} outstanding clearing in minor units
+     */
+    async _documentClearingOutstanding(asOf) {
+      let clearing = 0;
+      const sales = await this.repo.listRange('sales', '0000-01-01', asOf);
+      for (const sale of sales) {
+        if (sale.status === 'void') continue;
+        for (const p of (sale.payments || [])) {
+          if (p.methodKind !== 'clearing') continue;
+          const date = p.date || sale.date;
+          if (!date || date > asOf) continue;
+          const amount = Number(p.amountMinor) || 0;
+          if (amount > 0) clearing += amount;
+        }
+      }
+      const collections = await this.repo.listRange('customerPayments', '0000-01-01', asOf);
+      for (const p of collections) {
+        if (p.methodKind !== 'clearing') continue;
+        const amount = Number(p.amountMinor) || 0;
+        if (amount > 0) clearing += amount;
+      }
+      const returns = await this.repo.listRange('salesReturns', '0000-01-01', asOf);
+      for (const ret of returns) {
+        if (ret.refundMode !== 'cash_refund' || ret.refundMethodKind !== 'clearing') continue;
+        clearing -= Number(ret.refundMinor) || 0;
+      }
+      const settlements = await this.repo.listRange('cardSettlements', '0000-01-01', asOf,
+        doc => !doc.voided);
+      for (const doc of settlements) clearing -= Number(doc.grossMinor) || 0;
+      return BeeStore.money.roundMinor(clearing);
+    }
+
     async _documentBalanceSnapshot(asOf, options) {
       const settings = await this.repo.get('meta', 'settings') || {};
       const startDate = settings.systemStartDate || '0000-01-01';
@@ -450,6 +494,11 @@
           cashByAccount[a.id] = bal;
           cashBalance += bal;
         }
+      }
+      const clearingOutstanding = await this._documentClearingOutstanding(asOf);
+      if (clearingOutstanding) {
+        cashByAccount.clearing = clearingOutstanding;
+        cashBalance += clearingOutstanding;
       }
 
       const inventory = await BeeStore.stock.valueAsOf(asOf);
@@ -546,8 +595,8 @@
       return {
         asOf,
         assets: {
-          cashBalance, cashByAccount, inventoryValue, receivables,
-          prepaid: prepaid.total, advancesOutstanding, total: assets,
+          cashBalance, cashByAccount, clearingOutstanding, inventoryValue,
+          receivables, prepaid: prepaid.total, advancesOutstanding, total: assets,
         },
         liabilities: {
           payables, customerCredits,
@@ -631,34 +680,36 @@
       const salaryExpense = this._ctxSystemBalance(ctx, 'salaries', '6100');
       const stockLosses = this._ctxSystemBalance(ctx, 'inventory_loss', '5020');
       const stockRevaluation = this._ctxSystemBalance(ctx, 'inventory_revaluation', '5030');
+      const cardFees = this._ctxSystemBalance(ctx, 'card_fees', '6200');
       const cashShortage = this._ctxSystemBalance(ctx, 'cash_shortage', '6400');
       const otherIncome = -this._ctxSystemBalance(ctx, 'other_income', '4100');
       const cashDifference = otherIncome - cashShortage;
 
       const special = new Set([
         'cogs', 'inventory_loss', 'inventory_revaluation',
-        'salaries', 'cash_shortage',
+        'salaries', 'card_fees', 'cash_shortage',
       ]);
       const expensesByCategory = {};
       let otherExpenses = 0;
       for (const account of ctx.chart) {
         if (account.type !== 'expense') continue;
         if (special.has(account.systemKey)) continue;
-        if (['5010', '5020', '5030', '6100', '6400'].indexOf(String(account.code)) >= 0) continue;
+        if (['5010', '5020', '5030', '6100', '6200', '6400'].indexOf(String(account.code)) >= 0) continue;
         const amount = this._ctxAccountBalance(ctx, account.id);
         if (!amount) continue;
         const key = account.nameAr || account.code || 'أخرى';
         expensesByCategory[key] = (expensesByCategory[key] || 0) + amount;
         otherExpenses += amount;
       }
+      if (cardFees) expensesByCategory['عمولات البطاقات والمحافظ'] = cardFees;
 
       const grossProfit = netSales - cogs;
       const margin = netSales > 0 ? (grossProfit / netSales * 100).toFixed(1) : '0.0';
       const operatingExpenses = otherExpenses + salaryExpense + stockLosses +
-        stockRevaluation - cashDifference;
+        stockRevaluation + cardFees - cashDifference;
       return {
         netSales, cogs, grossProfit, margin,
-        operatingExpenses, salaryExpense, stockLosses, stockRevaluation,
+        operatingExpenses, salaryExpense, stockLosses, stockRevaluation, cardFees,
         cashDifference, otherIncome, expensesByCategory,
         netProfit: grossProfit - operatingExpenses,
         source: 'journal',
@@ -690,10 +741,12 @@
       const pnl = this._journalPnlFromContext(ctx);
 
       let cashBalance = 0;
+      let clearingOutstanding = 0;
       const cashByAccount = {};
       for (const account of ctx.chart) {
         if (!this._isMoneyChartAccount(account)) continue;
         const balance = this._ctxAccountBalance(ctx, account.id);
+        if (account.clearing) clearingOutstanding += balance;
         cashByAccount[account.legacyAccountId || account.id] = balance;
         cashBalance += balance;
       }
@@ -718,8 +771,8 @@
       return {
         asOf,
         assets: {
-          cashBalance, cashByAccount, inventoryValue, receivables,
-          prepaid, advancesOutstanding, total: assets,
+          cashBalance, cashByAccount, clearingOutstanding, inventoryValue,
+          receivables, prepaid, advancesOutstanding, total: assets,
         },
         liabilities: {
           payables, customerCredits,
@@ -801,7 +854,7 @@
 
     _pnlDifferences(documentPnl, journalPnl) {
       const keys = ['netSales', 'cogs', 'grossProfit', 'operatingExpenses',
-        'salaryExpense', 'stockLosses', 'stockRevaluation', 'cashDifference',
+        'salaryExpense', 'stockLosses', 'stockRevaluation', 'cardFees', 'cashDifference',
         'netProfit'];
       const differences = {};
       const failures = [];

@@ -305,6 +305,7 @@
       '/expenses': { title: 'المصاريف', render: BeeStore.pages.expenses.render },
       '/employees': { title: 'الموظفون والرواتب', render: BeeStore.pages.employees.render },
       '/accounts': { title: 'الحسابات', render: BeeStore.pages.accounts.render },
+      '/settlements': { title: 'تسويات البطاقات والمحافظ', render: BeeStore.pages.settlements.render },
       '/reports': { title: 'التقارير', render: BeeStore.pages.reports.render },
       '/periods': { title: 'إقفال الشهور', render: BeeStore.pages.periods.render },
       '/settings': { title: 'الإعدادات', render: BeeStore.pages.settings.render },

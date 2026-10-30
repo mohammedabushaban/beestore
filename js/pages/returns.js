@@ -145,19 +145,20 @@
       { value: 'exchange', label: 'استبدال' },
     ], 'cash_refund');
 
-    const accountSelect = select([{ value: '', label: 'اختر الحساب' }], '');
-    BeeStore.api.accounts.list().then(async res => {
-      if (!res.ok || res.data.length === 0) return;
-      const settings = await BeeStore.settings.get();
-      const cashDefault = BeeStore.settings.resolvePaymentAccount(settings, 'cash');
-      for (const a of res.data) {
-        accountSelect.appendChild(el('option', { value: a.id }, a.name));
+    const methodSelect = select([{ value: 'cash', label: 'نقداً' }], 'cash');
+    BeeStore.api.settings.get().then(res => {
+      if (!res.ok) return;
+      const methods = (res.data.paymentMethods || [])
+        .filter(m => BeeStore.settings.methodKind(res.data, m.id) !== 'customer_credit');
+      methodSelect.textContent = '';
+      for (const method of methods) {
+        methodSelect.appendChild(el('option', { value: method.id }, method.name));
       }
-      if (cashDefault) accountSelect.value = cashDefault;
+      if (methods.some(m => m.id === 'cash')) methodSelect.value = 'cash';
     });
     const accountField = el('div', { class: 'form-group', id: 'return-account-field' }, [
-      el('label', { class: 'form-label' }, 'حساب الاسترداد'),
-      accountSelect,
+      el('label', { class: 'form-label' }, 'طريقة رد المبلغ'),
+      methodSelect,
     ]);
 
     const exchangeItems = [];
@@ -208,7 +209,7 @@
             lines: returnLines,
             reason: reasonInput.value.trim(),
             refundMode: refundMode.value,
-            refundMethod: refundMode.value === 'cash_refund' ? accountSelect.value || null : null,
+            refundPaymentMethod: refundMode.value === 'cash_refund' ? methodSelect.value || 'cash' : null,
             exchangeLines: refundMode.value === 'exchange' ? exchangeLines || [] : undefined,
           });
           if (res.ok) { toast('تم إنشاء المرتجع'); overlay.remove(); render(document.getElementById('page-content')); }

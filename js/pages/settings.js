@@ -133,15 +133,34 @@
     }
 
     function _addRow(method) {
-      const nameInput = input('text', method ? method.name : '', { placeholder: 'اسم الطريقة (مثل جوال باي)' });
-      const accSelect = _accountOptions(method ? method.accountId : '');
-      const id = (method && method.id) || BeeStore.ids.randomId('pm');
+      const current = method || {};
+      const nameInput = input('text', current.name || '', { placeholder: 'اسم الطريقة (مثل جوال باي)' });
+      const accSelect = _accountOptions(current.accountId);
+      const kindSelect = select([
+        { value: 'cash', label: 'نقدي — الصندوق' },
+        { value: 'bank_direct', label: 'بنك مباشر' },
+        { value: 'clearing', label: 'بطاقة / محفظة — حساب تسوية' },
+        { value: 'customer_credit', label: 'رصيد زبون' },
+      ], current.kind || (method ? BeeStore.settings.methodKind(s, current.id) : 'clearing'));
+      const feeRateInput = input('number', ((Number(current.feeBasisPoints) || 0) / 100).toFixed(2), { min: 0, step: 0.01 });
+      const feeFixedInput = input('number', ((Number(current.feeFixedMinor) || 0) / 100).toFixed(2), { min: 0, step: 0.01 });
+      const daysInput = input('number', String(Math.max(0, Number(current.settlementDays) || 0)), { min: 0, step: 1 });
+      const id = current.id || BeeStore.ids.randomId('pm');
       const row = el('div', { class: 'payment-method-row', 'data-id': id });
       row.appendChild(el('div', { class: 'form-group', style: 'flex:2; min-width:140px;' }, [el('label', { class: 'form-label' }, 'الاسم'), nameInput]));
-      row.appendChild(el('div', { class: 'form-group', style: 'flex:2; min-width:140px;' }, [el('label', { class: 'form-label' }, 'الحساب'), accSelect]));
+      row.appendChild(el('div', { class: 'form-group', style: 'flex:2; min-width:150px;' }, [el('label', { class: 'form-label' }, 'نوع الترحيل'), kindSelect]));
+      row.appendChild(el('div', { class: 'form-group', style: 'flex:2; min-width:140px;' }, [el('label', { class: 'form-label' }, 'الحساب القديم / الوجهة'), accSelect]));
+      row.appendChild(el('div', { class: 'form-group', style: 'min-width:105px;' }, [el('label', { class: 'form-label' }, 'العمولة ٪'), feeRateInput]));
+      row.appendChild(el('div', { class: 'form-group', style: 'min-width:105px;' }, [el('label', { class: 'form-label' }, 'عمولة ثابتة'), feeFixedInput]));
+      row.appendChild(el('div', { class: 'form-group', style: 'min-width:95px;' }, [el('label', { class: 'form-label' }, 'أيام التسوية'), daysInput]));
       row.appendChild(el('button', { class: 'btn btn-sm btn-danger', onclick: () => row.remove(), style: 'align-self:flex-end;' }, 'حذف'));
       row._nameInput = nameInput;
       row._accSelect = accSelect;
+      row._kindSelect = kindSelect;
+      row._feeRateInput = feeRateInput;
+      row._feeFixedInput = feeFixedInput;
+      row._daysInput = daysInput;
+      row._chartAccountId = current.chartAccountId || null;
       rows.appendChild(row);
     }
 
@@ -150,7 +169,7 @@
 
     container.appendChild(el('div', { class: 'card' }, [
       el('h3', {}, 'طرق الدفع'),
-      el('p', { class: 'form-hint' }, 'تظهر هذه الطرق في نقطة البيع وعند استلام الدفعات، ويمكن ربط كل طريقة بحساب (الصندوق/البنك).'),
+      el('p', { class: 'form-hint' }, 'تظهر هذه الطرق في نقطة البيع وعند استلام الدفعات. طرق البطاقة والمحفظة ترحّل إلى حساب تسوية مستقل، وتُستخدم نسبة العمولة والعمولة الثابتة لحساب العمولة المتوقعة عند التسوية.'),
       rows,
       el('div', { class: 'dialog-actions' }, [
         el('button', { class: 'btn btn-secondary', onclick: () => _addRow(null) }, '+ إضافة طريقة'),
@@ -161,7 +180,16 @@
             rows.querySelectorAll('.payment-method-row').forEach(row => {
               const name = row._nameInput.value.trim();
               if (!name) return;
-              list.push({ id: row.getAttribute('data-id'), name, accountId: row._accSelect.value || null });
+              list.push({
+                id: row.getAttribute('data-id'),
+                name,
+                kind: row._kindSelect.value,
+                accountId: row._accSelect.value || null,
+                chartAccountId: row._chartAccountId,
+                feeBasisPoints: Math.max(0, Math.round(BeeStore.money.parseDecimal(row._feeRateInput.value) * 100)),
+                feeFixedMinor: Math.max(0, BeeStore.money.fromMajor(row._feeFixedInput.value)),
+                settlementDays: Math.max(0, Math.floor(BeeStore.money.parseDecimal(row._daysInput.value))),
+              });
             });
             if (list.length === 0) { toast('أضف طريقة واحدة على الأقل', 'error'); return; }
             const saveRes = await BeeStore.api.settings.update({ paymentMethods: list });

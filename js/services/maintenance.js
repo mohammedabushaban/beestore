@@ -270,7 +270,8 @@
         ['supplierPayments', 'supplier-payment'], ['expenses', 'expense'],
         ['stockMovements', 'stock'], ['ownerTransactions', 'owner'],
         ['transfers', 'transfer'], ['dailyClosings', 'closing'],
-        ['cashAdjustments', 'cash-adjustment'], ['employeeAdvances', 'advance'],
+        ['cashAdjustments', 'cash-adjustment'], ['cardSettlements', 'card-settlement'],
+        ['employeeAdvances', 'advance'],
       ];
       for (const [coll] of datedChecks) {
         for (const r of (await this.repo.list(coll))) {
@@ -582,7 +583,7 @@
         'products', 'variants', 'sales', 'salesReturns', 'customers', 'customerPayments',
         'suppliers', 'supplierPayments', 'purchases', 'expenses', 'expenseCategories',
         'employees', 'payroll', 'employeeAdvances', 'accounts', 'ownerTransactions',
-        'transfers', 'recurringExpenses', 'stockMovements',
+        'transfers', 'recurringExpenses', 'stockMovements', 'cardSettlements',
       ];
       for (const name of collections) {
         const rows = await this.repo.list(name);

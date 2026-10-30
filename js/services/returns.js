@@ -94,6 +94,25 @@
 
         const settings = await tx.get('meta', 'settings') || {};
         const number = (settings.returnPrefix || 'RET') + '-' + String(await tx.nextCounter('return')).padStart(6, '0');
+        const refundMode = data.refundMode || 'cash_refund';
+        let refundPaymentMethod = null;
+        let refundMethodKind = null;
+        let refundAccountId = null;
+        if (refundMode === 'cash_refund') {
+          const requestedMethod = data.refundPaymentMethod || null;
+          const byAccount = !requestedMethod && data.refundMethod
+            ? BeeStore.settings.methodForAccount(settings, data.refundMethod)
+            : null;
+          refundPaymentMethod = requestedMethod || (byAccount && byAccount.id) || 'cash';
+          const definition = BeeStore.settings.paymentMethod(settings, refundPaymentMethod);
+          if (!definition || definition.kind === 'customer_credit') {
+            throw BeeStore.errors.err('VALIDATION', 'طريقة الاسترداد غير صالحة');
+          }
+          refundMethodKind = definition.kind;
+          refundAccountId = (!requestedMethod && data.refundMethod) ||
+            definition.accountId ||
+            BeeStore.settings.resolvePaymentAccount(settings, 'cash');
+        }
 
         const lines = [];
         let refundMinor = 0;
@@ -161,10 +180,10 @@
           lines,
           refundMinor,
           restockCostMinor: 0,
-          refundMode: data.refundMode || 'cash_refund',
-          refundMethod: data.refundMode === 'cash_refund'
-            ? (data.refundMethod || BeeStore.settings.resolvePaymentAccount(settings, 'cash'))
-            : (data.refundMethod || null),
+          refundMode,
+          refundMethod: refundAccountId,
+          refundPaymentMethod,
+          refundMethodKind,
           reason: data.reason || '',
           exchangeSaleId: null,
           createdByProfile: data.createdByProfile || null,
@@ -237,8 +256,8 @@
         sale.updatedAt = BeeStore.dates.now();
         tx.put('sales', sale);
 
-        if (data.refundMode === 'cash_refund' && data.refundMethod) {
-          const account = await tx.get('accounts', data.refundMethod);
+        if (ret.refundMode === 'cash_refund' && ret.refundMethod) {
+          const account = await tx.get('accounts', ret.refundMethod);
           if (account) {
             account.updatedAt = BeeStore.dates.now();
             tx.put('accounts', account);

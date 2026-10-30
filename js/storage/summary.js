@@ -14,13 +14,13 @@
   // returned transiently in `days` (never persisted) so an as-of date inside
   // the current month can be computed from that month's documents without
   // scanning the whole history.
-  const VERSION = 6;
+  const VERSION = 7;
 
   const COLLECTIONS = [
     'accounts', 'sales', 'purchases', 'customerPayments', 'supplierPayments',
     'expenses', 'employeeAdvances', 'ownerTransactions', 'transfers',
     'salesReturns', 'purchaseReturns', 'payroll', 'stockMovements',
-    'cashAdjustments',
+    'cashAdjustments', 'cardSettlements',
   ];
 
   function empty() {
@@ -50,6 +50,7 @@
         salaryExpense: 0,
         stockLosses: 0,
         stockRevaluation: 0,
+        cardFees: 0,
         tax: 0,
         expensesTotal: 0,
         spreadExpenses: 0,
@@ -218,7 +219,9 @@
         }
         for (const p of (doc.payments || [])) {
           const amount = Number(p.amountMinor) || 0;
-          account('sale_payment', p.accountId, amount, p.date || doc.date);
+          if (p.methodKind !== 'clearing') {
+            account('sale_payment', p.accountId, amount, p.date || doc.date);
+          }
           // A payment attached to the invoice cuts the customer's balance on
           // its own date; later collections are separate customerPayments.
           addCustomerAt(out, doc.customerId, -amount, p.date || doc.date);
@@ -260,7 +263,9 @@
         break;
       case 'customerPayments': {
         const amount = Number(doc.amountMinor) || 0;
-        account('customer_payment', doc.accountId, amount);
+        if (doc.methodKind !== 'clearing') {
+          account('customer_payment', doc.accountId, amount);
+        }
         addCustomer(out, monthBucket, dayBucket, doc.customerId, -amount);
         break;
       }
@@ -307,7 +312,7 @@
       }
       case 'salesReturns': {
         const amount = Number(doc.refundMinor) || 0;
-        if (doc.refundMode === 'cash_refund') {
+        if (doc.refundMode === 'cash_refund' && doc.refundMethodKind !== 'clearing') {
           account('return_refund', doc.refundMethod, -amount);
         }
         // A customer credit or exchange reduces the customer's net position
@@ -340,6 +345,19 @@
         if (monthBucket) {
           for (const line of (doc.lines || [])) {
             monthBucket.pnl.stockRevaluation -= Number(line.differenceMinor) || 0;
+          }
+        }
+        break;
+      }
+      case 'cardSettlements': {
+        if (doc.voided) break;
+        account('card_settlement', doc.bankAccountId, Number(doc.netReceivedMinor) || 0);
+        if (monthBucket) {
+          const feeMinor = Number(doc.feeMinor) || 0;
+          monthBucket.pnl.cardFees += feeMinor;
+          if (feeMinor) {
+            monthBucket.pnl.expensesByCategory['عمولات البطاقات والمحافظ'] =
+              (monthBucket.pnl.expensesByCategory['عمولات البطاقات والمحافظ'] || 0) + feeMinor;
           }
         }
         break;
@@ -393,7 +411,7 @@
     if (bucket.capitalIn || bucket.withdrawals || bucket.openingInventory) return false;
     const pnl = bucket.pnl;
     for (const key of ['netSales', 'cogs', 'salaryExpense', 'stockLosses', 'stockRevaluation',
-      'tax', 'expensesTotal', 'spreadExpenses', 'cashDifference']) {
+      'cardFees', 'tax', 'expensesTotal', 'spreadExpenses', 'cashDifference']) {
       if (pnl[key]) return false;
     }
     return Object.keys(pnl.expensesByCategory).length === 0;
@@ -437,8 +455,8 @@
       applyNumeric(bucket.customers, source.customers, sign);
       applyNumeric(bucket.suppliers, source.suppliers, sign);
       applyNumeric(bucket.pnl.expensesByCategory, source.pnl.expensesByCategory, sign);
-      for (const key of ['netSales', 'cogs', 'salaryExpense', 'stockLosses', 'tax',
-        'expensesTotal', 'spreadExpenses', 'cashDifference']) {
+      for (const key of ['netSales', 'cogs', 'salaryExpense', 'stockLosses', 'stockRevaluation',
+        'cardFees', 'tax', 'expensesTotal', 'spreadExpenses', 'cashDifference']) {
         bucket.pnl[key] += sign * (Number(source.pnl[key]) || 0);
       }
       bucket.capitalIn += sign * (Number(source.capitalIn) || 0);
@@ -515,7 +533,7 @@
    */
   function pnlRange(summary, fromMonth, toMonth) {
     let netSales = 0, cogs = 0, salaryExpense = 0, stockLosses = 0;
-    let stockRevaluation = 0, expensesTotal = 0, cashDifference = 0;
+    let stockRevaluation = 0, cardFees = 0, expensesTotal = 0, cashDifference = 0;
     const expensesByCategory = {};
     for (const month of monthKeys(summary)) {
       if (month < fromMonth || month > toMonth) continue;
@@ -525,6 +543,7 @@
       salaryExpense += pnl.salaryExpense || 0;
       stockLosses += pnl.stockLosses || 0;
       stockRevaluation += pnl.stockRevaluation || 0;
+      cardFees += pnl.cardFees || 0;
       expensesTotal += pnl.expensesTotal || 0;
       cashDifference += pnl.cashDifference || 0;
       for (const key of Object.keys(pnl.expensesByCategory || {})) {
@@ -535,11 +554,11 @@
     // Shortage (negative) increases operating expenses; surplus (positive)
     // reduces them. `cashDifference` keeps its signed form for the report.
     const operatingExpenses = expensesTotal + salaryExpense + stockLosses +
-      stockRevaluation - cashDifference;
+      stockRevaluation + cardFees - cashDifference;
     return {
       netSales, cogs, grossProfit,
       margin: netSales > 0 ? (grossProfit / netSales * 100).toFixed(1) : '0.0',
-      operatingExpenses, salaryExpense, stockLosses, stockRevaluation, cashDifference,
+      operatingExpenses, salaryExpense, stockLosses, stockRevaluation, cardFees, cashDifference,
       expensesByCategory,
       netProfit: grossProfit - operatingExpenses,
     };

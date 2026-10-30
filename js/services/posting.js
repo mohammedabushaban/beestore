@@ -22,6 +22,7 @@
     SALE_RETURN: 'SALE_RETURN',
     SALE_RETURN_COST: 'SALE_RETURN_COST',
     CUSTOMER_PAYMENT: 'CUSTOMER_PAYMENT',
+    CARD_SETTLEMENT: 'CARD_SETTLEMENT',
     PURCHASE_INVENTORY: 'PURCHASE_INVENTORY',
     PURCHASE_PAYMENT: 'PURCHASE_PAYMENT',
     PURCHASE_RETURN: 'PURCHASE_RETURN',
@@ -48,6 +49,7 @@
     SALE: 'SALE',
     SALE_RETURN: 'SALE_RETURN',
     CUSTOMER_PAYMENT: 'CUSTOMER_PAYMENT',
+    CARD_SETTLEMENT: 'CARD_SETTLEMENT',
     PURCHASE: 'PURCHASE',
     PURCHASE_RETURN: 'PURCHASE_RETURN',
     SUPPLIER_PAYMENT: 'SUPPLIER_PAYMENT',
@@ -154,11 +156,16 @@
     }
 
     /**
-     * Resolves a document's money account to its chart account. Legacy
-     * `accounts` ids win over a payment method's clearing account, matching
-     * the document reports during the parity phase.
+     * Resolves a document's money account to its chart account.
+     *
+     * v5 §6 routing: a document/record created from A4 onward carries an
+     * explicit `methodKind` snapshot. Clearing methods ignore the legacy
+     * account and debit their own clearing chart account; cash/direct-bank
+     * methods keep using the linked legacy account. Pre-A4 documents have no
+     * marker, so their historic legacy-account routing is preserved exactly
+     * during replay and parity.
      * @param {object} tx active transaction
-     * @param {object} [spec] {legacyAccountId,method,chartAccountId}
+     * @param {object} [spec] {legacyAccountId,method,methodKind,chartAccountId}
      * @returns {Promise<object>} chart account
      */
     async moneyAccount(tx, spec) {
@@ -171,6 +178,25 @@
         const direct = chart.find(a => a.id === spec.chartAccountId);
         if (direct) return direct;
       }
+
+      // A4 clearing route: the explicit kind snapshot wins over the legacy
+      // account id because the provider holds the money, not the bank yet.
+      if (spec.methodKind === 'clearing') {
+        const methods = settings.paymentMethods || [];
+        const pm = methods.find(m => m.id === spec.method);
+        const candidates = [];
+        if (pm && pm.chartAccountId) candidates.push(pm.chartAccountId);
+        if (spec.method) candidates.push(spec.method);
+        for (const candidate of candidates) {
+          const byMethod = chart.find(a => a.id === candidate ||
+            a.paymentMethodId === candidate);
+          if (byMethod && byMethod.active !== false) return byMethod;
+        }
+        throw BeeStore.errors.err('VALIDATION',
+          'حساب التسوية (clearing) غير موجود لطريقة الدفع: ' +
+          (pm ? pm.name : (spec.method || spec.legacyAccountId || '')));
+      }
+
       if (spec.legacyAccountId) {
         const legacy = await tx.get('accounts', spec.legacyAccountId);
         if (legacy) {
@@ -624,6 +650,7 @@
         const money = await this.moneyAccount(tx, {
           legacyAccountId: p.accountId,
           method: p.method,
+          methodKind: p.methodKind,
         });
         const parts = [{ accountId: money.id, debit: amount }];
         if (applied > 0) {
@@ -672,6 +699,7 @@
       const money = await this.moneyAccount(tx, {
         legacyAccountId: payment.accountId,
         method: payment.method,
+        methodKind: payment.methodKind,
       });
       const parts = [{ accountId: money.id, debit: amount }];
       if (applied > 0) {
@@ -693,6 +721,41 @@
         event: EVENTS.CUSTOMER_PAYMENT,
         description: 'تحصيل من زبون ' + (payment.payerName || payment.customerId),
         replay: options.replay,
+        parts,
+      });
+    }
+
+    /**
+     * Card/wallet settlement: Dr Bank net + Dr 6200 fees / Cr Clearing gross.
+     * @param {object} tx active transaction
+     * @param {object} doc cardSettlements record
+     * @param {object} [options] {replay}
+     * @returns {Promise<object|null>} entry
+     */
+    async cardSettlement(tx, doc, options) {
+      const gross = round(doc.grossMinor);
+      const fee = round(doc.feeMinor);
+      const net = round(doc.netReceivedMinor);
+      if (gross <= 0 || fee < 0 || net < 0 || gross !== fee + net) {
+        throw BeeStore.errors.err('VALIDATION',
+          'تسوية البطاقة غير متوازنة — الإجمالي يجب أن يساوي العمولة + الصافي');
+      }
+      const bank = await this.moneyAccount(tx, { legacyAccountId: doc.bankAccountId });
+      const clearing = await this.moneyAccount(tx, {
+        method: doc.method,
+        methodKind: 'clearing',
+      });
+      const parts = [];
+      if (net > 0) parts.push({ accountId: bank.id, debit: net });
+      if (fee > 0) parts.push({ key: 'card_fees', debit: fee });
+      parts.push({ accountId: clearing.id, credit: gross });
+      return this.postParts(tx, {
+        date: doc.date,
+        sourceType: SOURCE.CARD_SETTLEMENT,
+        sourceId: doc.id,
+        event: EVENTS.CARD_SETTLEMENT,
+        description: 'تسوية ' + (doc.methodName || doc.method) + ' ' + (doc.number || ''),
+        replay: options && options.replay,
         parts,
       });
     }
@@ -724,7 +787,8 @@
       } else {
         const money = await this.moneyAccount(tx, {
           legacyAccountId: ret.refundMethod,
-          method: 'cash',
+          method: ret.refundPaymentMethod || 'cash',
+          methodKind: ret.refundMethodKind,
         });
         parts.push({ accountId: money.id, credit: refund });
       }
@@ -1285,6 +1349,7 @@
         ['sales', null],
         ['salesReturns', null],
         ['customerPayments', null],
+        ['cardSettlements', null],
         ['supplierPayments', null],
         ['expenses', null],
         ['employeeAdvances', null],
@@ -1438,6 +1503,14 @@
           }
           const nowActive = await this._sourceActive(tx, SOURCE.CUSTOMER_PAYMENT, doc.id);
           await this._linkActive(tx, 'customerPayments', doc, nowActive);
+          return posted;
+        }
+        case 'cardSettlements': {
+          if (await reverseIfVoided(SOURCE.CARD_SETTLEMENT, 'cardSettlements')) return posted;
+          const active = await this._sourceActive(tx, SOURCE.CARD_SETTLEMENT, doc.id);
+          if (active.length === 0) add(await this.cardSettlement(tx, doc, { replay: true }));
+          const nowActive = await this._sourceActive(tx, SOURCE.CARD_SETTLEMENT, doc.id);
+          await this._linkActive(tx, 'cardSettlements', doc, nowActive);
           return posted;
         }
         case 'purchases': {

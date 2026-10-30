@@ -17,7 +17,7 @@
         'settings', 'auth', 'clockGuard', 'accounts', 'categories', 'products', 'variants', 'stock',
         'sales', 'returns', 'customers', 'suppliers', 'purchases', 'purchaseReturns',
         'expenses', 'employees', 'payroll', 'transactions', 'periods',
-        'chart', 'journal', 'posting',
+        'chart', 'journal', 'posting', 'settlements',
         'dailyClosing', 'reports', 'dashboard', 'backup', 'maintenance', 'audit',
         'accountingPackage',
       ];
@@ -399,6 +399,15 @@
         noCount: data.noCount,
         note: data.note,
       })),
+    };
+
+    settlements = {
+      list: async (filters) => ok(await BeeStore.settlements.list(filters)),
+      get: async (id) => ok(await BeeStore.settlements.get(id)),
+      quote: async (method, options) => ok(await BeeStore.settlements.quote(method, options)),
+      overview: async (date) => ok(await BeeStore.settlements.overview(date)),
+      create: async (data) => ok(await BeeStore.settlements.create(data)),
+      void: async (id, reason) => ok(await BeeStore.settlements.void(id, reason)),
     };
 
     dailyClosings = {

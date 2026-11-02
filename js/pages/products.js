@@ -11,12 +11,12 @@
       await _renderCashierCatalog(container);
       return;
     }
-    container.appendChild(el('h2', { class: 'page-title' }, 'المنتجات والمخزون'));
+    container.appendChild(el('h2', { class: 'page-title' }, 'الأصناف والمخزون'));
 
     const content = el('div', { id: 'products-content' });
 
     const tabs = el('div', { class: 'tabs' }, [
-      el('button', { class: 'tab active', onclick: function () { _showTab('products', content); _setActiveTab(this); } }, 'المنتجات'),
+      el('button', { class: 'tab active', onclick: function () { _showTab('products', content); _setActiveTab(this); } }, 'الأصناف'),
       el('button', { class: 'tab', onclick: function () { _showTab('categories', content); _setActiveTab(this); } }, 'التصنيفات'),
       el('button', { class: 'tab', onclick: function () { _showTab('variants', content); _setActiveTab(this); } }, 'الأصناف'),
       el('button', { class: 'tab', onclick: function () { _showTab('stock', content); _setActiveTab(this); } }, 'المخزون'),
@@ -44,7 +44,7 @@
   }
 
   async function _renderCashierCatalog(container) {
-    container.appendChild(el('h2', { class: 'page-title' }, 'المنتجات والأسعار'));
+    container.appendChild(el('h2', { class: 'page-title' }, 'الأصناف والأسعار'));
     container.appendChild(el('p', { class: 'alert alert-info' },
       'عرض للقراءة فقط: السعر والكمية المتوفرة. تعديل المنتجات والأسعار والتكلفة متاح للمالك فقط.'));
 
@@ -77,6 +77,7 @@
         const low = v.quantity <= (v.lowStockThreshold || 0);
         return el('tr', {}, [
           el('td', {}, p ? p.name : '—'),
+          el('td', { style: 'direction:ltr;text-align:start;' }, v.itemCode || v.sku || '—'),
           el('td', {}, v.size || '—'),
           el('td', {}, v.color || '—'),
           el('td', { style: 'direction:ltr;text-align:start;' }, v.barcode || v.sku || '—'),
@@ -91,8 +92,9 @@
       }
       listDiv.appendChild(el('div', { class: 'table-wrapper' }, el('table', { class: 'data-table' }, [
         el('thead', {}, el('tr', {}, [
-          el('th', {}, 'المنتج'), el('th', {}, 'المقاس'), el('th', {}, 'اللون'),
-          el('th', {}, 'الباركود'), el('th', {}, 'السعر'), el('th', {}, 'المتوفر'),
+          el('th', {}, 'الصنف'), el('th', {}, 'الرمز'), el('th', {}, 'المقاس'),
+          el('th', {}, 'اللون'), el('th', {}, 'الباركود'), el('th', {}, 'السعر'),
+          el('th', {}, 'المتوفر'),
         ])),
         el('tbody', {}, rows),
       ])));
@@ -179,31 +181,285 @@
     });
   }
 
+  function _normalizeText(value) {
+    return String(value == null ? '' : value)
+      .replace(/[\u064B-\u065F\u0670\u0640]/g, '')
+      .replace(/[\u0623\u0625\u0622\u0671]/g, '\u0627')
+      .replace(/\u0649/g, '\u064A')
+      .replace(/\u0629/g, '\u0647')
+      .replace(/[\u0660-\u0669]/g, (d) => String(d.charCodeAt(0) - 0x0660))
+      .toLowerCase()
+      .trim();
+  }
+
+  /** Builds the optional category picker shared by the item dialogs. */
+  async function _categoryPicker(value) {
+    const picker = select([{ value: '', label: 'بدون تصنيف' }], value || '');
+    const res = await BeeStore.api.categories.list();
+    if (res.ok) {
+      for (const c of res.data) {
+        if (c.active === false) continue;
+        picker.appendChild(el('option', { value: c.id }, c.name));
+      }
+      picker.value = value || '';
+    }
+    return picker;
+  }
+
   async function _renderProducts(container) {
-    const addBtn = el('button', { class: 'btn btn-primary', onclick: () => _addProduct() }, '+ منتج جديد');
-    container.appendChild(addBtn);
+    const quickBtn = el('button', {
+      class: 'btn btn-primary',
+      onclick: () => _quickAddProduct(),
+    }, '+ إضافة سريعة');
+    const fullBtn = el('button', {
+      class: 'btn btn-secondary',
+      onclick: () => _addProduct(),
+    }, '+ صنف كامل');
+    container.appendChild(el('div', { class: 'filter-row' }, [quickBtn, fullBtn]));
 
-    const res = await BeeStore.api.products.list();
-    if (!res.ok) { toast(res.error.message, 'error'); return; }
+    const searchInput = input('text', '', {
+      placeholder: 'ابحث بالاسم أو الرمز أو الباركود...',
+      class: 'form-input',
+    });
+    const listDiv = el('div');
+    container.appendChild(el('div', { class: 'filter-row' }, searchInput));
+    container.appendChild(listDiv);
 
-    const rows = res.data.map(p => [
-      p.name,
-      p.categoryId || '-',
-      p.defaultPriceMinor ? formatMoney(p.defaultPriceMinor) : '-',
-      p.active ? 'نشط' : 'غير نشط',
-      el('button', { class: 'btn btn-sm btn-secondary', onclick: () => _editProduct(p.id) }, 'تعديل'),
-      el('button', { class: 'btn btn-sm btn-danger', onclick: () => _deactivateProduct(p.id, p.name) }, 'تعطيل'),
+    const [productsRes, categoriesRes, variantsRes] = await Promise.all([
+      BeeStore.api.products.list(),
+      BeeStore.api.categories.list(),
+      BeeStore.api.variants.list(),
     ]);
+    if (!productsRes.ok) { toast(productsRes.error.message, 'error'); return; }
+    const categories = {};
+    if (categoriesRes.ok) {
+      for (const c of categoriesRes.data) categories[c.id] = c.name;
+    }
+    const variantsByProduct = {};
+    if (variantsRes.ok) {
+      for (const v of variantsRes.data) {
+        if (!variantsByProduct[v.productId]) variantsByProduct[v.productId] = [];
+        variantsByProduct[v.productId].push(v);
+      }
+    }
 
-    container.appendChild(el('div', { class: 'table-wrapper' },
-      el('table', { class: 'data-table' }, [
-        el('thead', {}, el('tr', {}, [
-          el('th', {}, 'الاسم'), el('th', {}, 'التصنيف'), el('th', {}, 'السعر'),
-          el('th', {}, 'الحالة'), el('th', {}, ''), el('th', {}, ''),
-        ])),
-        el('tbody', {}, rows.map(r => el('tr', {}, r.map(c => el('td', {}, c))))),
-      ])
-    ));
+    function draw() {
+      const q = _normalizeText(searchInput.value);
+      const products = productsRes.data.filter(p => {
+        if (!q) return true;
+        const variants = variantsByProduct[p.id] || [];
+        const hay = _normalizeText([
+          p.name, p.itemCode, p.brand, p.notes, p.unit,
+          variants.map(v => [v.itemCode, v.barcode, v.sku, v.size, v.color].join(' ')).join(' '),
+        ].filter(Boolean).join(' '));
+        return hay.indexOf(q) !== -1;
+      });
+      listDiv.innerHTML = '';
+      if (products.length === 0) {
+        listDiv.appendChild(el('p', { class: 'empty-state' }, 'لا توجد أصناف مطابقة.'));
+        return;
+      }
+      const rows = products.map(p => {
+        const variants = (variantsByProduct[p.id] || []).filter(v => v.active !== false);
+        const quantity = variants.reduce((sum, v) => sum + (Number(v.quantity) || 0), 0);
+        const prices = variants.map(v => Number(v.priceMinor) || 0)
+          .filter(v => v > 0).sort((a, b) => a - b);
+        const priceText = prices.length === 0
+          ? (p.defaultPriceMinor ? formatMoney(p.defaultPriceMinor) : '—')
+          : (prices[0] === prices[prices.length - 1]
+            ? formatMoney(prices[0])
+            : formatMoney(prices[0]) + ' — ' + formatMoney(prices[prices.length - 1]));
+        const actions = [
+          el('button', { class: 'btn btn-sm btn-secondary', onclick: () => _editProduct(p.id) }, 'تعديل'),
+        ];
+        if (variants.length === 1) {
+          actions.push(el('button', {
+            class: 'btn btn-sm btn-secondary',
+            onclick: () => _editQuantity(variants[0]),
+          }, 'تعديل الكمية'));
+        } else if (variants.length > 1) {
+          actions.push(el('button', {
+            class: 'btn btn-sm btn-secondary',
+            onclick: () => _openVariantList(p),
+          }, 'الأصناف (' + variants.length + ')'));
+        }
+        actions.push(el('button', {
+          class: 'btn btn-sm btn-danger',
+          onclick: () => _deactivateProduct(p.id, p.name),
+        }, 'تعطيل'));
+        return [
+          el('td', { style: 'direction:ltr;text-align:start;' }, p.itemCode || '—'),
+          p.name,
+          p.categoryId ? (categories[p.categoryId] || 'بدون تصنيف') : 'بدون تصنيف',
+          priceText,
+          String(quantity),
+          p.active !== false ? 'نشط' : 'غير نشط',
+          el('div', { class: 'row-actions' }, actions),
+        ];
+      });
+      listDiv.appendChild(el('div', { class: 'table-wrapper' },
+        el('table', { class: 'data-table' }, [
+          el('thead', {}, el('tr', {}, [
+            el('th', {}, 'الرمز'), el('th', {}, 'الاسم'), el('th', {}, 'التصنيف'),
+            el('th', {}, 'السعر'), el('th', {}, 'المتوفر'), el('th', {}, 'الحالة'),
+            el('th', {}, 'إجراءات'),
+          ])),
+          el('tbody', {}, rows.map(r => el('tr', {}, r.map(c => el('td', {}, c))))),
+        ])
+      ));
+    }
+    searchInput.addEventListener('input', draw);
+    draw();
+  }
+
+  /**
+   * v4 R1 Quick Add: compact item form used by the Items page, POS, purchases,
+   * stocktake, returns and price check. One default variant is created.
+   * @param {{barcode?:string, onSaved?:Function, title?:string}} [options]
+   */
+  async function _quickAddProduct(options) {
+    options = options || {};
+    const categories = await _categoryPicker('');
+    let nextCode = '';
+    try {
+      const codeRes = await BeeStore.api.products.nextItemCode();
+      if (codeRes.ok) nextCode = codeRes.data;
+    } catch (e) { /* the service still auto-generates on save */ }
+    const nameInput = input('text', '', { placeholder: 'اسم الصنف' });
+    const codeInput = input('text', nextCode, { placeholder: 'يتولد تلقائياً' });
+    const barcodeInput = input('text', options.barcode || '', {
+      placeholder: 'اختياري — يتولد تلقائياً',
+    });
+    const unitInput = input('text', 'قطعة');
+    const costInput = input('number', '', { min: 0, step: 0.01 });
+    const priceInput = input('number', '', { min: 0, step: 0.01 });
+    const qtyInput = input('number', '0', { min: 0, step: 1 });
+    let overlayRef = null;
+    const barcodeScanBtn = BeeStore.scanner.scanButton(async (code) => {
+      const check = await _checkBarcodeAvailable(code, null, () => {
+        if (overlayRef) overlayRef.remove();
+      });
+      if (check.ok) barcodeInput.value = code;
+    }, { label: 'مسح' });
+
+    const { overlay } = BeeStore.dialogs.openDialog(options.title || 'إضافة سريعة', [
+      formField('اسم الصنف', nameInput, true),
+      formField('رمز الصنف', codeInput, true, 'يتولد تلقائياً ويمكن تعديله'),
+      formField('الباركود', barcodeInput, false, null, barcodeScanBtn),
+      formField('التصنيف (اختياري)', categories),
+      formField('الوحدة', unitInput),
+      formField('التكلفة', costInput, true),
+      formField('سعر البيع', priceInput, true),
+      formField('الكمية الافتتاحية', qtyInput),
+      el('button', {
+        class: 'btn btn-primary',
+        onclick: async () => {
+          if (!nameInput.value.trim()) { toast('اسم الصنف مطلوب', 'error'); return; }
+          const costMinor = BeeStore.money.fromMajor(costInput.value);
+          if (costMinor <= 0) {
+            toast('سعر التكلفة مطلوب - أدخل قيمة أكبر من صفر', 'error');
+            return;
+          }
+          const priceMinor = BeeStore.money.fromMajor(priceInput.value);
+          if (priceMinor <= 0) {
+            toast('سعر البيع مطلوب - أدخل سعراً أكبر من صفر', 'error');
+            return;
+          }
+          const barcode = barcodeInput.value.trim();
+          if (barcode) {
+            const check = await _checkBarcodeAvailable(barcode, null, () => overlay.remove());
+            if (!check.ok) return;
+          }
+          const res = await BeeStore.api.products.quickAdd({
+            name: nameInput.value.trim(),
+            itemCode: codeInput.value.trim(),
+            barcode,
+            categoryId: categories.value || null,
+            unit: unitInput.value.trim() || 'قطعة',
+            costMinor,
+            priceMinor,
+            openingQuantity: Math.max(0, Math.floor(Number(qtyInput.value) || 0)),
+          });
+          if (!res.ok) { toast(res.error.message, 'error'); return; }
+          toast('تم إضافة الصنف');
+          overlay.remove();
+          if (typeof options.onSaved === 'function') {
+            options.onSaved(res.data);
+            return;
+          }
+          const page = document.getElementById('page-content');
+          if (page) render(page);
+        },
+      }, 'حفظ'),
+    ], null, { large: true });
+    overlayRef = overlay;
+    setTimeout(() => nameInput.focus(), 80);
+  }
+
+  function _openVariantList(product) {
+    BeeStore.api.variants.list().then(res => {
+      if (!res.ok) { toast(res.error.message, 'error'); return; }
+      const variants = res.data.filter(v => v.productId === product.id);
+      const rows = variants.map(v => el('div', {
+        class: 'filter-row',
+        style: 'justify-content: space-between; align-items: center; border-bottom: 1px solid #eee; padding: 6px 0;',
+      }, [
+        el('span', {}, [v.itemCode || '—', ' · ', v.size || '—', ' / ', v.color || '—',
+          ' · ', String(v.quantity), ' · ', formatMoney(v.priceMinor)].join('')),
+        el('button', {
+          class: 'btn btn-sm btn-secondary',
+          onclick: () => { overlay.remove(); _editVariant(v.id); },
+        }, 'تعديل'),
+      ]));
+      const { overlay } = BeeStore.dialogs.openDialog('أصناف: ' + product.name,
+        rows.length > 0 ? rows : [el('p', { class: 'empty-state' }, 'لا توجد أصناف.')],
+        null, { large: true });
+    });
+  }
+
+  async function _editQuantity(variant) {
+    const qtyInput = input('number', String(variant.quantity || 0), { min: -1000000, step: 1 });
+    const reasonSelect = select([
+      { value: 'تالف', label: 'تالف' },
+      { value: 'فقد', label: 'فقد' },
+      { value: 'زيادة', label: 'زيادة' },
+      { value: 'جرد', label: 'جرد' },
+      { value: 'تصحيح', label: 'تصحيح' },
+    ], 'تصحيح');
+    const dateInput = input('date', BeeStore.dates.today());
+    const noteInput = input('text', '', { placeholder: 'ملاحظة اختيارية' });
+    const { overlay } = BeeStore.dialogs.openDialog(
+      'تعديل الكمية: ' + [variant.itemCode, variant.size, variant.color].filter(Boolean).join(' '),
+      [
+        formField('الكمية الفعلية الجديدة', qtyInput, true,
+          'الكمية الحالية: ' + String(variant.quantity || 0) +
+          ' — سيُنشأ حركة تسوية بالفرق'),
+        formField('سبب التسوية', reasonSelect, true),
+        formField('التاريخ', dateInput, true),
+        formField('ملاحظة', noteInput),
+        el('button', {
+          class: 'btn btn-primary',
+          onclick: async () => {
+            const target = Number(qtyInput.value);
+            if (!Number.isInteger(target) || target < 0) {
+              toast('أدخل كمية صحيحة غير سالبة', 'error');
+              return;
+            }
+            const diff = target - (Number(variant.quantity) || 0);
+            if (diff === 0) { toast('الكمية لم تتغير'); overlay.remove(); return; }
+            const res = await BeeStore.api.stock.adjust(
+              variant.id, diff, reasonSelect.value,
+              dateInput.value || BeeStore.dates.today(),
+              noteInput.value.trim() || reasonSelect.value);
+            if (res.ok) {
+              toast('تم تعديل الكمية');
+              overlay.remove();
+              const page = document.getElementById('page-content');
+              if (page) render(page);
+            } else toast(res.error.message, 'error');
+          },
+        }, 'حفظ'),
+      ]);
   }
 
   async function _renderVariants(container) {
@@ -339,10 +595,14 @@
       const v = res.data;
       const sizeInput = input('text', v.size || '');
       const colorInput = input('text', v.color || '');
+      const codeInput = input('text', v.itemCode || '');
       const costInput = input('number', (v.costMinor / 100).toFixed(2));
       const priceInput = input('number', (v.priceMinor / 100).toFixed(2));
       const thresholdInput = input('number', v.lowStockThreshold != null ? String(v.lowStockThreshold) : '');
       const barcodeInput = input('text', v.barcode || '');
+      const reasonInput = input('text', '', {
+        placeholder: 'سبب تعديل التكلفة (مطلوب عند تغييرها)',
+      });
       let overlayRef = null;
       const barcodeScanBtn = BeeStore.scanner.scanButton(async (code) => {
         const check = await _checkBarcodeAvailable(code, id, () => {
@@ -352,9 +612,12 @@
       }, { label: 'مسح' });
 
       const { overlay } = BeeStore.dialogs.openDialog('تعديل الصنف', [
+        formField('رمز الصنف', codeInput, true),
         formField('المقاس', sizeInput),
         formField('اللون', colorInput),
         formField('التكلفة', costInput),
+        formField('سبب تعديل التكلفة', reasonInput, false,
+          'مطلوب عند تغيير التكلفة — يُنشئ حركة إعادة تقييم للمخزون'),
         formField('السعر', priceInput),
         formField('حد التنبيه', thresholdInput),
         formField('الباركود', barcodeInput, false, null, barcodeScanBtn),
@@ -366,14 +629,23 @@
               const check = await _checkBarcodeAvailable(barcode, id, () => overlay.remove());
               if (!check.ok) return;
             }
-            const res2 = await BeeStore.api.variants.update(id, {
+            const newCost = BeeStore.money.fromMajor(costInput.value);
+            const costChanged = newCost !== (Number(v.costMinor) || 0);
+            if (costChanged && !reasonInput.value.trim()) {
+              toast('سبب تعديل التكلفة مطلوب', 'error');
+              return;
+            }
+            const patch = {
+              itemCode: codeInput.value.trim(),
               size: sizeInput.value.trim(),
               color: colorInput.value.trim(),
-              costMinor: BeeStore.money.fromMajor(costInput.value),
+              costMinor: newCost,
               priceMinor: BeeStore.money.fromMajor(priceInput.value),
               lowStockThreshold: thresholdInput.value ? Number(thresholdInput.value) : null,
               barcode,
-            });
+            };
+            if (costChanged) patch.revaluationReason = reasonInput.value.trim();
+            const res2 = await BeeStore.api.variants.update(id, patch);
             if (res2.ok) { toast('تم التحديث'); overlay.remove(); render(document.getElementById('page-content')); }
             else toast(res2.error.message, 'error');
           },
@@ -479,68 +751,257 @@
     ));
   }
 
-  function _addProduct() {
+  async function _addProduct() {
+    const categories = await _categoryPicker('');
+    let nextCode = '';
+    try {
+      const codeRes = await BeeStore.api.products.nextItemCode();
+      if (codeRes.ok) nextCode = codeRes.data;
+    } catch (e) { /* auto-generation remains available */ }
+
     const nameInput = input('text', '');
-    const categorySelect = el('select', { class: 'form-input' });
-    categorySelect.appendChild(el('option', { value: '' }, 'بدون تصنيف'));
-    BeeStore.api.categories.list().then(res => {
-      if (res.ok) for (const c of res.data) categorySelect.appendChild(el('option', { value: c.id }, c.name));
-    });
+    const codeInput = input('text', nextCode);
+    const brandInput = input('text', '');
+    const unitInput = input('text', 'قطعة');
+    const thresholdInput = input('number', '', { min: 0, step: 1 });
+    const notesInput = input('text', '');
     const costInput = input('number', '', { min: 0, step: 0.01 });
     const priceInput = input('number', '', { min: 0, step: 0.01 });
+    const qtyInput = input('number', '0', { min: 0, step: 1 });
+    const barcodeInput = input('text', '', { placeholder: 'اختياري — يتولد تلقائياً' });
+    const hasVariantsCheck = BeeStore.dialogs.checkbox('له مقاسات/ألوان', false);
+    const variantToggle = hasVariantsCheck.querySelector('input');
+    const variantsBox = el('div');
+    const variantRows = [];
 
-    const { overlay } = BeeStore.dialogs.openDialog('منتج جديد', [
-      formField('اسم المنتج', nameInput, true),
-      formField('التصنيف', categorySelect),
+    function addVariantRow() {
+      const sizeInput = input('text', '', { placeholder: 'المقاس' });
+      const colorInput = input('text', '', { placeholder: 'اللون' });
+      const vQty = input('number', '0', { min: 0, step: 1 });
+      const vCost = input('number', '', { min: 0, step: 0.01, placeholder: 'افتراضي' });
+      const vPrice = input('number', '', { min: 0, step: 0.01, placeholder: 'افتراضي' });
+      const vBarcode = input('text', '', { placeholder: 'اختياري' });
+      const row = el('div', {
+        class: 'variant-row',
+        style: 'display:grid;grid-template-columns:1fr 1fr 80px 100px 100px 1fr auto;gap:6px;margin-bottom:6px;align-items:center;',
+      }, [
+        sizeInput, colorInput, vQty, vCost, vPrice, vBarcode,
+        el('button', {
+          class: 'btn btn-sm btn-danger',
+          type: 'button',
+          onclick: () => {
+            const index = variantRows.indexOf(entry);
+            if (index >= 0) variantRows.splice(index, 1);
+            row.remove();
+          },
+        }, '×'),
+      ]);
+      const entry = { sizeInput, colorInput, vQty, vCost, vPrice, vBarcode, row };
+      variantRows.push(entry);
+      variantsBox.appendChild(row);
+    }
+
+    variantToggle.addEventListener('change', () => {
+      variantsBox.innerHTML = '';
+      variantRows.length = 0;
+      if (variantToggle.checked) {
+        addVariantRow();
+        addVariantRow();
+      }
+    });
+
+    const { overlay } = BeeStore.dialogs.openDialog('صنف جديد', [
+      formField('اسم الصنف', nameInput, true),
+      formField('رمز الصنف', codeInput, true, 'يتولد تلقائياً ويمكن تعديله'),
+      formField('التصنيف (اختياري)', categories),
+      formField('الماركة', brandInput),
+      formField('الوحدة', unitInput),
       formField('التكلفة الافتراضية', costInput, true),
-      formField('السعر الافتراضي', priceInput, true),
+      formField('سعر البيع الافتراضي', priceInput, true),
+      formField('الباركود (للصنف الافتراضي)', barcodeInput),
+      formField('حد تنبيه المخزون', thresholdInput),
+      formField('ملاحظات', notesInput),
+      hasVariantsCheck,
+      el('div', { class: 'form-group' }, [
+        el('p', { class: 'form-hint' }, 'عند تفعيل المقاسات/الألوان أضف صفاً لكل صنف. اترك التكلفة/السعر فارغين لاستخدام الافتراضي.'),
+        variantsBox,
+        el('button', {
+          class: 'btn btn-sm btn-secondary',
+          type: 'button',
+          onclick: addVariantRow,
+        }, '+ صنف'),
+      ]),
+      formField('الكمية الافتتاحية (للصنف الافتراضي)', qtyInput, false,
+        'تُستخدم فقط عندما لا توجد مقاسات/ألوان'),
       el('button', {
         class: 'btn btn-primary',
         onclick: async () => {
-          if (!nameInput.value.trim()) { toast('اسم المنتج مطلوب', 'error'); return; }
+          if (!nameInput.value.trim()) { toast('اسم الصنف مطلوب', 'error'); return; }
           const defaultCostMinor = BeeStore.money.fromMajor(costInput.value);
-          if (defaultCostMinor <= 0) { toast('سعر التكلفة مطلوب - أدخل قيمة أكبر من صفر', 'error'); return; }
+          if (defaultCostMinor <= 0) {
+            toast('سعر التكلفة مطلوب - أدخل قيمة أكبر من صفر', 'error');
+            return;
+          }
           const defaultPriceMinor = BeeStore.money.fromMajor(priceInput.value);
-          if (defaultPriceMinor <= 0) { toast('سعر البيع مطلوب - أدخل سعراً أكبر من صفر', 'error'); return; }
+          if (defaultPriceMinor <= 0) {
+            toast('سعر البيع مطلوب - أدخل سعراً أكبر من صفر', 'error');
+            return;
+          }
+          const hasVariants = !!variantToggle.checked;
+          const variants = [];
+          if (hasVariants) {
+            for (const entry of variantRows) {
+              const size = entry.sizeInput.value.trim();
+              const color = entry.colorInput.value.trim();
+              if (!size && !color) {
+                toast('كل صف يحتاج مقاساً أو لوناً', 'error');
+                return;
+              }
+              variants.push({
+                size,
+                color,
+                quantity: Math.max(0, Math.floor(Number(entry.vQty.value) || 0)),
+                costMinor: entry.vCost.value
+                  ? BeeStore.money.fromMajor(entry.vCost.value) : defaultCostMinor,
+                priceMinor: entry.vPrice.value
+                  ? BeeStore.money.fromMajor(entry.vPrice.value) : defaultPriceMinor,
+                barcode: entry.vBarcode.value.trim(),
+              });
+            }
+            if (variants.length === 0) {
+              toast('أضف صنفاً واحداً على الأقل', 'error');
+              return;
+            }
+          } else {
+            const barcode = barcodeInput.value.trim();
+            if (barcode) {
+              const check = await _checkBarcodeAvailable(barcode, null, () => overlay.remove());
+              if (!check.ok) return;
+            }
+            variants.push({
+              size: '',
+              color: '',
+              barcode,
+              quantity: Math.max(0, Math.floor(Number(qtyInput.value) || 0)),
+              costMinor: defaultCostMinor,
+              priceMinor: defaultPriceMinor,
+            });
+          }
           const res = await BeeStore.api.products.create({
             name: nameInput.value.trim(),
-            categoryId: categorySelect.value || null,
+            itemCode: codeInput.value.trim(),
+            categoryId: categories.value || null,
+            brand: brandInput.value.trim(),
+            unit: unitInput.value.trim() || 'قطعة',
+            notes: notesInput.value.trim(),
             defaultCostMinor,
             defaultPriceMinor,
+            lowStockThreshold: thresholdInput.value ? Number(thresholdInput.value) : null,
+            hasVariants,
+            variants,
           });
-          if (res.ok) { toast('تم إضافة المنتج'); overlay.remove(); render(document.getElementById('page-content')); }
-          else toast(res.error.message, 'error');
+          if (res.ok) {
+            toast('تم إضافة الصنف');
+            overlay.remove();
+            render(document.getElementById('page-content'));
+          } else toast(res.error.message, 'error');
         },
       }, 'حفظ'),
-    ]);
+    ], null, { large: true });
   }
 
-  function _editProduct(id) {
-    BeeStore.api.products.get(id).then(res => {
-      if (!res.ok) return;
-      const p = res.data;
-      const nameInput = input('text', p.name);
-      const costInput = input('number', (p.defaultCostMinor / 100).toFixed(2));
-      const priceInput = input('number', (p.defaultPriceMinor / 100).toFixed(2));
-
-      const { overlay } = BeeStore.dialogs.openDialog('تعديل المنتج', [
-        formField('الاسم', nameInput, true),
-        formField('التكلفة', costInput),
-        formField('السعر', priceInput),
-        el('button', {
-          class: 'btn btn-primary',
-          onclick: async () => {
-            const res = await BeeStore.api.products.update(id, {
-              name: nameInput.value.trim(),
-              defaultCostMinor: BeeStore.money.fromMajor(costInput.value),
-              defaultPriceMinor: BeeStore.money.fromMajor(priceInput.value),
-            });
-            if (res.ok) { toast('تم التحديث'); overlay.remove(); render(document.getElementById('page-content')); }
-            else toast(res.error.message, 'error');
-          },
-        }, 'حفظ'),
-      ]);
+  async function _editProduct(id) {
+    const res = await BeeStore.api.products.getWithVariants(id);
+    if (!res.ok || !res.data) return;
+    const p = res.data;
+    const variants = p.variants || [];
+    const defaultVariant = variants.length === 1 ? variants[0] : null;
+    const categories = await _categoryPicker(p.categoryId || '');
+    const nameInput = input('text', p.name);
+    const codeInput = input('text', p.itemCode || '');
+    const brandInput = input('text', p.brand || '');
+    const unitInput = input('text', p.unit || 'قطعة');
+    const thresholdInput = input('number',
+      p.lowStockThreshold != null ? String(p.lowStockThreshold) : '');
+    const notesInput = input('text', p.notes || '');
+    const priceValue = defaultVariant
+      ? defaultVariant.priceMinor : p.defaultPriceMinor;
+    const priceInput = input('number', ((Number(priceValue) || 0) / 100).toFixed(2));
+    const costInput = input('number',
+      ((Number(defaultVariant ? defaultVariant.costMinor : p.defaultCostMinor) || 0) / 100).toFixed(2));
+    const reasonInput = input('text', '', {
+      placeholder: 'سبب تعديل التكلفة (مطلوب عند تغييرها)',
     });
+    const activeCheck = BeeStore.dialogs.checkbox('نشط', p.active !== false);
+    const activeToggle = activeCheck.querySelector('input');
+    const stockHint = p.hasVariants
+      ? el('p', { class: 'form-hint' },
+        'هذا الصنف له مقاسات/ألوان. عدّل تكلفة وسعر كل صنف من تبويب «الأصناف».')
+      : null;
+
+    const { overlay } = BeeStore.dialogs.openDialog('تعديل الصنف', [
+      formField('الاسم', nameInput, true),
+      formField('رمز الصنف', codeInput, true),
+      formField('التصنيف (اختياري)', categories),
+      formField('الماركة', brandInput),
+      formField('الوحدة', unitInput),
+      stockHint || formField('التكلفة', costInput),
+      stockHint || formField('السعر', priceInput),
+      stockHint || formField('سبب تعديل التكلفة', reasonInput,
+        false, 'مطلوب فقط عند تغيير التكلفة — يُنشئ حركة إعادة تقييم'),
+      formField('حد تنبيه المخزون', thresholdInput),
+      formField('ملاحظات', notesInput),
+      activeCheck,
+      el('button', {
+        class: 'btn btn-primary',
+        onclick: async () => {
+          if (!nameInput.value.trim()) { toast('اسم الصنف مطلوب', 'error'); return; }
+          if (!codeInput.value.trim()) { toast('رمز الصنف مطلوب', 'error'); return; }
+          const patch = {
+            name: nameInput.value.trim(),
+            itemCode: codeInput.value.trim(),
+            categoryId: categories.value || null,
+            brand: brandInput.value.trim(),
+            unit: unitInput.value.trim() || 'قطعة',
+            lowStockThreshold: thresholdInput.value ? Number(thresholdInput.value) : null,
+            notes: notesInput.value.trim(),
+            active: activeToggle.checked,
+          };
+          let newCost = null;
+          let newPrice = null;
+          if (defaultVariant) {
+            newCost = BeeStore.money.fromMajor(costInput.value);
+            newPrice = BeeStore.money.fromMajor(priceInput.value);
+            if (newPrice <= 0) {
+              toast('سعر البيع مطلوب - أدخل سعراً أكبر من صفر', 'error');
+              return;
+            }
+            if (newCost !== (Number(defaultVariant.costMinor) || 0) &&
+              !reasonInput.value.trim()) {
+              toast('سبب تعديل التكلفة مطلوب', 'error');
+              return;
+            }
+            patch.defaultCostMinor = newCost;
+            patch.defaultPriceMinor = newPrice;
+          }
+          const updated = await BeeStore.api.products.update(id, patch);
+          if (!updated.ok) { toast(updated.error.message, 'error'); return; }
+          if (defaultVariant && (newCost !== (Number(defaultVariant.costMinor) || 0) ||
+            newPrice !== (Number(defaultVariant.priceMinor) || 0))) {
+            const variantPatch = { priceMinor: newPrice };
+            if (newCost !== (Number(defaultVariant.costMinor) || 0)) {
+              variantPatch.costMinor = newCost;
+              variantPatch.revaluationReason = reasonInput.value.trim();
+            }
+            const variantRes = await BeeStore.api.variants.update(defaultVariant.id, variantPatch);
+            if (!variantRes.ok) { toast(variantRes.error.message, 'error'); return; }
+          }
+          toast('تم التحديث');
+          overlay.remove();
+          render(document.getElementById('page-content'));
+        },
+      }, 'حفظ'),
+    ], null, { large: true });
   }
 
   function _deactivateProduct(id, name) {
@@ -643,6 +1104,11 @@
   }
 
   BeeStore.pages = BeeStore.pages || {};
-  BeeStore.pages.products = { render, openAddVariant, editVariant: _editVariant };
-  if (typeof module !== 'undefined') module.exports = { render, openAddVariant };
+  BeeStore.pages.products = {
+    render,
+    openAddVariant,
+    editVariant: _editVariant,
+    quickAdd: _quickAddProduct,
+  };
+  if (typeof module !== 'undefined') module.exports = { render, openAddVariant, quickAdd: _quickAddProduct };
 })(typeof window !== 'undefined' ? window : globalThis);

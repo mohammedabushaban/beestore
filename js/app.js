@@ -304,6 +304,7 @@
       '/customers': { title: 'الزبائن والديون', render: BeeStore.pages.customers.render },
       '/expenses': { title: 'المصاريف', render: BeeStore.pages.expenses.render },
       '/employees': { title: 'الموظفون والرواتب', render: BeeStore.pages.employees.render },
+      '/fixed-assets': { title: 'الأصول الثابتة', render: BeeStore.pages.fixedAssets.render },
       '/accounts': { title: 'الحسابات', render: BeeStore.pages.accounts.render },
       '/settlements': { title: 'تسويات البطاقات والمحافظ', render: BeeStore.pages.settlements.render },
       '/reports': { title: 'التقارير', render: BeeStore.pages.reports.render },
@@ -315,8 +316,14 @@
       BeeStore.router.register(path, () => {
         if (BeeStore.closeSidebar) BeeStore.closeSidebar();
         document.getElementById('page-title').textContent = page.title;
-        const content = document.getElementById('page-content');
-        content.innerHTML = '';
+        const host = document.getElementById('page-content');
+        host.innerHTML = '';
+        // Each route gets its own child container. A slow page that finishes
+        // after the user navigates away appends to this detached node instead
+        // of polluting the next page.
+        const content = document.createElement('div');
+        content.className = 'page-route';
+        host.appendChild(content);
         if (BeeStore.appLock && !BeeStore.appLock.canRoute(path)) {
           content.appendChild(document.createElement('div'));
           content.firstChild.className = 'alert alert-warning';

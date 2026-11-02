@@ -22,12 +22,15 @@
       // older than the memory window) instead of loading every invoice.
       const saleMap = new Map();
       for (const r of returns) {
-        if (!saleMap.has(r.saleId)) {
-          saleMap.set(r.saleId, await this.repo.get('sales', r.saleId));
+        let sale = null;
+        if (r.saleId) {
+          if (!saleMap.has(r.saleId)) {
+            saleMap.set(r.saleId, await this.repo.get('sales', r.saleId));
+          }
+          sale = saleMap.get(r.saleId) || null;
         }
-        const sale = saleMap.get(r.saleId);
         r.saleNumber = sale ? sale.number : '';
-        r.customerName = sale ? (sale.customerName || '') : '';
+        r.customerName = sale ? (sale.customerName || '') : (r.customerName || '');
       }
       returns.sort((a, b) => b.date.localeCompare(a.date));
       return returns;
@@ -88,9 +91,30 @@
         const returnDate = data.date || BeeStore.dates.today();
         await BeeStore.periods.assertOpen(tx, returnDate);
         await BeeStore.periods.assertDayOpen(tx, returnDate);
-        const sale = await tx.get('sales', data.saleId);
-        if (!sale) throw BeeStore.errors.err('NOT_FOUND', 'الفاتورة غير موجودة');
-        if (sale.status === 'void') throw BeeStore.errors.err('SALE_VOID', 'لا يمكن إرجاع فاتورة ملغاة');
+
+        // v4 R9: the invoice is optional. A line is linked when it carries a
+        // saleLineIndex; otherwise it is an item-only return.
+        let sale = null;
+        if (data.saleId) {
+          sale = await tx.get('sales', data.saleId);
+          if (!sale) throw BeeStore.errors.err('NOT_FOUND', 'الفاتورة غير موجودة');
+          if (sale.status === 'void') {
+            throw BeeStore.errors.err('SALE_VOID', 'لا يمكن إرجاع فاتورة ملغاة');
+          }
+        }
+        if (!Array.isArray(data.lines) || data.lines.length === 0) {
+          throw BeeStore.errors.err('INVALID', 'أضف بنداً واحداً على الأقل للمرتجع');
+        }
+        const profile = data.createdByProfile || 'owner';
+        const unlinkedCount = data.lines.filter(line =>
+          !sale || line.saleLineIndex === undefined || line.saleLineIndex === null ||
+          line.saleLineIndex === '').length;
+        if (unlinkedCount > 0 && !String(data.reason || '').trim()) {
+          throw BeeStore.errors.err('INVALID', 'سبب المرتجع مطلوب للمرتجع بدون فاتورة');
+        }
+        if (!sale && data.refundMode === 'exchange') {
+          throw BeeStore.errors.err('INVALID', 'الاستبدال يتطلب ربط المرتجع بفاتورة');
+        }
 
         const settings = await tx.get('meta', 'settings') || {};
         const number = (settings.returnPrefix || 'RET') + '-' + String(await tx.nextCounter('return')).padStart(6, '0');
@@ -116,67 +140,150 @@
 
         const lines = [];
         let refundMinor = 0;
+        let unlinkedRefundMinor = 0;
+        let priceOverride = false;
         const seenLines = new Set();
         for (const line of data.lines) {
-          const saleLine = sale.lines[line.saleLineIndex];
-          if (!saleLine) throw BeeStore.errors.err('INVALID_LINE', 'بند غير صالح');
-          if (seenLines.has(line.saleLineIndex)) {
-            throw BeeStore.errors.err('INVALID_LINE', 'لا يمكن تكرار بند الفاتورة في المرتجع نفسه');
+          const linked = sale && line.saleLineIndex !== undefined &&
+            line.saleLineIndex !== null && line.saleLineIndex !== '';
+          if (linked) {
+            const index = Number(line.saleLineIndex);
+            const saleLine = sale.lines[index];
+            if (!saleLine) throw BeeStore.errors.err('INVALID_LINE', 'بند غير صالح');
+            if (seenLines.has(index)) {
+              throw BeeStore.errors.err('INVALID_LINE', 'لا يمكن تكرار بند الفاتورة في المرتجع نفسه');
+            }
+            seenLines.add(index);
+            const qty = Math.floor(Number(line.qty) || 0);
+            if (qty <= 0) throw BeeStore.errors.err('INVALID', 'كمية المرتجع يجب أن تكون أكبر من صفر');
+            const alreadyReturned = saleLine.returnedQty || 0;
+            const maxReturn = saleLine.qty - alreadyReturned;
+            if (qty > maxReturn) {
+              throw BeeStore.errors.err('EXCEEDS_SOLD', 'كمية المرتجع تتجاوز الكمية المباعة المتبقية');
+            }
+            const unitPriceMinor = saleLine.unitPriceMinor;
+            const quote = this.quoteRefund(saleLine, qty);
+            const lineRefund = quote.refundMinor;
+            refundMinor += lineRefund;
+            saleLine.returnedDiscountMinor =
+              quote.alreadyDiscountMinor + quote.discountMinor;
+            // v5 §3.2: a returned unit comes back at the exact cost that was
+            // charged to COGS when it sold. Track the already-returned cost so
+            // the final return takes the remaining value exactly.
+            const soldCost = saleLine.cogsMinor != null
+              ? Math.round(Number(saleLine.cogsMinor) || 0)
+              : BeeStore.money.mul(saleLine.unitCostMinor, saleLine.qty);
+            const alreadyQty = Number(saleLine.returnedQty) || 0;
+            const alreadyCost = Number(saleLine.returnedCostMinor) || 0;
+            const remainingQty = saleLine.qty - alreadyQty;
+            let returnedCostMinor;
+            if (qty === remainingQty) {
+              returnedCostMinor = soldCost - alreadyCost;
+            } else if (alreadyQty === 0) {
+              returnedCostMinor = Math.round(soldCost * qty / saleLine.qty);
+            } else {
+              returnedCostMinor = Math.round(
+                (soldCost - alreadyCost) * qty / remainingQty);
+            }
+            saleLine.returnedCostMinor = alreadyCost + returnedCostMinor;
+            lines.push({
+              saleLineIndex: index,
+              reference: sale.id,
+              variantId: saleLine.variantId,
+              itemCode: saleLine.itemCode || '',
+              productName: saleLine.productName,
+              size: saleLine.size,
+              color: saleLine.color,
+              qty,
+              unitPriceMinor,
+              listPriceMinor: saleLine.listPriceMinor != null
+                ? saleLine.listPriceMinor : saleLine.unitPriceMinor,
+              unitCostMinor: saleLine.unitCostMinor,
+              restock: line.restock !== false,
+              lineRefundMinor: lineRefund,
+              returnedCostMinor,
+              restockCostMinor: line.restock !== false ? returnedCostMinor : 0,
+              valueChangeMinor: 0,
+            });
+            continue;
           }
-          seenLines.add(line.saleLineIndex);
-          const alreadyReturned = saleLine.returnedQty || 0;
-          const maxReturn = saleLine.qty - alreadyReturned;
-          if (line.qty > maxReturn) {
-            throw BeeStore.errors.err('EXCEEDS_SOLD', 'كمية المرتجع تتجاوز الكمية المباعة المتبقية');
+
+          // Item-only line: no invoice reference. The refund price defaults
+          // to the current list price and is capped for the cashier; COGS is
+          // reversed at the current weighted-average cost.
+          const variant = await tx.get('variants', line.variantId);
+          if (!variant) throw BeeStore.errors.err('NOT_FOUND', 'الصنف غير موجود: ' + line.variantId);
+          const product = await tx.get('products', variant.productId);
+          const qty = Math.floor(Number(line.qty) || 0);
+          if (qty <= 0) {
+            throw BeeStore.errors.err('INVALID', 'كمية المرتجع يجب أن تكون أكبر من صفر');
           }
-          const unitPriceMinor = saleLine.unitPriceMinor;
-          const quote = this.quoteRefund(saleLine, line.qty);
-          const lineRefund = quote.refundMinor;
+          const listPriceMinor = BeeStore.money.roundMinor(variant.priceMinor);
+          const unitPriceMinor = line.unitPriceMinor != null
+            ? BeeStore.money.roundMinor(line.unitPriceMinor) : listPriceMinor;
+          if (unitPriceMinor < 0) {
+            throw BeeStore.errors.err('INVALID', 'سعر الاسترداد لا يمكن أن يكون سالباً');
+          }
+          if (unitPriceMinor > listPriceMinor && profile === 'cashier') {
+            throw BeeStore.errors.err('PERMISSION',
+              'سعر الاسترداد يتجاوز سعر القائمة. اطلب من المالك تنفيذ المرتجع.');
+          }
+          if (unitPriceMinor > listPriceMinor) priceOverride = true;
+          const avgCostMinor = BeeStore.stock && BeeStore.stock.averageCost
+            ? BeeStore.stock.averageCost(variant.quantity, variant.valueMinor, variant.costMinor)
+            : (Number(variant.costMinor) || 0);
+          const lineRefund = BeeStore.money.mul(unitPriceMinor, qty);
+          const restockCost = line.restock !== false
+            ? BeeStore.money.mul(avgCostMinor, qty) : 0;
           refundMinor += lineRefund;
-          saleLine.returnedDiscountMinor =
-            quote.alreadyDiscountMinor + quote.discountMinor;
-          // v5 §3.2: a returned unit comes back at the exact cost that was
-          // charged to COGS when it sold. Track the already-returned cost so
-          // the final return takes the remaining value exactly.
-          const soldCost = saleLine.cogsMinor != null
-            ? Math.round(Number(saleLine.cogsMinor) || 0)
-            : BeeStore.money.mul(saleLine.unitCostMinor, saleLine.qty);
-          const alreadyQty = Number(saleLine.returnedQty) || 0;
-          const alreadyCost = Number(saleLine.returnedCostMinor) || 0;
-          const remainingQty = saleLine.qty - alreadyQty;
-          let returnedCostMinor;
-          if (line.qty === remainingQty) {
-            returnedCostMinor = soldCost - alreadyCost;
-          } else if (alreadyQty === 0) {
-            returnedCostMinor = Math.round(soldCost * line.qty / saleLine.qty);
-          } else {
-            returnedCostMinor = Math.round(
-              (soldCost - alreadyCost) * line.qty / remainingQty);
-          }
-          saleLine.returnedCostMinor = alreadyCost + returnedCostMinor;
+          unlinkedRefundMinor += lineRefund;
           lines.push({
-            saleLineIndex: line.saleLineIndex,
-            variantId: saleLine.variantId,
-            productName: saleLine.productName,
-            size: saleLine.size,
-            color: saleLine.color,
-            qty: line.qty,
+            saleLineIndex: null,
+            reference: null,
+            variantId: variant.id,
+            itemCode: variant.itemCode || variant.sku || '',
+            productName: product ? product.name : '',
+            size: variant.size,
+            color: variant.color,
+            qty,
             unitPriceMinor,
-            unitCostMinor: saleLine.unitCostMinor,
+            listPriceMinor,
+            unitCostMinor: avgCostMinor,
             restock: line.restock !== false,
             lineRefundMinor: lineRefund,
-            returnedCostMinor,
-            restockCostMinor: line.restock !== false ? returnedCostMinor : 0,
+            returnedCostMinor: restockCost,
+            restockCostMinor: restockCost,
             valueChangeMinor: 0,
           });
         }
 
+        // v4 R9.2: cashier unlinked-return limit (default 0 = not allowed).
+        if (unlinkedCount > 0 && profile === 'cashier') {
+          const limit = Math.max(0, Number(settings.cashierUnlinkedReturnLimitMinor) || 0);
+          if (unlinkedRefundMinor > limit) {
+            throw BeeStore.errors.err('PERMISSION',
+              'مرتجع بدون فاتورة يتجاوز حد الكاشير (' +
+              BeeStore.money.format(limit) + '). اطلب من المالك تنفيذ المرتجع.');
+          }
+        }
+
+        const customerId = sale ? sale.customerId : (data.customerId || null);
+        if (refundMode === 'customer_credit' && !customerId) {
+          throw BeeStore.errors.err('CUSTOMER_REQUIRED', 'رصيد الزبون يتطلب اختيار زبون');
+        }
+        const flags = [];
+        if (unlinkedCount > 0) flags.push('NO_REFERENCE');
+        if (priceOverride) flags.push('PRICE_OVERRIDE');
         const ret = {
           id: BeeStore.ids.randomId('ret'),
           number,
-          date: data.date || BeeStore.dates.today(),
-          saleId: sale.id,
-          customerId: sale.customerId,
+          date: returnDate,
+          time: data.time || BeeStore.dates.nowTime(),
+          saleId: sale ? sale.id : null,
+          customerId,
+          customerName: sale ? (sale.customerName || null) : (data.customerName || null),
+          mode: !sale ? 'unlinked' : (unlinkedCount > 0 ? 'mixed' : 'linked'),
+          flags,
           lines,
           refundMinor,
           restockCostMinor: 0,
@@ -197,8 +304,10 @@
         let restockCostMinor = 0;
         const returnMovements = [];
         for (const line of lines) {
-          const saleLine = sale.lines[line.saleLineIndex];
-          saleLine.returnedQty = (saleLine.returnedQty || 0) + line.qty;
+          if (line.saleLineIndex !== null && sale) {
+            const saleLine = sale.lines[line.saleLineIndex];
+            if (saleLine) saleLine.returnedQty = (saleLine.returnedQty || 0) + line.qty;
+          }
           if (line.restock) {
             const variant = await tx.get('variants', line.variantId);
             let change = {
@@ -207,7 +316,8 @@
               avgCostAfterMinor: line.unitCostMinor,
             };
             if (variant) {
-              // Exact original COGS, not today's average (§3.2 / §4 row 3b).
+              // Linked lines restore the exact original COGS (§3.2); unlinked
+              // lines restore value at today's weighted-average cost (R9.2).
               change = BeeStore.stock.restore(variant, line.qty, line.restockCostMinor);
               tx.put('variants', variant);
             }
@@ -250,11 +360,13 @@
         }
         tx.put('salesReturns', ret);
 
-        const totalReturned = sale.lines.reduce((sum, l) => sum + (l.returnedQty || 0), 0);
-        const totalSold = sale.lines.reduce((sum, l) => sum + l.qty, 0);
-        sale.returnStatus = totalReturned >= totalSold ? 'full' : 'partial';
-        sale.updatedAt = BeeStore.dates.now();
-        tx.put('sales', sale);
+        if (sale) {
+          const totalReturned = sale.lines.reduce((sum, l) => sum + (l.returnedQty || 0), 0);
+          const totalSold = sale.lines.reduce((sum, l) => sum + l.qty, 0);
+          sale.returnStatus = totalReturned >= totalSold ? 'full' : 'partial';
+          sale.updatedAt = BeeStore.dates.now();
+          tx.put('sales', sale);
+        }
 
         if (ret.refundMode === 'cash_refund' && ret.refundMethod) {
           const account = await tx.get('accounts', ret.refundMethod);
@@ -264,7 +376,7 @@
           }
         }
 
-        if (data.refundMode === 'exchange' && data.exchangeLines) {
+        if (data.refundMode === 'exchange' && data.exchangeLines && sale) {
           const exchangeSale = await this._createExchangeSale(tx, sale, data.exchangeLines, ret);
           ret.exchangeSaleId = exchangeSale.id;
           tx.put('salesReturns', ret);
@@ -273,7 +385,10 @@
         return ret;
       });
       if (BeeStore.audit) {
-        BeeStore.audit.record('return', 'sale', ret.saleId, 'مرتجع ' + ret.number + ' بمبلغ ' + ret.refundMinor + ' (' + ret.refundMode + ')');
+        BeeStore.audit.record('return', ret.saleId ? 'sale' : 'return',
+          ret.saleId || ret.id,
+          'مرتجع ' + ret.number + ' بمبلغ ' + ret.refundMinor + ' (' + ret.refundMode + ')' +
+          (ret.flags && ret.flags.indexOf('NO_REFERENCE') >= 0 ? ' بدون فاتورة' : ''));
       }
       return ret;
     }

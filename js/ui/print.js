@@ -29,6 +29,18 @@
     if (sale.taxMinor > 0) lines.push('الضريبة: ' + money(sale.taxMinor));
     lines.push('الإجمالي: ' + money(sale.totalMinor));
     lines.push('المدفوع: ' + money(sale.paidMinor));
+    if (sale.overpaymentMinor > 0) {
+      const labels = {
+        change: 'باقي للزبون',
+        customer_credit: 'رصيد للزبون',
+        other_income: 'إيراد آخر / تقريب',
+      };
+      lines.push('المبلغ الزائد: ' + money(sale.overpaymentMinor) +
+        ' (' + (labels[sale.overpaymentMode] || labels.change) + ')');
+    }
+    if (sale.changeGivenMinor > 0) {
+      lines.push('الباقي المُعاد للزبون: ' + money(sale.changeGivenMinor));
+    }
     lines.push('المتبقي: ' + money(sale.dueMinor));
     if (payments && payments.length) {
       lines.push('');
@@ -172,6 +184,20 @@
     if (sale.taxMinor > 0) html += '<div><span>الضريبة:</span><span>' + BeeStore.money.format(sale.taxMinor) + '</span></div>';
     html += '<div class="total-final"><span>الإجمالي:</span><span>' + BeeStore.money.format(sale.totalMinor) + '</span></div>';
     html += '<div><span>المدفوع:</span><span>' + BeeStore.money.format(sale.paidMinor) + '</span></div>';
+    if (sale.overpaymentMinor > 0) {
+      const labels = {
+        change: 'باقي للزبون',
+        customer_credit: 'رصيد للزبون',
+        other_income: 'إيراد آخر / تقريب',
+      };
+      html += '<div><span>المبلغ الزائد (' +
+        esc(labels[sale.overpaymentMode] || labels.change) + '):</span><span>' +
+        BeeStore.money.format(sale.overpaymentMinor) + '</span></div>';
+    }
+    if (sale.changeGivenMinor > 0) {
+      html += '<div><span>الباقي المُعاد للزبون:</span><span>' +
+        BeeStore.money.format(sale.changeGivenMinor) + '</span></div>';
+    }
     html += '<div><span>المتبقي:</span><span>' + BeeStore.money.format(sale.dueMinor) + '</span></div>';
     html += '</div>';
 

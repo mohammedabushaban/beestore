@@ -174,6 +174,9 @@ test('A3 cash sale posts revenue, COGS, receipt and turns overpayment into 2030 
     customerName: customer.name,
     lines: [{ variantId: variant.id, qty: 3, unitPriceMinor: 1000 }],
     payments: [{ method: 'cash', accountId: accounts.cash.id, amountMinor: 4000 }],
+    // v4 R2.2: excess now defaults to change; this test covers the historical
+    // customer-credit meaning explicitly.
+    overpaymentMode: 'customer_credit',
   }), 'sale');
 
   assert.strictEqual(sale.totalMinor, 3000);

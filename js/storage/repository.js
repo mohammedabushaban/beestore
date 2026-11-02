@@ -7,7 +7,8 @@
     'customers', 'sales', 'salesReturns', 'customerPayments',
     'suppliers', 'purchases', 'purchaseReturns', 'supplierPayments',
     'expenseCategories', 'expenses', 'expensePayments', 'recurringExpenses',
-    'employees', 'payroll', 'employeeAdvances',
+    'employees', 'payroll', 'employeeAdvances', 'payrollLiabilityPayments',
+    'fixedAssets', 'fixedAssetPayments',
     'ownerTransactions', 'transfers', 'dailyClosings', 'cashAdjustments',
     'cardSettlements', 'chartOfAccounts', 'journalEntries',
     'auditLog', 'meta', 'periodClosings', 'errorLog',
@@ -27,8 +28,8 @@
   // repository's behaviour transparent to services.
   const MASTER_COLLECTIONS = [
     'accounts', 'categories', 'products', 'variants', 'customers', 'suppliers',
-    'expenseCategories', 'recurringExpenses', 'employees', 'periodClosings',
-    'chartOfAccounts', 'meta', 'errorLog',
+    'expenseCategories', 'recurringExpenses', 'employees', 'fixedAssets',
+    'periodClosings', 'chartOfAccounts', 'meta', 'errorLog',
   ];
   const DATED_COLLECTIONS = {
     stockMovements: 'date',
@@ -42,6 +43,8 @@
     expensePayments: 'date',
     payroll: 'month',
     employeeAdvances: 'date',
+    payrollLiabilityPayments: 'date',
+    fixedAssetPayments: 'date',
     ownerTransactions: 'date',
     transfers: 'date',
     dailyClosings: 'date',
@@ -69,6 +72,9 @@
     ],
     payroll: [['month', 'month'], ['employeeId', 'employeeId'], ['status', 'status']],
     employeeAdvances: [['date', 'date'], ['employeeId', 'employeeId'], ['accountId', 'accountId']],
+    payrollLiabilityPayments: [['date', 'date'], ['accountId', 'accountId'], ['type', 'type']],
+    fixedAssets: [['purchaseDate', 'purchaseDate'], ['status', 'status']],
+    fixedAssetPayments: [['date', 'date'], ['assetId', 'assetId'], ['accountId', 'accountId']],
     ownerTransactions: [['date', 'date'], ['accountId', 'accountId']],
     transfers: [['date', 'date'], ['fromAccountId', 'fromAccountId'], ['toAccountId', 'toAccountId']],
     dailyClosings: [['date', 'date'], ['status', 'status']],

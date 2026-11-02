@@ -2,6 +2,22 @@
   'use strict';
   const BeeStore = root.BeeStore || (root.BeeStore = {});
 
+  function rounded(value) {
+    return Math.round(Number(value) || 0);
+  }
+
+  const LIABILITY_ACCOUNTS = {
+    withholding: 'accrued_withholdings',
+    employer: 'accrued_employer',
+    end_of_service: 'end_of_service',
+  };
+
+  const LIABILITY_LABELS = {
+    withholding: 'استقطاعات رواتب',
+    employer: 'مساهمات صاحب العمل',
+    end_of_service: 'مخصص نهاية الخدمة',
+  };
+
   class PayrollService {
     constructor(repo) {
       this.repo = repo;
@@ -16,21 +32,28 @@
       return this.repo.transaction(async (tx) => {
         await BeeStore.periods.assertOpen(tx, month + '-01');
         const employees = await tx.list('employees', e => e.active !== false);
+        const settings = (await tx.get('meta', 'settings')) || {};
         const created = [];
         for (const emp of employees) {
           const existing = await tx.list('payroll', p => p.employeeId === emp.id && p.month === month);
           if (existing.length > 0) continue;
+          const baseMinor = emp.baseSalaryMinor || 0;
+          const totals = BeeStore.settings.payrollComponentTotals(settings, baseMinor);
           const record = {
             id: BeeStore.ids.randomId('pay'),
             employeeId: emp.id,
             employeeName: emp.name,
             month,
-            baseMinor: emp.baseSalaryMinor || 0,
+            baseMinor,
             bonusMinor: 0,
             overtimeMinor: 0,
             deductionsMinor: 0,
+            withholdingMinor: totals.withholdingMinor,
+            employerCostMinor: totals.employerCostMinor,
+            endOfServiceMinor: totals.endOfServiceMinor,
+            payrollComponentSnapshot: totals.components,
             advanceRepaymentMinor: 0,
-            netMinor: emp.baseSalaryMinor || 0,
+            netMinor: baseMinor - totals.withholdingMinor,
             status: 'draft',
             paidDate: null,
             method: null,
@@ -81,7 +104,8 @@
         const p = await tx.get('payroll', id);
         if (!p) throw BeeStore.errors.err('NOT_FOUND', 'سجل الراتب غير موجود');
         const financialKeys = ['month', 'baseMinor', 'bonusMinor', 'overtimeMinor',
-          'deductionsMinor', 'advanceRepaymentMinor', 'status', 'paidDate',
+          'deductionsMinor', 'withholdingMinor', 'employerCostMinor',
+          'endOfServiceMinor', 'advanceRepaymentMinor', 'status', 'paidDate',
           'method', 'accountId'];
         const touchesFinancials = Object.keys(patch || {}).some(k =>
           financialKeys.indexOf(k) >= 0);
@@ -93,8 +117,34 @@
           await BeeStore.periods.assertOpen(tx, String(patch.month || p.month) + '-01');
         }
         const updated = { ...p, ...patch, id, updatedAt: BeeStore.dates.now() };
-        updated.netMinor = updated.baseMinor + updated.bonusMinor + updated.overtimeMinor -
-          updated.deductionsMinor - updated.advanceRepaymentMinor;
+        // A base change recomputes the configured percentage components unless
+        // the caller supplied explicit component amounts for this record.
+        const explicitComponents = ['withholdingMinor', 'employerCostMinor',
+          'endOfServiceMinor'].some(k => Object.prototype.hasOwnProperty.call(patch || {}, k));
+        if (patch && patch.baseMinor !== undefined && !explicitComponents) {
+          const settings = (await tx.get('meta', 'settings')) || {};
+          const totals = BeeStore.settings.payrollComponentTotals(settings,
+            updated.baseMinor);
+          updated.withholdingMinor = totals.withholdingMinor;
+          updated.employerCostMinor = totals.employerCostMinor;
+          updated.endOfServiceMinor = totals.endOfServiceMinor;
+          updated.payrollComponentSnapshot = totals.components;
+        }
+        const gross = rounded(updated.baseMinor) + rounded(updated.bonusMinor) +
+          rounded(updated.overtimeMinor) - rounded(updated.deductionsMinor);
+        updated.withholdingMinor = Math.max(0, rounded(updated.withholdingMinor));
+        updated.employerCostMinor = Math.max(0, rounded(updated.employerCostMinor));
+        updated.endOfServiceMinor = Math.max(0, rounded(updated.endOfServiceMinor));
+        updated.advanceRepaymentMinor = Math.max(0, rounded(updated.advanceRepaymentMinor));
+        if (updated.withholdingMinor > gross) {
+          throw BeeStore.errors.err('VALIDATION',
+            'الاستقطاعات أكبر من إجمالي الراتب — راجع مكوّنات الراتب');
+        }
+        updated.netMinor = gross - updated.withholdingMinor -
+          updated.advanceRepaymentMinor;
+        if (updated.netMinor < 0) {
+          throw BeeStore.errors.err('VALIDATION', 'صافي الراتب لا يمكن أن يكون سالباً');
+        }
         tx.put('payroll', updated);
         if (BeeStore.posting && touchesFinancials) {
           // A draft accrual is reverse-and-reposted so 6100/2100 always match
@@ -136,6 +186,12 @@
         const resolvedAccountId = accountId || BeeStore.settings.resolvePaymentAccount(settings, method || 'cash');
 
         const salaryExpense = p.baseMinor + p.bonusMinor + p.overtimeMinor - p.deductionsMinor;
+        const withholding = Math.max(0, rounded(p.withholdingMinor));
+        if (withholding > salaryExpense) {
+          throw BeeStore.errors.err('VALIDATION',
+            'الاستقطاعات أكبر من إجمالي الراتب — راجع مكونات الراتب');
+        }
+        const accrued = salaryExpense - withholding;
         const requested = BeeStore.money.roundMinor(advanceRepaymentMinor || 0);
         if (requested < 0) throw BeeStore.errors.err('INVALID', 'مبلغ سداد السلف لا يمكن أن يكون سالباً');
 
@@ -159,7 +215,7 @@
           }
         }
 
-        const net = salaryExpense - appliedTotal;
+        const net = accrued - appliedTotal;
         if (net < 0) throw BeeStore.errors.err('INVALID', 'صافي الراتب لا يمكن أن يكون سالباً بعد الخصومات');
 
         const expense = {
@@ -186,7 +242,7 @@
         p.method = method;
         p.accountId = resolvedAccountId;
         p.note = note || p.note;
-        p.advanceRepaymentMinor = (p.advanceRepaymentMinor || 0) + appliedTotal;
+        p.advanceRepaymentMinor = appliedTotal;
         p.netMinor = net;
         p.updatedAt = BeeStore.dates.now();
         tx.put('payroll', p);
@@ -270,14 +326,182 @@
       for (const p of all) {
         const settled = p.status === 'paid' && p.paidDate && p.paidDate <= date;
         if (!settled) {
-          const net = p.netMinor != null ? p.netMinor
-            : (p.baseMinor || 0) + (p.bonusMinor || 0) + (p.overtimeMinor || 0) -
-              (p.deductionsMinor || 0) - (p.advanceRepaymentMinor || 0);
+          const gross = (Number(p.baseMinor) || 0) + (Number(p.bonusMinor) || 0) +
+            (Number(p.overtimeMinor) || 0) - (Number(p.deductionsMinor) || 0);
+          const net = gross - (Number(p.withholdingMinor) || 0);
           total += net;
           perEmployee[p.employeeId] = (perEmployee[p.employeeId] || 0) + net;
         }
       }
       return { total, perEmployee };
+    }
+
+    /**
+     * v5 §7.2/§7.3 liability balances as of a business date. Payroll accrual
+     * is dated the first of the payroll month; liability payments reduce the
+     * balance on their own date.
+     * @param {string} date YYYY-MM-DD as-of date
+     * @returns {Promise<{withholding:number,employer:number,endOfService:number,total:number,perEmployee:Object}>}
+     */
+    async liabilityBalancesAsOf(date) {
+      const dm = String(date).slice(0, 7);
+      const payroll = await this.repo.list('payroll',
+        p => p.month && p.month <= dm);
+      const balances = {
+        withholding: 0, employer: 0, endOfService: 0,
+        perEmployee: {},
+      };
+      for (const p of payroll) {
+        const withholding = Number(p.withholdingMinor) || 0;
+        const employer = Number(p.employerCostMinor) || 0;
+        const eos = Number(p.endOfServiceMinor) || 0;
+        balances.withholding += withholding;
+        balances.employer += employer;
+        balances.endOfService += eos;
+        if (p.employeeId) {
+          balances.perEmployee[p.employeeId] =
+            (balances.perEmployee[p.employeeId] || 0) +
+            withholding + employer + eos;
+        }
+      }
+      const payments = await this.repo.list('payrollLiabilityPayments',
+        p => !p.voided && p.date <= date);
+      for (const payment of payments) {
+        const amount = Number(payment.amountMinor) || 0;
+        if (payment.type === 'withholding') balances.withholding -= amount;
+        else if (payment.type === 'employer') balances.employer -= amount;
+        else if (payment.type === 'end_of_service') balances.endOfService -= amount;
+      }
+      balances.total = balances.withholding + balances.employer +
+        balances.endOfService;
+      return balances;
+    }
+
+    /**
+     * Lists payroll liability payments newest-first.
+     * @param {object} [filters] {type,from,to}
+     * @returns {Promise<object[]>} payment records
+     */
+    async listLiabilityPayments(filters) {
+      const from = filters && filters.from;
+      const to = filters && filters.to;
+      let rows = (from || to)
+        ? await this.repo.listRange('payrollLiabilityPayments', from, to)
+        : await this.repo.list('payrollLiabilityPayments');
+      if (filters && filters.type) rows = rows.filter(p => p.type === filters.type);
+      if (!filters || !filters.includeVoided) rows = rows.filter(p => !p.voided);
+      rows.sort((a, b) => String(b.date).localeCompare(String(a.date)));
+      return rows;
+    }
+
+    /**
+     * Pays one payroll liability (withholding, employer contribution or
+     * end-of-service provision). Dr 2110/2120/2200, Cr Cash/Bank.
+     * @param {object} data {type,amountMinor,date,method,accountId,note}
+     * @returns {Promise<object>} payment record
+     * @throws {BeeError} VALIDATION|PERIOD_CLOSED when invalid or overpaid
+     */
+    async payLiabilities(data) {
+      data = data || {};
+      const type = String(data.type || '');
+      if (!LIABILITY_ACCOUNTS[type]) {
+        throw BeeStore.errors.err('VALIDATION',
+          'نوع مستحقات الرواتب غير معروف: ' + (type || '(فارغ)'));
+      }
+      const amount = BeeStore.money.roundMinor(data.amountMinor);
+      if (amount <= 0) {
+        throw BeeStore.errors.err('VALIDATION', 'مبلغ السداد يجب أن يكون أكبر من صفر');
+      }
+      const payment = await this.repo.transaction(async (tx) => {
+        const date = data.date || BeeStore.dates.today();
+        await BeeStore.periods.assertOpen(tx, date);
+        await BeeStore.periods.assertDayOpen(tx, date);
+        const balances = await this.liabilityBalancesTx(tx, date);
+        const available = type === 'withholding' ? balances.withholding
+          : type === 'employer' ? balances.employer : balances.endOfService;
+        if (amount > available) {
+          throw BeeStore.errors.err('VALIDATION',
+            'مبلغ السداد أكبر من الرصيد المستحق (' + BeeStore.money.toMajor(available) + ')');
+        }
+        const settings = (await tx.get('meta', 'settings')) || {};
+        const method = data.method || 'cash';
+        const accountId = data.accountId ||
+          BeeStore.settings.resolvePaymentAccount(settings, method);
+        const record = {
+          id: BeeStore.ids.randomId('plp'),
+          date,
+          type,
+          label: LIABILITY_LABELS[type],
+          amountMinor: amount,
+          method,
+          methodKind: data.methodKind ||
+            BeeStore.settings.methodKind(settings, method),
+          accountId,
+          note: data.note || '',
+          voided: false,
+          createdAt: BeeStore.dates.now(),
+          updatedAt: BeeStore.dates.now(),
+        };
+        tx.put('payrollLiabilityPayments', record);
+        if (BeeStore.posting) {
+          const entry = await BeeStore.posting.payrollLiabilityPayment(tx, record);
+          if (entry) {
+            BeeStore.posting.link(record, entry);
+            tx.put('payrollLiabilityPayments', record);
+          }
+        }
+        return record;
+      });
+      if (BeeStore.audit) {
+        BeeStore.audit.record('pay', 'payrollLiabilityPayments', payment.id,
+          'سداد ' + payment.label + ' بمبلغ ' + payment.amountMinor);
+      }
+      return payment;
+    }
+
+    /**
+     * Voids a payroll liability payment and reverses its journal entry.
+     * @param {string} id payment id
+     * @param {string} [reason] void reason
+     * @returns {Promise<object>} voided payment record
+     */
+    async voidLiabilityPayment(id, reason) {
+      return this.repo.transaction(async (tx) => {
+        const payment = await tx.get('payrollLiabilityPayments', id);
+        if (!payment) throw BeeStore.errors.err('NOT_FOUND', 'سداد المستحقات غير موجود');
+        if (payment.voided) throw BeeStore.errors.err('ALREADY_VOID', 'السداد ملغى مسبقاً');
+        await BeeStore.periods.assertOpen(tx, payment.date);
+        const reversals = await BeeStore.posting.reverseDocument(tx,
+          'PAYROLL_LIABILITY', id,
+          { description: 'إلغاء سداد ' + (payment.label || 'مستحقات رواتب') },
+          { allowClosedDay: true });
+        if (reversals.length > 0) BeeStore.posting.linkAll([payment], reversals);
+        payment.voided = true;
+        payment.voidReason = String(reason || '');
+        payment.updatedAt = BeeStore.dates.now();
+        tx.put('payrollLiabilityPayments', payment);
+        return payment;
+      });
+    }
+
+    async liabilityBalancesTx(tx, date) {
+      const dm = String(date).slice(0, 7);
+      const payroll = await tx.list('payroll', p => p.month && p.month <= dm);
+      const balances = { withholding: 0, employer: 0, endOfService: 0 };
+      for (const p of payroll) {
+        balances.withholding += Number(p.withholdingMinor) || 0;
+        balances.employer += Number(p.employerCostMinor) || 0;
+        balances.endOfService += Number(p.endOfServiceMinor) || 0;
+      }
+      const payments = await tx.list('payrollLiabilityPayments',
+        p => !p.voided && p.date <= date);
+      for (const payment of payments) {
+        const amount = Number(payment.amountMinor) || 0;
+        if (payment.type === 'withholding') balances.withholding -= amount;
+        else if (payment.type === 'employer') balances.employer -= amount;
+        else if (payment.type === 'end_of_service') balances.endOfService -= amount;
+      }
+      return balances;
     }
 
     /** Advances outstanding as of date: given ≤ D minus repaid in paid payrolls ≤ D's month (v2 §8).
@@ -287,12 +511,11 @@
     // v2 §8: advances given ≤ date minus repayments recognized in PAID
     // payrolls with month ≤ D's month.
     async advancesOutstandingAsOf(date) {
-      const dm = String(date).slice(0, 7);
       const advances = await this.repo.list('employeeAdvances', a => a.date <= date);
       let given = 0;
       for (const a of advances) given += a.amountMinor;
       const payroll = await this.repo.list('payroll',
-        p => p.status === 'paid' && p.month && p.month <= dm);
+        p => p.status === 'paid' && p.paidDate && p.paidDate <= date);
       let repaid = 0;
       for (const p of payroll) repaid += p.advanceRepaymentMinor || 0;
       return given - repaid;

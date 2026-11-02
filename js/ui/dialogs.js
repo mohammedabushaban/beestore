@@ -102,6 +102,68 @@
     return input('hidden', value, { name });
   }
 
-  BeeStore.dialogs = { openDialog, formField, input, select, textarea, checkbox, radioGroup, fileInput, numberInput, dateInput, hiddenInput };
+  /**
+   * Open a void/cancel dialog for a document.
+   * Posts a reversing entry via the posting service, marks the document as voided,
+   * and never deletes the original. Reason is mandatory.
+   * @param {string} title dialog title
+   * @param {string} itemDesc description of the item being voided (for display)
+   * @param {function} voidFn async function({id, reason}) → Promise<object> the voided record
+   * @param {object} [options] {existingReason} pre-filled reason
+   * @returns {object} {overlay, dialog, close}
+   */
+  function voidDialog(title, itemDesc, voidFn, options = {}) {
+    const { overlay, dialog, close } = openDialog(
+      title,
+      [
+        el('p', {}, `هل تريد إلغاء ${itemDesc}؟`),
+        el('p', { class: 'form-hint' },
+          'سيتم عكس القيد الأصلي وتوثيق الإلغاء. لا يمكن التراجع بعد الحفظ.'),
+        formField('سبب الإلغاء', input('text', options.existingReason || ''), true),
+      ],
+      null,
+      { large: true }
+    );
+
+    const reasonInput = dialog.querySelector('input');
+    if (reasonInput) reasonInput.focus();
+
+    // Add save/cancel buttons
+    const actions = el('div', { class: 'dialog-actions' }, [
+      el('button', {
+        class: 'btn btn-secondary',
+        onclick: () => { close(); },
+      }, 'إلغاء'),
+      el('button', {
+        class: 'btn btn-danger',
+        onclick: async () => {
+          const reason = reasonInput.value.trim();
+          if (!reason) {
+            toast('يجب إدخال سبب الإلغاء', 'error');
+            return;
+          }
+          close();
+          try {
+            const res = await voidFn({ id: dialog.dataset.id, reason });
+            toast('تم إلغاء ' + itemDesc);
+            // Refresh the page/state if possible
+            if (window.BeeStore && window.BeeStore.router) {
+              window.BeeStore.router.navigate(location.hash || '#');
+            }
+          } catch (e) {
+            toast(e.message || 'فشل الإلغاء', 'error');
+          }
+        },
+      }, 'تأكيد الإلغاء'),
+    ]);
+    dialog.appendChild(actions);
+
+    // Store id on dialog for the onclick handler
+    dialog.dataset.id = options.id || '';
+
+    return { overlay, dialog, close };
+  }
+
+  BeeStore.dialogs = { openDialog, formField, input, select, textarea, checkbox, radioGroup, fileInput, numberInput, dateInput, hiddenInput, voidDialog };
   if (typeof module !== 'undefined') module.exports = BeeStore.dialogs;
 })(typeof window !== 'undefined' ? window : globalThis);

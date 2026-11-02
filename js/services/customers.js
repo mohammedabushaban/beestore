@@ -92,7 +92,14 @@
           .filter(s => s.status !== 'void');
         for (const s of sales) {
           balance += s.totalMinor;
-          for (const p of (s.payments || [])) balance -= p.amountMinor;
+          for (const p of (s.payments || [])) {
+            // v4 R2.2: only the portion applied to the invoice reduces AR.
+            // Change and other-income excess are not customer credits.
+            balance -= p.appliedMinor != null ? p.appliedMinor : p.amountMinor;
+          }
+          if (s.overpaymentMode === 'customer_credit') {
+            balance -= Number(s.overpaymentMinor) || 0;
+          }
         }
         const payments = await this.repo.query('customerPayments', 'customerId', customerId);
         for (const p of payments) balance -= p.amountMinor;
@@ -110,7 +117,12 @@
       for (const s of sales) {
         balance += s.totalMinor;
         for (const p of (s.payments || [])) {
-          if ((p.date || s.date) <= asOf) balance -= p.amountMinor;
+          if ((p.date || s.date) <= asOf) {
+            balance -= p.appliedMinor != null ? p.appliedMinor : p.amountMinor;
+          }
+        }
+        if (s.overpaymentMode === 'customer_credit' && s.date <= asOf) {
+          balance -= Number(s.overpaymentMinor) || 0;
         }
       }
       const payments = (await this.repo.query('customerPayments', 'customerId', customerId))
@@ -178,7 +190,11 @@
         for (const s of sales) {
           balanceBefore += BeeStore.money.roundMinor(s.totalMinor || 0);
           for (const p of (s.payments || [])) {
-            balanceBefore -= BeeStore.money.roundMinor(p.amountMinor || 0);
+            balanceBefore -= BeeStore.money.roundMinor(
+              p.appliedMinor != null ? p.appliedMinor : (p.amountMinor || 0));
+          }
+          if (s.overpaymentMode === 'customer_credit') {
+            balanceBefore -= BeeStore.money.roundMinor(s.overpaymentMinor || 0);
           }
           if (s.dueMinor > 0) {
             invoiceDues += BeeStore.money.roundMinor(s.dueMinor);

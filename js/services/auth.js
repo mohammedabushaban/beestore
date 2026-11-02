@@ -396,7 +396,8 @@
         const ok = await verifyPin(currentPin, current.profiles.owner.pin);
         if (!ok) throw BeeStore.errors.err('WRONG_PIN', 'رمز المالك غير صحيح');
       }
-      const allowed = ['autoLockMinutes', 'cashierMaxDiscountPercent', 'cashierMaxReturnMinor', 'lockoutAfter', 'lockoutSeconds', 'largeFont'];
+      const allowed = ['autoLockMinutes', 'cashierMaxDiscountPercent', 'cashierMaxReturnMinor',
+        'cashierUnlinkedReturnLimitMinor', 'lockoutAfter', 'lockoutSeconds', 'largeFont'];
       const safe = {};
       for (const key of allowed) {
         if (patch && patch[key] !== undefined) safe[key] = patch[key];
@@ -413,6 +414,7 @@
       validateInt('autoLockMinutes', 1, 60);
       validateInt('cashierMaxDiscountPercent', 0, 100);
       validateInt('cashierMaxReturnMinor', 0, 100000000);
+      validateInt('cashierUnlinkedReturnLimitMinor', 0, 100000000);
       validateInt('lockoutAfter', 3, 10);
       validateInt('lockoutSeconds', 10, 600);
       if (safe.largeFont !== undefined) safe.largeFont = !!safe.largeFont;
@@ -430,6 +432,8 @@
         autoLockMinutes: Math.max(1, Number(settings.autoLockMinutes) || 5),
         cashierMaxDiscountPercent: Math.max(0, Number(settings.cashierMaxDiscountPercent) || 0),
         cashierMaxReturnMinor: Math.max(0, Number(settings.cashierMaxReturnMinor) || 0),
+        cashierUnlinkedReturnLimitMinor: Math.max(0,
+          Number(settings.cashierUnlinkedReturnLimitMinor) || 0),
         lockoutAfter: Math.max(3, Number(settings.lockoutAfter) || 5),
       };
     }

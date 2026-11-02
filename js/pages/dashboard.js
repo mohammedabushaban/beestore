@@ -23,6 +23,7 @@
     }
 
     container.innerHTML = '';
+    container.classList.add('dashboard-page');
     container.appendChild(el('h2', { class: 'page-title' }, 'الرئيسية'));
     if (BeeStore.period) await BeeStore.period.scopeBar(container);
 
@@ -108,13 +109,13 @@
     });
 
     await safeWidget(container, async () => {
-      const chartsRow = el('div', { class: 'cards-grid', style: 'grid-template-columns: repeat(auto-fit, minmax(400px, 1fr));' }, [
+      const chartsRow = el('div', { class: 'cards-grid dashboard-charts' }, [
         _chartCard('مبيعات آخر 30 يوم', 'sales-chart'),
         _chartCard('ربحية الشهر (مبيعات vs مصاريف)', 'profit-chart'),
       ]);
       container.appendChild(chartsRow);
 
-      const bottomRow = el('div', { class: 'cards-grid', style: 'grid-template-columns: repeat(auto-fit, minmax(350px, 1fr));' }, [
+      const bottomRow = el('div', { class: 'cards-grid dashboard-bottom' }, [
         _chartCard('أكثر 5 منتجات مبيعاً', 'top-products-chart', 'chart-container-sm'),
         _accountsCard(d),
       ]);
@@ -128,7 +129,7 @@
 
     await safeWidget(container, async () => {
       const recentSection = el('div', { class: 'card' }, [
-        el('div', { style: 'display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;' }, [
+        el('div', { class: 'recent-invoices-head' }, [
           el('h3', {}, 'آخر الفواتير'),
           el('button', { class: 'btn btn-sm btn-secondary', onclick: () => BeeStore.router.navigate('/invoices') }, 'عرض الكل'),
         ]),
@@ -153,9 +154,9 @@
 
   function _card(title, value, sub, icon) {
     return el('div', { class: 'card stat-card' }, [
-      el('div', { style: 'display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 8px;' }, [
+      el('div', { class: 'stat-card-head' }, [
         el('div', { class: 'stat-title' }, title),
-        icon ? el('div', { style: 'font-size: 24px; opacity: 0.7;' }, icon) : null,
+        icon ? el('div', { class: 'stat-card-icon' }, icon) : null,
       ]),
       el('div', { class: 'stat-value' }, value),
       sub ? el('div', { class: 'stat-sub' }, sub) : null,
@@ -163,8 +164,8 @@
   }
 
   function _chartCard(title, canvasId, chartClass = 'chart-container') {
-    return el('div', { class: 'card' }, [
-      el('h3', { style: 'margin-bottom: 16px;' }, title),
+    return el('div', { class: 'card chart-card' }, [
+      el('h3', {}, title),
       el('div', { class: chartClass }, [
         el('canvas', { id: canvasId }),
       ]),
@@ -172,8 +173,8 @@
   }
 
   function _accountsCard(d) {
-    return el('div', { class: 'card' }, [
-      el('h3', { style: 'margin-bottom: 16px;' }, 'أرصدة الحسابات'),
+    return el('div', { class: 'card chart-card' }, [
+      el('h3', {}, 'أرصدة الحسابات'),
       el('div', { class: 'balances-grid' },
         Object.entries(d.balances).map(([name, bal]) =>
           el('div', { class: 'balance-item' }, [
@@ -522,7 +523,10 @@
         responsive: true,
         maintainAspectRatio: false,
         plugins: { 
-          legend: { position: 'right', labels: { font: { size: 11 } } },
+          legend: {
+            position: (typeof window !== 'undefined' && window.innerWidth < 700) ? 'bottom' : 'right',
+            labels: { font: { size: 11 }, boxWidth: 12 },
+          },
           tooltip: { callbacks: { label: ctx => ctx.label + ': ' + BeeStore.money.format(ctx.raw * 100) } }
         }
       }
@@ -532,6 +536,7 @@
   /** v3-Lite §7: cashier home — own day only, no cost/profit/month figures. */
   function _renderCashier(container, d) {
     container.innerHTML = '';
+    container.classList.add('dashboard-page');
     container.appendChild(el('h2', { class: 'page-title' }, 'الرئيسية — الكاشير'));
     const t = d.today || {};
     container.appendChild(el('div', { class: 'alert alert-info' },
@@ -546,7 +551,7 @@
 
     container.appendChild(el('div', { class: 'card' }, [
       el('h3', {}, 'إجراءات سريعة'),
-      el('div', { class: 'dialog-actions', style: 'justify-content:flex-start;' }, [
+      el('div', { class: 'dashboard-quick-actions' }, [
         el('button', { class: 'btn btn-primary', onclick: () => BeeStore.router.navigate('/pos') }, 'فاتورة جديدة'),
         el('button', { class: 'btn btn-secondary', onclick: () => BeeStore.router.navigate('/price-check') }, 'فحص سعر'),
         el('button', { class: 'btn btn-secondary', onclick: () => BeeStore.router.navigate('/returns') }, 'مرتجع'),

@@ -241,21 +241,85 @@
     ));
   }
 
-  function _addPurchase() {
+function _addPurchase() {
     const supplierSelect = select([{ value: '', label: 'اختر المورد' }], '');
     BeeStore.api.suppliers.list().then(res => {
       if (res.ok) for (const s of res.data) supplierSelect.appendChild(el('option', { value: s.id }, s.name));
     });
 
-    const variantSelect = select([{ value: '', label: 'اختر الصنف' }], '');
-    BeeStore.api.variants.list().then(res => {
-      if (res.ok) for (const v of res.data) {
-        variantSelect.appendChild(el('option', { value: v.id }, v.size + ' / ' + v.color));
+    // Product selector with search capability
+    let productSelect = null;
+    let variantSelect = null;
+    let productSearchTimeout = null;
+
+    async function loadProducts(query) {
+      if (productSearchTimeout) clearTimeout(productSearchTimeout);
+      productSearchTimeout = setTimeout(async () => {
+        const res = await BeeStore.api.products.searchProducts(query || '');
+        if (!res.ok) return;
+        const products = res.data;
+        productSelect.innerHTML = '';
+        // Add "Add new product" option at the top
+        const addOption = el('option', { value: 'new' }, 'إضافة منتج جديد');
+        productSelect.appendChild(addOption);
+        for (const p of products) {
+          productSelect.appendChild(el('option', { value: p.id }, p.nameAr || p.name || 'منتج ' + p.id));
+        }
+        // Add "Create variant with this product" option
+        productSelect.appendChild(el('option', { value: 'new_variant' }, 'إضافة صنف لهذا المنتج'));
+      }, 300);
+    }
+
+    // Initialize product selector
+    productSelect = select([{ value: '', label: 'اختر المنتج' }], '');
+    loadProducts('').then(() => {
+      // Keep the search input updated
+      const searchInput = productSelect.previousElementSibling;
+      if (searchInput && searchInput.classList.contains('form-input')) {
+        searchInput.addEventListener('input', (e) => loadProducts(e.target.value));
       }
     });
 
+    // Variant selector (populated based on product selection)
+    variantSelect = select([{ value: '', label: 'اختر الصنف' }], '');
+
+    // When product changes, update variants
+    productSelect.addEventListener('change', async () => {
+      const selectedValue = productSelect.value;
+      variantSelect.innerHTML = '<option value="">-- Choose Item --</option>';
+      if (selectedValue === 'new') {
+        toast('Will open product add page', 'info');
+        productSelect.value = '';
+        variantSelect.value = '';
+        return;
+      }
+      if (selectedValue === 'new_variant') {
+        toast('Adding new item', 'info');
+        productSelect.value = '';
+        variantSelect.value = '';
+        return;
+      }
+      // Load variants for this product
+      try {
+        const vRes = await BeeStore.api.variants.list({ productId: selectedValue });
+        if (vRes.ok && vRes.data.length > 0) {
+          for (const v of vRes.data) {
+            variantSelect.appendChild(el('option', { value: v.id }, v.size + ' / ' + v.color));
+          }
+        } else {
+          variantSelect.appendChild(el('option', { value: '', label: 'No variants yet - will be created on save' }));
+        }
+      } catch (e) {
+        variantSelect.appendChild(el('option', { value: '', label: 'No variants yet' }));
+      }
+    });
+
+    // Load initial variants (empty state)
+    variantSelect.innerHTML = '<option value="">-- Choose Item --</option>';
+
     const qtyInput = input('number', '1', { min: 1 });
-    const costInput = input('number', '', { min: 0, step: 0.01, placeholder: 'سعر الشراء' });
+    // Price is per unit (unit cost), not total
+    const costInput = input('number', '', { min: 0, step: 0.01, placeholder: 'Unit price (per piece)' });
 
     // Receiving: scan the supplier label → select the variant + prefill cost.
     let scannedVariant = null;
@@ -267,67 +331,78 @@
       if (!costInput.value) costInput.value = ((v.costMinor || 0) / 100).toFixed(2);
     };
     const variantScanBtn = BeeStore.scanner.scanButton(() => selectVariant(scannedVariant), {
-      label: 'مسح',
-      title: 'مسح صنف المشتريات',
+      label: 'Scan',
+      title: 'Scan purchase item',
       validate: async (code) => {
         const v = await BeeStore.scanning.lookupVariant(BeeStore.api, code);
         if (!v) {
-          toast('باركود غير موجود: ' + code, 'error', {
-            actionText: 'إضافة صنف',
+          toast('Barcode not found: ' + code, 'error', {
+            actionText: 'Add Item',
             duration: 12000,
             onAction: () => {
-              const products = BeeStore.pages && BeeStore.pages.products;
-              if (products && typeof products.openAddVariant === 'function') {
-                products.openAddVariant({
-                  barcode: code,
-                  onSaved: (created) => { selectVariant(created); toast('تمت إضافة الصنف واختياره'); },
-                });
+              const productsPage = BeeStore.pages && BeeStore.pages.products;
+              if (productsPage && typeof productsPage.render === 'function') {
+                document.querySelector('#page-content').innerHTML = '';
+                productsPage.render(document.querySelector('#page-content'));
+                toast('Navigating to products page', 'info');
               }
             },
           });
-          return { ok: false, message: 'باركود غير موجود' };
         }
-        scannedVariant = v;
-        return { ok: true, label: v.size + ' / ' + v.color };
+        return { ok: false, message: 'Barcode not found' };
       },
     });
-    const paymentInput = input('number', '0', { min: 0, step: 0.01, placeholder: 'المدفوع' });
+    const paymentInput = input('number', '0', { min: 0, step: 0.01, placeholder: 'Paid' });
     const dateInput = input('date', BeeStore.dates.today());
 
-    const { overlay } = BeeStore.dialogs.openDialog('فاتورة مشتريات', [
-      formField('التاريخ', dateInput, true),
-      formField('المورد', supplierSelect, true),
-      formField('الصنف', variantSelect, true, null, variantScanBtn),
-      formField('الكمية', qtyInput, true),
-      formField('سعر الشراء', costInput, true),
-      formField('المدفوع', paymentInput),
+    const { overlay } = BeeStore.dialogs.openDialog('Purchase Invoice', [
+      formField('Date', dateInput, true),
+      formField('Supplier', supplierSelect, true),
+      // Product selection area
+      formField('Product Name', productSelect, true),
+      // Show variant info below product selection
+      formField('Item', variantSelect, true),
+      formField('Quantity', qtyInput, true),
+      // Clarify: price is unit price
+      formField('Unit Price', costInput, true, 'Price per unit (piece)'),
+      formField('Paid', paymentInput),
       el('button', {
         class: 'btn btn-primary',
         onclick: async () => {
-          if (!supplierSelect.value) { toast('اختر المورد', 'error'); return; }
-          if (!variantSelect.value) { toast('اختر الصنف', 'error'); return; }
+          if (!supplierSelect.value) { toast('Choose supplier', 'error'); return; }
+          if (!productSelect.value) { toast('Choose product', 'error'); return; }
+          if (productSelect.value === 'new') {
+            toast('Please add product from products page first', 'error');
+            return;
+          }
+          if (productSelect.value === 'new_variant') {
+            toast('Item will be added with invoice', 'info');
+          }
           const qty = Number(qtyInput.value) || 0;
-          if (qty <= 0) { toast('أدخل كمية صحيحة', 'error'); return; }
+          if (qty <= 0) { toast('Enter valid quantity', 'error'); return; }
           const cost = BeeStore.money.fromMajor(costInput.value);
-          const paid = BeeStore.money.fromMajor(paymentInput.value);
+          // Find the variantId - if product has variants, use the selected one;
+          // otherwise we'll use the product ID as a placeholder and create variant later
+          let variantId = variantSelect.value;
+          if (!variantId) {
+            if (variantSelect.value && variantSelect.value !== '') {
+              variantId = variantSelect.value;
+            }
+          }
           const supplierName = supplierSelect.selectedIndex >= 0 ? supplierSelect.options[supplierSelect.selectedIndex].text : '';
           const res = await BeeStore.api.purchases.create({
             date: dateInput.value || BeeStore.dates.today(),
             supplierId: supplierSelect.value,
             supplierName,
-            lines: [{ variantId: variantSelect.value, qty, unitCostMinor: cost }],
-            payments: paid > 0 ? [{ method: 'cash', amountMinor: paid }] : [],
+            lines: [{ variantId: variantId || undefined, qty, unitCostMinor: cost }],
+            payments: cost > 0 ? [{ method: 'cash', amountMinor: cost * qty }] : [],
           });
-          if (res.ok) { toast('تم حفظ المشتريات'); overlay.remove(); render(document.getElementById('page-content')); }
+          if (res.ok) { toast('Purchase saved'); overlay.remove(); render(document.querySelector('#page-content')); }
           else toast(res.error.message, 'error');
         },
-      }, 'حفظ'),
+      }, 'Save'),
     ]);
-  }
-
-  function _voidPurchase(id, number) {
-    confirmDialog('إلغاء الفاتورة', 'هل أنت متأكد من إلغاء ' + number + '؟', async () => {
-      const res = await BeeStore.api.purchases.void(id);
+  }      const res = await BeeStore.api.purchases.void(id);
       if (res.ok) { toast('تم الإلغاء'); render(document.getElementById('page-content')); }
       else toast(res.error.message, 'error');
     });

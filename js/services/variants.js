@@ -2,6 +2,19 @@
   'use strict';
   const BeeStore = root.BeeStore || (root.BeeStore = {});
 
+  function normalizeSearch(value) {
+    return String(value == null ? '' : value)
+      .replace(/[\u064B-\u065F\u0670\u0640]/g, '')
+      .replace(/[\u0623\u0625\u0622\u0671]/g, '\u0627')
+      .replace(/\u0649/g, '\u064A')
+      .replace(/\u0629/g, '\u0647')
+      .replace(/[\u0660-\u0669]/g, (d) => String(d.charCodeAt(0) - 0x0660))
+      .replace(/[\u06F0-\u06F9]/g, (d) => String(d.charCodeAt(0) - 0x06F0))
+      .toLowerCase()
+      .replace(/\s+/g, ' ')
+      .trim();
+  }
+
   class VariantsService {
     constructor(repo) {
       this.repo = repo;
@@ -27,17 +40,54 @@
      * @returns {Promise<Array>} matching variants
      */
     async search(query) {
-      const q = (query || '').toLowerCase().trim();
-      if (!q) return this.list();
+      const raw = String(query || '').trim();
+      if (!raw) return this.list();
+      const q = normalizeSearch(raw);
       const variants = await this.repo.list('variants');
       const products = await this.repo.list('products');
       const productMap = {};
-      for (const p of products) productMap[p.id] = p;
-      return variants.filter(v => {
+      // Normalising the product's text once per product instead of once per
+      // variant keeps search near O(variants) with short strings even at the
+      // 5,000-variant scale (the V2 budget is < 100 ms).
+      const productText = new Map();
+      for (const p of products) {
+        productMap[p.id] = p;
+        productText.set(p.id, {
+          hay: p.searchKey || normalizeSearch([
+            p.name, p.brand, p.itemCode, p.notes, p.unit,
+          ].filter(Boolean).join(' ')),
+          name: normalizeSearch(p.name || ''),
+        });
+      }
+      const words = q.split(' ').filter(Boolean);
+      const scored = [];
+      for (const v of variants) {
         const p = productMap[v.productId];
-        return v.barcode === q ||
-          (v.sku || '').toLowerCase().includes(q) ||
-          (p && p.name.toLowerCase().includes(q));
+        if (!p || p.active === false || v.active === false) continue;
+        const code = normalizeSearch(v.itemCode || v.sku || '');
+        const barcode = normalizeSearch(v.barcode || '');
+        let score = -1;
+        if (barcode && barcode === q) score = 0;
+        else if (code && code === q) score = 1;
+        else if (barcode && barcode.endsWith(q) && q.length >= 4) score = 2;
+        else if (code && code.startsWith(q)) score = 3;
+        else if (words.length > 0) {
+          const meta = productText.get(v.productId);
+          const own = v.searchKey || normalizeSearch([
+            v.size, v.color, v.itemCode, v.barcode, v.sku,
+          ].filter(Boolean).join(' '));
+          const hay = meta && meta.hay ? own + ' ' + meta.hay : own;
+          if (words.every(w => hay.includes(w))) {
+            score = meta && meta.name.startsWith(q) ? 4 : 5;
+          }
+        }
+        if (score >= 0) scored.push({ variant: v, score });
+      }
+      scored.sort((a, b) => a.score - b.score ||
+        String(a.variant.itemCode || '').localeCompare(String(b.variant.itemCode || '')));
+      return scored.map(x => {
+        const p = productMap[x.variant.productId];
+        return { ...x.variant, productName: p ? p.name : '', productItemCode: p ? p.itemCode || '' : '' };
       });
     }
 
@@ -62,7 +112,11 @@
         if (!product) throw BeeStore.errors.err('NOT_FOUND', 'المنتج غير موجود');
         const size = (data.size || '').trim();
         const color = (data.color || '').trim();
-        if (!size && !color) throw BeeStore.errors.err('INVALID', 'حدد المقاس واللون');
+        // v4 R1: a default variant (no size/colour) is valid for an item whose
+        // hasVariants switch is off. Legacy products keep the old requirement.
+        if (!size && !color && product.hasVariants !== false) {
+          throw BeeStore.errors.err('INVALID', 'حدد المقاس واللون');
+        }
 
         const duplicates = await tx.list('variants', v =>
           v.productId === data.productId && v.size === size && v.color === color && v.active !== false
@@ -83,23 +137,45 @@
         if (data.quantity != null && !(Number.isInteger(quantity) && quantity > 0)) {
           throw BeeStore.errors.err('INVALID', 'الكمية الافتتاحية مطلوبة ويجب أن تكون أكبر من صفر');
         }
+        let itemCode = String(data.itemCode || '').trim();
+        if (!itemCode) {
+          const siblings = await tx.list('variants', v => v.productId === data.productId);
+          itemCode = (product.itemCode || '') +
+            (siblings.length > 0 || size || color ? '-' + (siblings.length + 1) : '');
+        }
+        if (!itemCode) itemCode = String(1000 + await tx.nextCounter('itemCode'));
+        const codeClash = await tx.list('variants', v => v.itemCode === itemCode);
+        // The default variant may deliberately reuse its parent item's code.
+        const productClash = await tx.list('products', p =>
+          p.itemCode === itemCode && p.id !== product.id);
+        if (codeClash.length > 0 || productClash.length > 0) {
+          throw BeeStore.errors.err('DUPLICATE', 'رمز الصنف مستخدم مسبقاً: ' + itemCode);
+        }
         const variant = {
           id: BeeStore.ids.randomId('var'),
           productId: data.productId,
+          itemCode,
           size,
           color,
-          sku: data.sku || this._genSku(product, { size, color }),
+          unit: data.unit || product.unit || 'قطعة',
+          sku: data.sku || itemCode,
           barcode,
           costMinor: BeeStore.money.roundMinor(data.costMinor != null ? data.costMinor : (product.defaultCostMinor || 0)),
           priceMinor: BeeStore.money.roundMinor(data.priceMinor != null ? data.priceMinor : (product.defaultPriceMinor || 0)),
           quantity,
           valueMinor: quantity * BeeStore.money.roundMinor(data.costMinor != null ? data.costMinor : (product.defaultCostMinor || 0)),
-          lowStockThreshold: data.lowStockThreshold || null,
+          lowStockThreshold: data.lowStockThreshold != null
+            ? Number(data.lowStockThreshold) : (product.lowStockThreshold || null),
+          searchKey: '',
           active: true,
           journalEntryIds: [],
           createdAt: BeeStore.dates.now(),
           updatedAt: BeeStore.dates.now(),
         };
+        variant.searchKey = normalizeSearch([
+          product.name, product.brand, product.itemCode, product.notes,
+          variant.itemCode, variant.barcode, variant.sku, size, color,
+        ].filter(Boolean).join(' '));
         if (variant.priceMinor <= 0) {
           throw BeeStore.errors.err('INVALID', 'سعر البيع مطلوب - أدخل سعراً أكبر من صفر');
         }
@@ -178,7 +254,25 @@
             if (clash.length > 0) throw BeeStore.errors.err('DUPLICATE', 'الباركود مستخدم مسبقاً');
           }
         }
+        if (changes.itemCode !== undefined) {
+          const code = String(changes.itemCode || '').trim();
+          if (!code) throw BeeStore.errors.err('INVALID', 'رمز الصنف مطلوب');
+          const clash = await tx.list('variants', o => o.itemCode === code && o.id !== id);
+          const productClash = await tx.list('products', p =>
+            p.itemCode === code && p.id !== v.productId);
+          if (clash.length > 0 || productClash.length > 0) {
+            throw BeeStore.errors.err('DUPLICATE', 'رمز الصنف مستخدم مسبقاً: ' + code);
+          }
+          changes.itemCode = code;
+        }
         const updated = { ...v, ...changes, id, updatedAt: BeeStore.dates.now() };
+        const product = await tx.get('products', v.productId);
+        updated.searchKey = normalizeSearch([
+          product && product.name, product && product.brand,
+          product && product.itemCode, product && product.notes,
+          updated.itemCode, updated.barcode, updated.sku,
+          updated.size, updated.color,
+        ].filter(Boolean).join(' '));
         const newCost = changes.costMinor !== undefined
           ? BeeStore.money.roundMinor(changes.costMinor)
           : Number(v.costMinor) || 0;

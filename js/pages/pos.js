@@ -20,6 +20,8 @@
   let payerName = '';
   let payments = [];
   let discount = { type: 'amount', value: 0 };
+  // v4 R2.2: how money above the invoice total is handled.
+  let overpaymentMode = 'change';
   let lastSaleId = null;
   let settings = null;
   let keydownHandler = null;
@@ -179,6 +181,7 @@
       customerName = customerSelect.selectedOptions[0] ? customerSelect.selectedOptions[0].text : '';
       const cphone = customerId ? (customerPhoneById[customerId] || '') : '';
       if (cphone && !contactPhoneInput.value) { contactPhoneInput.value = cphone; contactPhone = cphone; }
+      _updateTotals();
     });
 
     const discountType = select([
@@ -194,7 +197,9 @@
 
     const paymentsDiv = el('div', { id: 'pos-payments', role: 'list', 'aria-label': 'طرق الدفع' });
     const totalsDiv = el('div', { id: 'pos-totals', class: 'pos-totals', role: 'region', 'aria-label': 'إجماليات الفاتورة' });
+    const overpaymentDiv = el('div', { id: 'pos-overpayment' });
     refs.paymentsDiv = paymentsDiv;
+    refs.overpaymentDiv = overpaymentDiv;
 
     const saveBtn = el('button', { 
       class: 'btn btn-primary btn-lg pos-save-btn', 
@@ -253,6 +258,7 @@
         el('button', { class: 'btn btn-sm btn-secondary', onclick: () => _addPayment(paymentsDiv), 'aria-label': 'إضافة دفعة جديدة' }, '+ إضافة دفعة'),
       ]),
       totalsDiv,
+      overpaymentDiv,
       el('div', { class: 'pos-actions', role: 'group', 'aria-label': 'إجراءات الفاتورة' }, [saveBtn, clearBtn, printBtn, shareBtn]),
     ]);
   }
@@ -321,8 +327,23 @@
     if (BeeStore.scanner && typeof BeeStore.scanner.closeCurrent === 'function') {
       BeeStore.scanner.closeCurrent();
     }
+    if (BeeStore.auth && BeeStore.auth.isCashier()) {
+      toast('إضافة صنف جديد تتطلب صلاحية المالك', 'error');
+      return;
+    }
     const products = BeeStore.pages && BeeStore.pages.products;
-    if (products && typeof products.openAddVariant === 'function') {
+    if (products && typeof products.quickAdd === 'function') {
+      products.quickAdd({
+        barcode,
+        title: 'صنف جديد من نقطة البيع',
+        onSaved: (data) => {
+          if (data && data.variant) {
+            _addVariantToCart(data.variant, data.product ? data.product.name : '');
+          }
+          toast('تمت إضافة الصنف وإضافته للفاتورة');
+        },
+      });
+    } else if (products && typeof products.openAddVariant === 'function') {
       products.openAddVariant({
         barcode,
         onSaved: () => toast('تمت إضافة الصنف — امسح الباركود لإضافته للفاتورة'),
@@ -392,10 +413,40 @@
           _renderCart();
         });
 
+        // v4 R2.1: the actual line price is editable; the list price stays as
+        // a snapshot and the difference is visible before saving.
+        const listPrice = item.listPriceMinor != null
+          ? item.listPriceMinor : item.unitPriceMinor;
+        const diffMinor = (item.unitPriceMinor - listPrice) * item.qty;
+        const priceInput = input('number', (item.unitPriceMinor / 100).toFixed(2), {
+          min: 0, step: 0.01, style: 'width:90px',
+        });
+        priceInput.addEventListener('change', () => {
+          const newPrice = BeeStore.money.fromMajor(priceInput.value);
+          if (newPrice < 0) { toast('السعر لا يمكن أن يكون سالباً', 'error'); return; }
+          item.unitPriceMinor = newPrice;
+          item.lineTotalMinor = item.qty * newPrice - item.lineDiscountMinor;
+          _renderCart();
+        });
+        const priceCell = el('td', {}, [priceInput,
+          el('div', { class: 'form-hint', style: 'font-size:11px;margin-top:2px;' },
+            'القائمة: ' + formatMoney(listPrice)),
+        ]);
+        if (diffMinor !== 0) {
+          priceCell.appendChild(el('div', {
+            style: 'font-size:11px;font-weight:bold;color:' +
+              (diffMinor > 0 ? '#0a7f45' : '#c62828'),
+          }, (diffMinor > 0 ? '+' : '−') + formatMoney(Math.abs(diffMinor))));
+        }
         return el('tr', {}, [
-          el('td', {}, item.productName + ' - ' + item.size + ' - ' + item.color),
+          el('td', {}, [
+            el('div', {}, item.productName + ' - ' + item.size + ' - ' + item.color),
+            item.itemCode
+              ? el('div', { class: 'form-hint', style: 'direction:ltr;text-align:start;font-size:11px;' }, item.itemCode)
+              : null,
+          ]),
           el('td', {}, qtyInput),
-          el('td', {}, formatMoney(item.unitPriceMinor)),
+          priceCell,
           el('td', {}, formatMoney(item.lineTotalMinor)),
           el('td', {}, el('button', {
             class: 'btn btn-sm btn-danger',
@@ -425,14 +476,7 @@
     }
     if (discountMinor > subtotal) discountMinor = subtotal;
     const taxable = subtotal - discountMinor;
-    let taxMinor = 0;
-    if (settings && settings.taxEnabled && settings.taxRate > 0) {
-      if (settings.taxIncludedInPrices) {
-        taxMinor = taxable - Math.round(taxable * 100 / (100 + settings.taxRate));
-      } else {
-        taxMinor = Math.round(taxable * settings.taxRate / 100);
-      }
-    }
+    const taxMinor = 0;
     const total = taxable + taxMinor;
     const paid = payments.reduce((sum, p) => sum + p.amountMinor, 0);
     const due = total - paid;
@@ -451,11 +495,6 @@
     totalsDiv.appendChild(el('div', { class: 'total-row' }, [
       el('span', {}, 'الخصم'), el('span', {}, '-' + formatMoney(t.discountMinor)),
     ]));
-    if (settings && settings.taxEnabled && settings.taxRate > 0) {
-      totalsDiv.appendChild(el('div', { class: 'total-row' }, [
-        el('span', {}, 'الضريبة (' + settings.taxRate + '%)'), el('span', {}, formatMoney(t.taxMinor)),
-      ]));
-    }
     totalsDiv.appendChild(el('div', { class: 'total-row total-final' }, [
       el('span', {}, 'الإجمالي'), el('span', {}, formatMoney(t.total)),
     ]));
@@ -466,6 +505,63 @@
     totalsDiv.appendChild(el('div', { class: 'total-row' + dueClass }, [
       el('span', {}, t.due < 0 ? 'الباقي للزبون' : 'المتبقي'),
       el('span', {}, formatMoney(Math.abs(t.due))),
+    ]));
+    _renderOverpayment(t);
+  }
+
+  /** v4 R2.2: explicit choice for money received above the invoice total. */
+  function _renderOverpayment(t) {
+    const div = refs.overpaymentDiv;
+    if (!div) return;
+    const over = (Number(t.paid) || 0) - (Number(t.total) || 0);
+    if (over <= 0) {
+      div.innerHTML = '';
+      overpaymentMode = 'change';
+      return;
+    }
+    if (overpaymentMode === 'customer_credit' && !customerId) {
+      overpaymentMode = 'change';
+    }
+    if (overpaymentMode === 'other_income' &&
+      BeeStore.auth && BeeStore.auth.isCashier()) {
+      overpaymentMode = 'change';
+    }
+    const cashier = !!(BeeStore.auth && BeeStore.auth.isCashier());
+    const options = [
+      { value: 'change', label: 'باقي للزبون (إرجاع نقدي)' },
+      { value: 'customer_credit', label: customerId
+        ? 'رصيد للزبون (' + customerName + ')'
+        : 'رصيد للزبون — اختر زبوناً أولاً' },
+    ];
+    if (!cashier) {
+      options.push({ value: 'other_income', label: 'إيراد آخر / فروقات تقريب وإكراميات' });
+    }
+    const modeSelect = select(options, overpaymentMode);
+    if (!customerId) {
+      const creditOption = Array.from(modeSelect.options)
+        .find(o => o.value === 'customer_credit');
+      if (creditOption) creditOption.disabled = true;
+    }
+    modeSelect.addEventListener('change', () => {
+      overpaymentMode = modeSelect.value;
+      _updateTotals();
+    });
+    const hints = {
+      change: 'سيُعاد المبلغ نقداً للزبون، وصندوق اليوم يسجل صافي قيمة الفاتورة فقط.',
+      customer_credit: 'سيُضاف المبلغ كرصيد للزبون المختار.',
+      other_income: 'سيُسجل المبلغ كإيراد آخر في حساب فروقات التقريب والإكراميات.',
+    };
+    div.innerHTML = '';
+    div.appendChild(el('div', {
+      class: 'card',
+      style: 'border: 2px solid #f0ad4e;',
+    }, [
+      el('h3', {}, 'المبلغ الزائد'),
+      el('p', { style: 'font-weight:bold;' },
+        'المدفوع أكبر من الإجمالي بمقدار ' + formatMoney(over)),
+      modeSelect,
+      el('p', { class: 'form-hint', style: 'margin-top:8px;' },
+        hints[overpaymentMode] || hints.change),
     ]));
   }
 
@@ -561,11 +657,13 @@
       lines: cart.map(item => ({
         variantId: item.variantId,
         qty: item.qty,
+        listPriceMinor: item.listPriceMinor,
         unitPriceMinor: item.unitPriceMinor,
         lineDiscountMinor: item.lineDiscountMinor,
       })),
       discount: discount.value > 0 && t.discountMinor > 0 ? discount : null,
       payments: payments.map(p => ({ method: p.method, amountMinor: p.amountMinor, accountId: p.accountId || null })),
+      overpaymentMode: t.paid > t.total ? overpaymentMode : null,
       customerId,
       customerName: customerId ? customerName : null,
       contactPhone: (refs.contactPhoneInput && refs.contactPhoneInput.value || contactPhone || '').trim() || null,
@@ -594,6 +692,7 @@
     cart = [];
     payments = [];
     discount = { type: 'amount', value: 0 };
+    overpaymentMode = 'change';
     customerId = null;
     customerName = '';
     contactPhone = '';

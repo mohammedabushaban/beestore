@@ -13,6 +13,19 @@
     taxEnabled: false,
     taxRate: 0,
     taxIncludedInPrices: true,
+    // v5 §7.2: optional payroll components. All are off by default; rates are
+    // basis points of the employee's base salary. The accountant confirms the
+    // legal rates before enabling any of them.
+    payrollComponents: [
+      { id: 'withholding', nameAr: 'استقطاعات الموظف (تأمين/ضريبة)', type: 'employee_withholding', enabled: false, rateBasisPoints: 0, fixedMinor: 0, accountId: null },
+      { id: 'employer_cost', nameAr: 'مساهمة صاحب العمل', type: 'employer_cost', enabled: false, rateBasisPoints: 0, fixedMinor: 0, accountId: null },
+      { id: 'end_of_service', nameAr: 'مخصص نهاية الخدمة', type: 'end_of_service', enabled: false, rateBasisPoints: 0, fixedMinor: 0, accountId: null },
+    ],
+    // v5 §8: fixed assets are disabled by default. While disabled a large
+    // expense shows a capitalization warning instead of silently distorting
+    // one month's profit.
+    fixedAssetsEnabled: false,
+    capitalizationWarnThresholdMinor: 50000,
     invoicePrefix: 'INV',
     purchasePrefix: 'PUR',
     returnPrefix: 'RET',
@@ -74,10 +87,14 @@
     lockoutSeconds: 30,
     cashierMaxDiscountPercent: 10,
     cashierMaxReturnMinor: 5000,
+    // v4 R9.2: an invoice-less return is owner-only until this is raised.
+    cashierUnlinkedReturnLimitMinor: 0,
     largeFont: false,
   };
 
   const METHOD_KINDS = ['cash', 'bank_direct', 'clearing', 'customer_credit'];
+  const PAYROLL_COMPONENT_TYPES = ['employee_withholding', 'employer_cost',
+    'end_of_service', 'earning', 'deduction', 'advance_repayment'];
 
   function inferKind(id) {
     if (id === 'cash') return 'cash';
@@ -95,6 +112,21 @@
     method.feeFixedMinor = Math.max(0, Math.round(Number(method.feeFixedMinor) || 0));
     method.settlementDays = Math.max(0, Math.floor(Number(method.settlementDays) || 0));
     return method;
+  }
+
+  function normaliseComponent(component, index) {
+    const comp = { ...(component || {}) };
+    if (PAYROLL_COMPONENT_TYPES.indexOf(comp.type) < 0) {
+      throw new Error('نوع مكوّن راتب غير معروف: ' + comp.type);
+    }
+    comp.id = comp.id || ('cmp_' + (index + 1));
+    comp.nameAr = String(comp.nameAr || comp.id);
+    comp.enabled = comp.enabled === true;
+    comp.rateBasisPoints = Math.max(0,
+      Math.round(Number(comp.rateBasisPoints) || 0));
+    comp.fixedMinor = Math.max(0, Math.round(Number(comp.fixedMinor) || 0));
+    comp.accountId = comp.accountId || null;
+    return comp;
   }
 
   class SettingsService {
@@ -122,6 +154,12 @@
         if (Array.isArray(updated.paymentMethods)) {
           updated.paymentMethods = updated.paymentMethods.map(normaliseMethod);
         }
+        const components = Array.isArray(updated.payrollComponents)
+          ? updated.payrollComponents : DEFAULT_SETTINGS.payrollComponents;
+        updated.payrollComponents = components.map(normaliseComponent);
+        updated.fixedAssetsEnabled = updated.fixedAssetsEnabled === true;
+        updated.capitalizationWarnThresholdMinor = Math.max(0,
+          Math.round(Number(updated.capitalizationWarnThresholdMinor) || 0));
         tx.put('meta', updated);
         return updated;
       });
@@ -198,6 +236,15 @@
         // existing install's methods are upgraded in place; account ids and
         // historical documents are untouched.
         settings.paymentMethods = methods.map(normaliseMethod);
+        // v5 §7.2: every install has the three optional components, all off by
+        // default. Existing arrays are normalised; user-removed rows are not
+        // resurrected because this is not a one-time merge.
+        settings.payrollComponents = (Array.isArray(settings.payrollComponents)
+          ? settings.payrollComponents : DEFAULT_SETTINGS.payrollComponents)
+          .map(normaliseComponent);
+        settings.fixedAssetsEnabled = settings.fixedAssetsEnabled === true;
+        settings.capitalizationWarnThresholdMinor = Math.max(0,
+          Math.round(Number(settings.capitalizationWarnThresholdMinor) || 0));
         // v3-Lite §4: the cash drawer is the account the closing counts. Fall
         // back to the cash account for installs that predate this setting.
         const drawerValid = accounts.some(a => a.id === settings.cashDrawerAccountId);
@@ -298,6 +345,72 @@
       const feeMinor = Math.min(gross,
         Math.round(gross * basisPoints / 10000) + fixedMinor);
       return { feeMinor, basisPoints, fixedMinor };
+    }
+
+    /**
+     * Normalised v5 §7.2 payroll components for a settings record.
+     * @param {object} settings settings record (may be null)
+     * @returns {object[]} component definitions (enabled and disabled)
+     */
+    payrollComponents(settings) {
+      const list = (settings && Array.isArray(settings.payrollComponents) && settings.payrollComponents.length)
+        ? settings.payrollComponents
+        : DEFAULT_SETTINGS.payrollComponents;
+      return list.map(normaliseComponent);
+    }
+
+    /**
+     * Calculates the enabled payroll component amounts for one employee month.
+     * Rates are basis points of the base salary and use v5 §3 half-up
+     * rounding. `overrides` lets the owner replace a computed amount per
+     * component id (e.g. an actual insurance figure from the authority).
+     * @param {object} settings settings record
+     * @param {number} baseMinor employee base salary in minor units
+     * @param {object} [overrides] component id → integer minor amount
+     * @returns {{withholdingMinor:number,employerCostMinor:number,endOfServiceMinor:number,components:object[]}}
+     */
+    payrollComponentTotals(settings, baseMinor, overrides) {
+      const base = Math.max(0, Math.round(Number(baseMinor) || 0));
+      const chosen = overrides || {};
+      const components = [];
+      let withholdingMinor = 0;
+      let employerCostMinor = 0;
+      let endOfServiceMinor = 0;
+      for (const component of this.payrollComponents(settings)) {
+        if (!component.enabled) continue;
+        let amountMinor;
+        if (chosen[component.id] !== undefined && chosen[component.id] !== null) {
+          amountMinor = Math.max(0, Math.round(Number(chosen[component.id]) || 0));
+        } else {
+          amountMinor = Math.max(0,
+            Math.round(base * component.rateBasisPoints / 10000) +
+            component.fixedMinor);
+        }
+        if (component.type === 'employee_withholding') withholdingMinor += amountMinor;
+        else if (component.type === 'employer_cost') employerCostMinor += amountMinor;
+        else if (component.type === 'end_of_service') endOfServiceMinor += amountMinor;
+        components.push({
+          id: component.id,
+          nameAr: component.nameAr,
+          type: component.type,
+          amountMinor,
+        });
+      }
+      return { withholdingMinor, employerCostMinor, endOfServiceMinor, components };
+    }
+
+    /**
+     * v5 §8 capitalization warning: a large single expense while the fixed
+     * asset module is off can distort one month's profit.
+     * @param {object} settings settings record
+     * @param {number} amountMinor expense amount
+     * @returns {boolean} true when the warning must be shown
+     */
+    capitalizationWarningNeeded(settings, amountMinor) {
+      if (settings && settings.fixedAssetsEnabled === true) return false;
+      const threshold = Math.max(0,
+        Math.round(Number(settings && settings.capitalizationWarnThresholdMinor) || 0));
+      return threshold > 0 && Math.round(Number(amountMinor) || 0) >= threshold;
     }
 
     /**

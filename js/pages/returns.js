@@ -13,6 +13,7 @@
     // v2 §5: period scope + show-all toggle.
     if (BeeStore.period) await BeeStore.period.scopeBar(container);
     let showAll = false;
+    let unlinkedOnly = false;
 
     const searchInput = input('text', '', { placeholder: 'بحث في المرتجعات (رقم الفاتورة أو الزبون أو السبب)...', class: 'form-input' });
     const scopeBtn = el('button', { class: 'btn btn-secondary', onclick: async () => {
@@ -20,7 +21,12 @@
       scopeBtn.textContent = showAll ? 'عرض الشهر' : 'عرض الكل';
       await _load();
     } }, 'عرض الكل');
-    container.appendChild(el('div', { class: 'filter-row' }, [searchInput, scopeBtn]));
+    const unlinkedBtn = el('button', { class: 'btn btn-secondary', onclick: async () => {
+      unlinkedOnly = !unlinkedOnly;
+      unlinkedBtn.textContent = unlinkedOnly ? 'عرض كل المرتجعات' : 'بدون مرجع فقط';
+      await _load();
+    } }, 'بدون مرجع فقط');
+    container.appendChild(el('div', { class: 'filter-row' }, [searchInput, scopeBtn, unlinkedBtn]));
 
     const listDiv = el('div', { id: 'returns-list' });
     container.appendChild(listDiv);
@@ -40,8 +46,13 @@
           (r.saleNumber || '').toLowerCase().includes(q) ||
           r.number.toLowerCase().includes(q) ||
           (r.customerName || '').toLowerCase().includes(q) ||
-          (r.reason || '').toLowerCase().includes(q)
+          (r.reason || '').toLowerCase().includes(q) ||
+          (!r.saleId && ('بدون فاتورة بدون مرجع').includes(q))
         );
+      }
+      if (unlinkedOnly) {
+        data = data.filter(r => !r.saleId ||
+          (Array.isArray(r.flags) && r.flags.indexOf('NO_REFERENCE') >= 0));
       }
       _renderList(listDiv, data);
     }
@@ -56,18 +67,26 @@
       container.appendChild(el('p', { class: 'empty-state' }, 'لا توجد مرتجعات'));
       return;
     }
-    const rows = returns.map(r => [
-      r.number,
-      formatDate(r.date),
-      r.reason || '-',
-      formatMoney(r.refundMinor),
-      r.refundMode === 'cash_refund' ? 'استرداد نقدي' : r.refundMode === 'customer_credit' ? 'رصيد زبون' : 'استبدال',
-    ]);
+    const rows = returns.map(r => {
+      const reference = r.saleNumber
+        ? r.saleNumber
+        : el('span', { class: 'badge badge-warning' }, 'بدون فاتورة');
+      return [
+        r.number,
+        reference,
+        formatDate(r.date) + (r.time ? ' ' + r.time.slice(0, 5) : ''),
+        r.customerName || 'زبون عام',
+        r.reason || '-',
+        formatMoney(r.refundMinor),
+        r.refundMode === 'cash_refund' ? 'استرداد نقدي' : r.refundMode === 'customer_credit' ? 'رصيد زبون' : 'استبدال',
+      ];
+    });
     container.appendChild(el('div', { class: 'table-wrapper' },
       el('table', { class: 'data-table' }, [
         el('thead', {}, el('tr', {}, [
-          el('th', {}, 'الرقم'), el('th', {}, 'التاريخ'), el('th', {}, 'السبب'),
-          el('th', {}, 'المبلغ'), el('th', {}, 'الطريقة'),
+          el('th', {}, 'الرقم'), el('th', {}, 'المرجع'), el('th', {}, 'التاريخ'),
+          el('th', {}, 'الزبون'), el('th', {}, 'السبب'), el('th', {}, 'المبلغ'),
+          el('th', {}, 'الطريقة'),
         ])),
         el('tbody', {}, rows.map(r => el('tr', {}, r.map(c => el('td', {}, c))))),
       ])
@@ -109,12 +128,195 @@
     }
 
     const { overlay } = BeeStore.dialogs.openDialog('مرتجع / استبدال', [
-      formField('رقم الفاتورة أو الهاتف', saleNumberInput, true),
-      el('button', { class: 'btn btn-primary', onclick: _doSearch }, 'بحث'),
+      el('p', { class: 'form-hint' },
+        'ابحث برقم الفاتورة للربط، أو أنشئ مرتجعاً بدون فاتورة عند عدم توفرها.'),
+      formField('رقم الفاتورة أو الهاتف', saleNumberInput, false),
+      el('div', { class: 'filter-row' }, [
+        el('button', { class: 'btn btn-primary', onclick: _doSearch }, 'بحث بالفاتورة'),
+        el('button', {
+          class: 'btn btn-secondary',
+          onclick: () => { overlay.remove(); _showUnlinkedReturnForm(); },
+        }, 'مرتجع بدون فاتورة'),
+      ]),
       resultsDiv,
     ]);
     setTimeout(() => saleNumberInput.focus(), 100);
     saleNumberInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') _doSearch(); });
+  }
+
+  /** v4 R9: item-only return without an invoice reference. */
+  async function _showUnlinkedReturnForm(options) {
+    options = options || {};
+    const items = [];
+    const itemsDiv = el('div');
+    const searchInput = input('text', '', {
+      placeholder: 'باركود أو اسم الصنف... (Enter)',
+    });
+    const results = el('div', { class: 'search-results' });
+
+    function addVariant(variant) {
+      if (!variant || !variant.id) return;
+      if (items.some(it => it.variantId === variant.id)) {
+        toast('الصنف مضاف مسبقاً', 'error');
+        return;
+      }
+      const qtyEl = input('number', '1', { min: 1, step: 1, style: 'width:70px' });
+      const priceEl = input('number',
+        ((Number(variant.priceMinor) || 0) / 100).toFixed(2),
+        { min: 0, step: 0.01, style: 'width:100px' });
+      const restockEl = el('input', { type: 'checkbox' });
+      restockEl.checked = true;
+      const item = {
+        variantId: variant.id,
+        productName: variant.productName || '',
+        itemCode: variant.itemCode || '',
+        listPriceMinor: Number(variant.priceMinor) || 0,
+        qtyEl, priceEl, restockEl,
+      };
+      const row = el('div', {
+        class: 'return-line',
+        style: 'display:flex;gap:8px;align-items:center;flex-wrap:wrap;border-bottom:1px solid #eee;padding:6px 0;',
+      }, [
+        el('span', { style: 'flex:1;min-width:160px;' }, [
+          (item.productName || variant.productId),
+          item.itemCode ? ' · ' + item.itemCode : '',
+          ' — القائمة: ' + formatMoney(item.listPriceMinor),
+        ].join('')),
+        qtyEl, priceEl,
+        el('label', {}, 'إعادة للمخزون'), restockEl,
+        el('button', {
+          class: 'btn btn-sm btn-danger',
+          onclick: () => {
+            row.remove();
+            const idx = items.indexOf(item);
+            if (idx > -1) items.splice(idx, 1);
+          },
+        }, 'حذف'),
+      ]);
+      items.push(item);
+      itemsDiv.appendChild(row);
+      searchInput.value = '';
+      searchInput.focus();
+    }
+
+    async function addByQuery(query) {
+      const q = String(query || '').trim();
+      if (!q) return;
+      let variant = null;
+      const barcodeRes = await BeeStore.api.variants.byBarcode(q);
+      if (barcodeRes.ok && barcodeRes.data) variant = barcodeRes.data;
+      else {
+        const searchRes = await BeeStore.api.variants.search(q);
+        if (searchRes.ok && searchRes.data.length > 0) variant = searchRes.data[0];
+      }
+      if (!variant) { toast('الصنف غير موجود', 'error'); return; }
+      addVariant(variant);
+    }
+
+    searchInput.addEventListener('keydown', async (e) => {
+      if (e.key !== 'Enter') return;
+      e.preventDefault();
+      await addByQuery(searchInput.value);
+    });
+    const scanBtn = BeeStore.scanner.scanButton(async (code) => {
+      searchInput.value = code;
+      await addByQuery(code);
+    }, { label: 'مسح' });
+
+    const customersRes = await BeeStore.api.customers.list();
+    const customerSelect = select([{ value: '', label: 'بدون زبون' }], '');
+    if (customersRes.ok) {
+      for (const c of customersRes.data) {
+        customerSelect.appendChild(el('option', { value: c.id }, c.name));
+      }
+    }
+    const dateInput = input('date', options.date || BeeStore.dates.today());
+    const reasonInput = input('text', '', {
+      placeholder: 'سبب المرتجع (مطلوب)',
+    });
+    const refundMode = select([
+      { value: 'cash_refund', label: 'استرداد نقدي' },
+      { value: 'customer_credit', label: 'رصيد زبون' },
+    ], 'cash_refund');
+    const methodSelect = select([{ value: 'cash', label: 'نقداً' }], 'cash');
+    BeeStore.api.settings.get().then(res => {
+      if (!res.ok) return;
+      const methods = (res.data.paymentMethods || [])
+        .filter(m => BeeStore.settings.methodKind(res.data, m.id) !== 'customer_credit');
+      methodSelect.textContent = '';
+      for (const method of methods) {
+        methodSelect.appendChild(el('option', { value: method.id }, method.name));
+      }
+      if (methods.some(m => m.id === 'cash')) methodSelect.value = 'cash';
+    });
+    const accountField = formField('طريقة رد المبلغ', methodSelect);
+
+    const { overlay } = BeeStore.dialogs.openDialog('مرتجع بدون فاتورة', [
+      el('p', { class: 'alert alert-warning' },
+        'بدون فاتورة: السعر الافتراضي هو سعر القائمة، وتكلفة الإرجاع تُحسب بمتوسط التكلفة الحالي. السبب مطلوب.'),
+      el('div', { class: 'form-group' }, [
+        el('label', { class: 'form-label' }, 'إضافة صنف'),
+        el('div', { class: 'field-with-action' }, [searchInput, scanBtn]),
+        results,
+      ]),
+      itemsDiv,
+      formField('التاريخ', dateInput, true),
+      formField('السبب', reasonInput, true),
+      formField('الزبون (اختياري)', customerSelect),
+      formField('طريقة الاسترداد', refundMode),
+      accountField,
+      el('button', {
+        class: 'btn btn-primary',
+        onclick: async () => {
+          if (!reasonInput.value.trim()) {
+            toast('سبب المرتجع مطلوب', 'error');
+            return;
+          }
+          if (items.length === 0) {
+            toast('أضف صنفاً واحداً على الأقل', 'error');
+            return;
+          }
+          const lines = [];
+          for (const item of items) {
+            const qty = Math.floor(Number(item.qtyEl.value) || 0);
+            if (qty <= 0) {
+              toast('أدخل كمية صحيحة لكل صنف', 'error');
+              return;
+            }
+            const priceMinor = BeeStore.money.fromMajor(item.priceEl.value);
+            if (priceMinor < 0) {
+              toast('سعر الاسترداد لا يمكن أن يكون سالباً', 'error');
+              return;
+            }
+            lines.push({
+              variantId: item.variantId,
+              qty,
+              unitPriceMinor: priceMinor,
+              restock: item.restockEl.checked,
+            });
+          }
+          const customerId = customerSelect.value || null;
+          const res = await BeeStore.api.returns.create({
+            saleId: null,
+            date: dateInput.value || BeeStore.dates.today(),
+            lines,
+            reason: reasonInput.value.trim(),
+            customerId,
+            customerName: customerId && customerSelect.selectedOptions[0]
+              ? customerSelect.selectedOptions[0].text : null,
+            refundMode: refundMode.value,
+            refundPaymentMethod: refundMode.value === 'cash_refund'
+              ? (methodSelect.value || 'cash') : null,
+          });
+          if (res.ok) {
+            toast('تم إنشاء المرتجع بدون فاتورة');
+            overlay.remove();
+            render(document.getElementById('page-content'));
+          } else toast(res.error.message, 'error');
+        },
+      }, 'حفظ'),
+    ], null, { large: true });
+    setTimeout(() => searchInput.focus(), 100);
   }
 
   function _showReturnForm(sale) {

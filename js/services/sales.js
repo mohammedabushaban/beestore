@@ -130,14 +130,22 @@
             throw BeeStore.errors.err('VALIDATION', 'خصم البند لا يمكن أن يتجاوز قيمته');
           }
           const lineTotalMinor = grossMinor - lineDiscountMinor;
+          // v4 R2.1: keep the list price as a snapshot so price differences
+          // stay explainable even after the catalog price changes. Revenue
+          // always uses the actual unit price above.
+          const listPriceMinor = BeeStore.money.roundMinor(
+            line.listPriceMinor != null ? line.listPriceMinor : variant.priceMinor);
           lines.push({
             variantId: variant.id,
             productName: product ? product.name : '',
+            itemCode: variant.itemCode || '',
             size: variant.size,
             color: variant.color,
             barcode: variant.barcode,
             qty,
+            listPriceMinor,
             unitPriceMinor,
+            priceDiffMinor: BeeStore.money.mul(unitPriceMinor - listPriceMinor, qty),
             unitCostMinor: variant.costMinor,
             lineDiscountMinor,
             lineTotalMinor,
@@ -181,7 +189,6 @@
         }
 
         const payments = [];
-        let paidMinor = 0;
         const payerName = (data.payerName || '').trim();
         const contactPhone = (data.contactPhone || '').trim();
         if (data.payments) {
@@ -196,16 +203,53 @@
               methodKind: BeeStore.settings.methodKind(settings, p.method),
               accountId: accountId,
               amountMinor: amt,
+              appliedMinor: 0,
+              changeMinor: 0,
               date: p.date || data.date || BeeStore.dates.today(),
             };
             if (payerName) entry.payerName = payerName;
             if (contactPhone) entry.payerPhone = contactPhone;
             payments.push(entry);
-            paidMinor += amt;
           }
         }
-        if (paidMinor > totalMinor) paidMinor = totalMinor;
-        const dueMinor = totalMinor - paidMinor;
+
+        // v4 R2.2: never cap or drop money received above the invoice total.
+        // The excess is explicitly allocated to change, customer credit or
+        // other income. `amountMinor` stays the physical receipt; the portion
+        // that clears the invoice is `appliedMinor`.
+        let remaining = totalMinor;
+        for (const payment of payments) {
+          payment.appliedMinor = Math.max(0, Math.min(payment.amountMinor, remaining));
+          remaining -= payment.appliedMinor;
+        }
+        const tenderedMinor = payments.reduce((sum, p) => sum + p.amountMinor, 0);
+        const overpaymentMinor = Math.max(0, tenderedMinor - totalMinor);
+        const paidMinor = Math.min(tenderedMinor, totalMinor);
+        const dueMinor = Math.max(0, totalMinor - tenderedMinor);
+        const allowedModes = ['change', 'customer_credit', 'other_income'];
+        let overpaymentMode = overpaymentMinor > 0
+          ? (data.overpaymentMode || 'change') : null;
+        if (overpaymentMode && allowedModes.indexOf(overpaymentMode) < 0) {
+          throw BeeStore.errors.err('VALIDATION', 'طريقة معالجة المبلغ الزائد غير صالحة');
+        }
+        if (overpaymentMode === 'customer_credit' && !data.customerId) {
+          throw BeeStore.errors.err('CUSTOMER_REQUIRED', 'تحويل المبلغ الزائد إلى رصيد يتطلب اختيار زبون');
+        }
+        if (overpaymentMode === 'other_income' && data.createdByProfile === 'cashier') {
+          throw BeeStore.errors.err('PERMISSION', 'تسجيل المبلغ الزائد كإيراد آخر يتطلب صلاحية المالك');
+        }
+        let changeGivenMinor = 0;
+        if (overpaymentMode === 'change' && overpaymentMinor > 0) {
+          // Change leaves the drawer immediately, so expected cash is the
+          // invoice total. Attribute it to the last physical receipt.
+          changeGivenMinor = overpaymentMinor;
+          for (let i = payments.length - 1; i >= 0; i--) {
+            if (payments[i].amountMinor > 0) {
+              payments[i].changeMinor = changeGivenMinor;
+              break;
+            }
+          }
+        }
 
         let status = 'paid';
         if (dueMinor > 0) status = paidMinor > 0 ? 'partial' : 'unpaid';
@@ -234,6 +278,9 @@
           payments,
           paidMinor,
           dueMinor,
+          overpaymentMinor,
+          overpaymentMode,
+          changeGivenMinor,
           status,
           returnStatus: 'none',
           installmentPlan: null,

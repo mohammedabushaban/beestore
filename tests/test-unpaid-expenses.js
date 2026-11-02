@@ -303,7 +303,7 @@ test('A4.2 schema 7 backups migrate to expensePayments without changing historic
     },
   };
   const migrated = await BeeStore.migrations.migrate(data);
-  assert.strictEqual(migrated.schemaVersion, 8);
+  assert.strictEqual(migrated.schemaVersion, BeeStore.schemaVersion);
   assert.ok(Array.isArray(migrated.collections.expensePayments));
   assert.strictEqual(migrated.collections.expensePayments.length, 0);
   const first = migrated.collections.expenses.find(e => e.id === 'exp1');

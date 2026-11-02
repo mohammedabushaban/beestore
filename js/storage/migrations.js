@@ -459,6 +459,272 @@
         return data;
       },
     },
+    {
+      // A4.3: payroll components, payroll liability payments and the fixed
+      // asset register are new. Existing payrolls had no withholding/
+      // employer/EOS components, so zeros preserve their exact posting.
+      from: 8,
+      to: 9,
+      migrate(data) {
+        if (!data.collections) data.collections = {};
+        const C = data.collections;
+        for (const name of ['payrollLiabilityPayments', 'fixedAssets',
+          'fixedAssetPayments']) {
+          if (!Array.isArray(C[name])) C[name] = [];
+        }
+        for (const payroll of (C.payroll || [])) {
+          if (!payroll) continue;
+          if (payroll.withholdingMinor === undefined ||
+            payroll.withholdingMinor === null) payroll.withholdingMinor = 0;
+          if (payroll.employerCostMinor === undefined ||
+            payroll.employerCostMinor === null) payroll.employerCostMinor = 0;
+          if (payroll.endOfServiceMinor === undefined ||
+            payroll.endOfServiceMinor === null) payroll.endOfServiceMinor = 0;
+          if (!Array.isArray(payroll.payrollComponentSnapshot)) {
+            payroll.payrollComponentSnapshot = [];
+          }
+        }
+        const settings = data.settings ||
+          (data.meta && data.meta.id === 'settings' ? data.meta : null) ||
+          (C.meta || []).find(m => m && m.id === 'settings');
+        if (settings) {
+          if (!Array.isArray(settings.payrollComponents)) {
+            settings.payrollComponents = [
+              { id: 'withholding', nameAr: 'استقطاعات الموظف (تأمين/ضريبة)', type: 'employee_withholding', enabled: false, rateBasisPoints: 0, fixedMinor: 0, accountId: null },
+              { id: 'employer_cost', nameAr: 'مساهمة صاحب العمل', type: 'employer_cost', enabled: false, rateBasisPoints: 0, fixedMinor: 0, accountId: null },
+              { id: 'end_of_service', nameAr: 'مخصص نهاية الخدمة', type: 'end_of_service', enabled: false, rateBasisPoints: 0, fixedMinor: 0, accountId: null },
+            ];
+          }
+          if (settings.fixedAssetsEnabled === undefined) {
+            settings.fixedAssetsEnabled = false;
+          }
+          if (settings.capitalizationWarnThresholdMinor === undefined) {
+            settings.capitalizationWarnThresholdMinor = 50000;
+          }
+        }
+        return data;
+      },
+    },
+    {
+      // v4 M1/M3/M7 (schema 10):
+      // - items become category-independent with a human item code, optional
+      //   variants and a precomputed search key;
+      // - sale lines snapshot the list price and receipts split the physical
+      //   amount from the portion applied to the invoice;
+      // - historical overpayments keep their old accounting meaning and are
+      //   explicitly tagged customer_credit;
+      // - returns gain the no-reference/mixed mode fields.
+      from: 9,
+      to: 10,
+      migrate(data) {
+        if (!data.collections) data.collections = {};
+        const C = data.collections;
+        if (!Array.isArray(C.products)) C.products = [];
+        if (!Array.isArray(C.variants)) C.variants = [];
+        if (!Array.isArray(C.sales)) C.sales = [];
+        if (!Array.isArray(C.salesReturns)) C.salesReturns = [];
+
+        const normalize = (value) => String(value == null ? '' : value)
+          .replace(/[\u064B-\u065F\u0670\u0640]/g, '')
+          .replace(/[\u0623\u0625\u0622\u0671]/g, '\u0627')
+          .replace(/\u0649/g, '\u064A')
+          .replace(/\u0629/g, '\u0647')
+          .replace(/[\u0660-\u0669]/g, (d) => String(d.charCodeAt(0) - 0x0660))
+          .replace(/[\u06F0-\u06F9]/g, (d) => String(d.charCodeAt(0) - 0x06F0))
+          .toLowerCase()
+          .replace(/\s+/g, ' ')
+          .trim();
+        const keyFor = (product, variant) => normalize([
+          product && product.name, product && product.brand,
+          product && product.itemCode, product && product.notes,
+          product && product.unit,
+          variant && variant.size, variant && variant.color,
+          variant && variant.itemCode, variant && variant.barcode,
+          variant && variant.sku,
+        ].filter(Boolean).join(' '));
+
+        const variantsByProduct = new Map();
+        for (const variant of C.variants) {
+          if (!variant) continue;
+          if (!variantsByProduct.has(variant.productId)) {
+            variantsByProduct.set(variant.productId, []);
+          }
+          variantsByProduct.get(variant.productId).push(variant);
+        }
+
+        // Item codes are sequential from 1001. Explicit numeric codes already
+        // present in a future backup advance the same sequence.
+        let counter = 0;
+        const usedCodes = new Set();
+        for (const product of C.products) {
+          if (!product) continue;
+          product.unit = String(product.unit || 'قطعة').trim() || 'قطعة';
+          if (product.notes === undefined || product.notes === null) {
+            product.notes = product.description || '';
+          }
+          if (product.lowStockThreshold === undefined) {
+            product.lowStockThreshold = null;
+          }
+          if (!product.itemCode) {
+            const siblings = variantsByProduct.get(product.id) || [];
+            const dims = siblings.filter(v => (v && v.size) || (v && v.color));
+            product.hasVariants = siblings.length > 1 || dims.length > 0;
+          } else if (product.hasVariants === undefined ||
+            product.hasVariants === null) {
+            const siblings = variantsByProduct.get(product.id) || [];
+            product.hasVariants = siblings.length > 1 ||
+              siblings.some(v => v && (v.size || v.color));
+          }
+          if (product.itemCode) {
+            usedCodes.add(String(product.itemCode).trim());
+            const numeric = Number(product.itemCode);
+            if (Number.isInteger(numeric) && numeric >= 1001) {
+              counter = Math.max(counter, numeric - 1000);
+            }
+          }
+        }
+        for (const product of C.products) {
+          if (!product) continue;
+          if (!product.itemCode) {
+            let next = counter + 1;
+            while (usedCodes.has(String(1000 + next))) next++;
+            counter = next;
+            product.itemCode = String(1000 + counter);
+            usedCodes.add(product.itemCode);
+          }
+          const siblings = variantsByProduct.get(product.id) || [];
+          if (product.hasVariants === false && siblings.length === 1 &&
+            product.defaultVariantId == null) {
+            product.defaultVariantId = siblings[0].id;
+          } else if (product.hasVariants === false && siblings.length > 1) {
+            // More than one stored variant means the item really does have
+            // variants, even if no dimension text was ever filled in.
+            product.hasVariants = true;
+          }
+          product.searchKey = keyFor(product, null);
+        }
+
+        // Variants inherit a unique code: default variants may share the parent
+        // code, dimensioned variants get parentCode-1, parentCode-2, ...
+        const productMap = new Map();
+        for (const product of C.products) {
+          if (product) productMap.set(product.id, product);
+        }
+        const variantCodeUsed = new Set();
+        for (const product of C.products) {
+          if (!product) continue;
+          const siblings = variantsByProduct.get(product.id) || [];
+          siblings.forEach((variant, index) => {
+            if (!variant) return;
+            variant.unit = String(variant.unit || product.unit || 'قطعة').trim() || 'قطعة';
+            if (!variant.itemCode) {
+              variant.itemCode = siblings.length === 1 &&
+                !variant.size && !variant.color
+                ? product.itemCode
+                : product.itemCode + '-' + (index + 1);
+            }
+            let code = String(variant.itemCode).trim();
+            if (variantCodeUsed.has(code)) {
+              code = product.itemCode + '-' + (index + 1);
+              let suffix = index + 1;
+              while (variantCodeUsed.has(code)) {
+                suffix++;
+                code = product.itemCode + '-' + suffix;
+              }
+              variant.itemCode = code;
+            }
+            variantCodeUsed.add(code);
+            variant.searchKey = keyFor(product, variant);
+          });
+        }
+
+        const variantMap = new Map();
+        for (const variant of C.variants) {
+          if (variant) variantMap.set(variant.id, variant);
+        }
+
+        for (const sale of C.sales) {
+          if (!sale) continue;
+          let remaining = Math.max(0, Math.round(Number(sale.totalMinor) || 0));
+          let tendered = 0;
+          for (const payment of (sale.payments || [])) {
+            if (!payment) continue;
+            const amount = Math.max(0, Math.round(Number(payment.amountMinor) || 0));
+            const applied = Math.max(0, Math.min(amount, remaining));
+            payment.appliedMinor = applied;
+            payment.changeMinor = 0;
+            remaining -= applied;
+            tendered += amount;
+          }
+          sale.overpaymentMinor = Math.max(0, tendered - (Number(sale.totalMinor) || 0));
+          if (sale.overpaymentMinor > 0) {
+            // Historically the excess was always posted to 2030. Keep that
+            // exact meaning instead of silently turning old money into income.
+            sale.overpaymentMode = 'customer_credit';
+          } else {
+            sale.overpaymentMode = null;
+            sale.overpaymentMinor = 0;
+          }
+          sale.changeGivenMinor = 0;
+          for (const line of (sale.lines || [])) {
+            if (!line) continue;
+            const variant = variantMap.get(line.variantId);
+            if (line.itemCode === undefined) {
+              line.itemCode = variant ? (variant.itemCode || variant.sku || '') : '';
+            }
+            if (line.listPriceMinor === undefined || line.listPriceMinor === null) {
+              // The catalog price at the time is unknowable; the recorded
+              // unit price is the safest snapshot and produces no false
+              // price-variance in historical reports.
+              line.listPriceMinor = Math.round(Number(line.unitPriceMinor) || 0);
+            }
+            if (line.priceDiffMinor === undefined || line.priceDiffMinor === null) {
+              line.priceDiffMinor = 0;
+            }
+          }
+        }
+
+        for (const ret of C.salesReturns) {
+          if (!ret) continue;
+          if (!Array.isArray(ret.flags)) {
+            ret.flags = ret.saleId ? [] : ['NO_REFERENCE'];
+          }
+          if (!ret.mode) {
+            ret.mode = ret.saleId ? 'linked' : 'unlinked';
+          }
+          if (ret.customerName === undefined) ret.customerName = null;
+          for (const line of (ret.lines || [])) {
+            if (!line) continue;
+            if (line.reference === undefined) line.reference = ret.saleId || null;
+            const variant = variantMap.get(line.variantId);
+            if (line.itemCode === undefined) {
+              line.itemCode = variant ? (variant.itemCode || variant.sku || '') : '';
+            }
+            if (line.listPriceMinor === undefined || line.listPriceMinor === null) {
+              line.listPriceMinor = Math.round(Number(line.unitPriceMinor) || 0);
+            }
+          }
+        }
+
+        const settings = data.settings ||
+          (data.meta && data.meta.id === 'settings' ? data.meta : null) ||
+          (C.meta || []).find(m => m && m.id === 'settings');
+        if (settings) {
+          if (settings.cashierUnlinkedReturnLimitMinor === undefined) {
+            settings.cashierUnlinkedReturnLimitMinor = 0;
+          }
+        }
+
+        const meta = (data.meta && data.meta.id === 'meta' ? data.meta : null) ||
+          (C.meta || []).find(m => m && m.id === 'meta');
+        if (meta) {
+          if (!meta.counters) meta.counters = {};
+          meta.counters.itemCode = Math.max(
+            Number(meta.counters.itemCode) || 0, counter);
+        }
+        return data;
+      },
+    },
   ];
 
   async function migrate(data, currentVersion) {

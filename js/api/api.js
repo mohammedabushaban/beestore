@@ -16,7 +16,7 @@
       const services = [
         'settings', 'auth', 'clockGuard', 'accounts', 'categories', 'products', 'variants', 'stock',
         'sales', 'returns', 'customers', 'suppliers', 'purchases', 'purchaseReturns',
-        'expenses', 'employees', 'payroll', 'transactions', 'periods',
+        'expenses', 'employees', 'payroll', 'fixedAssets', 'transactions', 'periods',
         'chart', 'journal', 'posting', 'settlements',
         'dailyClosing', 'reports', 'dashboard', 'backup', 'maintenance', 'audit',
         'accountingPackage',
@@ -175,19 +175,50 @@
       if (!cashier) return ret;
       const settings = await BeeStore.settings.get();
       const max = Math.max(0, Number(settings.cashierMaxReturnMinor) || 0);
-      const sale = await this.repo.get('sales', ret.saleId);
-      if (!sale) return ret; // let the service return its Arabic NOT_FOUND
+      const sale = ret.saleId ? await this.repo.get('sales', ret.saleId) : null;
       let refund = 0;
+      let unlinkedRefund = 0;
       for (const line of (ret.lines || [])) {
-        const saleLine = sale.lines[Number(line.saleLineIndex)];
-        if (!saleLine) continue;
+        const linked = sale && line.saleLineIndex !== undefined &&
+          line.saleLineIndex !== null && line.saleLineIndex !== '';
+        if (linked) {
+          const saleLine = sale.lines[Number(line.saleLineIndex)];
+          if (!saleLine) continue;
+          const qty = Number(line.qty) || 0;
+          refund += BeeStore.returns.quoteRefund(saleLine, qty).refundMinor;
+          continue;
+        }
+        // v4 R9.2: an unlinked line needs a variant and is capped at list
+        // price for the cashier. The service repeats these checks atomically;
+        // doing them here keeps the error surfaced before any transaction.
+        if (!line.variantId) continue;
+        const variant = await this.repo.get('variants', line.variantId);
+        if (!variant) continue;
         const qty = Number(line.qty) || 0;
-        refund += BeeStore.returns.quoteRefund(saleLine, qty).refundMinor;
+        const listPrice = BeeStore.money.roundMinor(variant.priceMinor);
+        const unitPrice = line.unitPriceMinor != null
+          ? BeeStore.money.roundMinor(line.unitPriceMinor) : listPrice;
+        if (unitPrice > listPrice) {
+          throw BeeStore.errors.err('PERMISSION',
+            'سعر الاسترداد يتجاوز سعر القائمة. اطلب من المالك تنفيذ المرتجع.');
+        }
+        const lineRefund = BeeStore.money.mul(unitPrice, qty);
+        refund += lineRefund;
+        unlinkedRefund += lineRefund;
       }
       if (refund > max) {
         throw BeeStore.errors.err('PERMISSION',
           'قيمة المرتجع تتجاوز حد الكاشير (' + BeeStore.money.format(max) + '). ' +
           'اطلب من المالك تنفيذ المرتجع.');
+      }
+      if (unlinkedRefund > 0) {
+        const unlinkedMax = Math.max(0,
+          Number(settings.cashierUnlinkedReturnLimitMinor) || 0);
+        if (unlinkedRefund > unlinkedMax) {
+          throw BeeStore.errors.err('PERMISSION',
+            'مرتجع بدون فاتورة يتجاوز حد الكاشير (' +
+            BeeStore.money.format(unlinkedMax) + '). اطلب من المالك تنفيذ المرتجع.');
+        }
       }
       return ret;
     }
@@ -282,6 +313,8 @@
       update: async (id, patch) => ok(await BeeStore.products.update(id, patch)),
       deactivate: async (id) => ok(await BeeStore.products.deactivate(id)),
       search: async (q) => ok(await BeeStore.products.searchProducts(q)),
+      quickAdd: async (data) => ok(await BeeStore.products.quickAdd(data)),
+      nextItemCode: async () => ok(await BeeStore.products.nextItemCode()),
     };
 
     variants = {
@@ -392,6 +425,24 @@
       advances: async (employeeId) => ok(await BeeStore.payroll.getAdvances(employeeId)),
       createAdvance: async (data) => ok(await BeeStore.payroll.createAdvance(data)),
       outstandingAdvances: async (employeeId) => ok(await BeeStore.payroll.getOutstandingAdvances(employeeId)),
+      liabilityBalances: async (asOf) => ok(await BeeStore.payroll.liabilityBalancesAsOf(asOf)),
+      listLiabilityPayments: async (filters) => ok(await BeeStore.payroll.listLiabilityPayments(filters)),
+      payLiabilities: async (data) => ok(await BeeStore.payroll.payLiabilities(data)),
+      voidLiabilityPayment: async (id, reason) => ok(await BeeStore.payroll.voidLiabilityPayment(id, reason)),
+    };
+
+    fixedAssets = {
+      prepare: async () => ok(await BeeStore.fixedAssets.ensureChart()),
+      list: async (filters) => ok(await BeeStore.fixedAssets.list(filters)),
+      get: async (id) => ok(await BeeStore.fixedAssets.get(id)),
+      schedule: async (id) => ok(await BeeStore.fixedAssets.schedule(id)),
+      create: async (data) => ok(await BeeStore.fixedAssets.create(data)),
+      payments: async (assetId) => ok(await BeeStore.fixedAssets.payments(assetId)),
+      pay: async (assetId, data) => ok(await BeeStore.fixedAssets.pay(assetId, data)),
+      voidPayment: async (paymentId, reason) => ok(await BeeStore.fixedAssets.voidPayment(paymentId, reason)),
+      dispose: async (assetId, data) => ok(await BeeStore.fixedAssets.dispose(assetId, data)),
+      register: async (asOf) => ok(await BeeStore.fixedAssets.registerAsOf(asOf)),
+      unpaid: async (asOf) => ok(await BeeStore.fixedAssets.unpaidAsOf(asOf)),
     };
 
     transactions = {
@@ -457,6 +508,8 @@
       approveJournal: async (options) => ok(await BeeStore.reports.approveJournal(options)),
       revokeJournalApproval: async (reason) => ok(await BeeStore.reports.revokeJournalApproval(reason)),
       journalStatus: async () => ok(await BeeStore.reports.journalReportStatus()),
+      priceVariance: async (from, to, groupBy) => ok(await BeeStore.reports.priceVariance(from, to, groupBy)),
+      unlinkedReturns: async (from, to) => ok(await BeeStore.reports.unlinkedReturns(from, to)),
     };
 
     dashboard = {

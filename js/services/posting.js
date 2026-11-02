@@ -34,7 +34,12 @@
     EXPENSE_PAYMENT: 'EXPENSE_PAYMENT',
     PAYROLL_ACCRUAL: 'PAYROLL_ACCRUAL',
     PAYROLL_PAYMENT: 'PAYROLL_PAYMENT',
+    PAYROLL_LIABILITY_PAYMENT: 'PAYROLL_LIABILITY_PAYMENT',
     EMPLOYEE_ADVANCE: 'EMPLOYEE_ADVANCE',
+    FIXED_ASSET_PURCHASE: 'FIXED_ASSET_PURCHASE',
+    FIXED_ASSET_DEPRECIATION: 'FIXED_ASSET_DEPRECIATION',
+    FIXED_ASSET_DISPOSAL: 'FIXED_ASSET_DISPOSAL',
+    FIXED_ASSET_PAYMENT: 'FIXED_ASSET_PAYMENT',
     OWNER_TRANSACTION: 'OWNER_TRANSACTION',
     TRANSFER: 'TRANSFER',
     CASH_DIFFERENCE: 'CASH_DIFFERENCE',
@@ -57,7 +62,10 @@
     EXPENSE: 'EXPENSE',
     EXPENSE_PAYMENT: 'EXPENSE_PAYMENT',
     PAYROLL: 'PAYROLL',
+    PAYROLL_LIABILITY: 'PAYROLL_LIABILITY',
     EMPLOYEE_ADVANCE: 'EMPLOYEE_ADVANCE',
+    FIXED_ASSET: 'FIXED_ASSET',
+    FIXED_ASSET_PAYMENT: 'FIXED_ASSET_PAYMENT',
     OWNER_TRANSACTION: 'OWNER_TRANSACTION',
     TRANSFER: 'TRANSFER',
     CASH_ADJUSTMENT: 'CASH_ADJUSTMENT',
@@ -651,23 +659,29 @@
       const out = [];
       let remaining = round(sale.totalMinor);
       const payments = sale.payments || [];
+      const mode = sale.overpaymentMode || 'customer_credit';
       for (let i = 0; i < payments.length; i++) {
         const p = payments[i] || {};
         const amount = round(p.amountMinor);
         if (amount <= 0) continue;
-        const applied = Math.max(0, Math.min(amount, remaining));
+        const applied = p.appliedMinor != null
+          ? Math.max(0, Math.min(round(p.appliedMinor), remaining, amount))
+          : Math.max(0, Math.min(amount, remaining));
         remaining -= applied;
         // Replay may skip an already-posted receipt, but it still consumed
         // invoice AR before later receipts. Advance the remainder without
         // emitting an entry so multi-payment invoices split correctly.
         if (options.skipIndexes && options.skipIndexes.has(i)) continue;
-        const excess = amount - applied;
+        const change = Math.max(0, Math.min(amount, round(p.changeMinor)));
+        const excess = Math.max(0, amount - applied - change);
+        const netCash = amount - change;
+        if (netCash <= 0 && applied <= 0) continue;
         const money = await this.moneyAccount(tx, {
           legacyAccountId: p.accountId,
           method: p.method,
           methodKind: p.methodKind,
         });
-        const parts = [{ accountId: money.id, debit: amount }];
+        const parts = [{ accountId: money.id, debit: netCash }];
         if (applied > 0) {
           parts.push({
             key: 'ar', credit: applied,
@@ -676,11 +690,19 @@
           });
         }
         if (excess > 0) {
-          parts.push({
-            key: 'customer_credits', credit: excess,
-            partyType: sale.customerId ? 'customer' : null,
-            partyId: sale.customerId || null,
-          });
+          if (mode === 'other_income') {
+            // v4 R2.2 / v5 §4: rounding and gratuities are other income, not
+            // a liability owed back to the customer.
+            parts.push({ key: 'other_income', credit: excess });
+          } else {
+            // Legacy sales (migrated) keep their historical customer-credit
+            // meaning; new change-mode sales carry no excess record at all.
+            parts.push({
+              key: 'customer_credits', credit: excess,
+              partyType: sale.customerId ? 'customer' : null,
+              partyId: sale.customerId || null,
+            });
+          }
         }
         const entry = await this.postParts(tx, {
           date: p.date || sale.date,
@@ -1025,7 +1047,11 @@
     }
 
     /**
-     * Payroll accrual at the payroll month start: Dr 6100 gross / Cr 2100.
+     * Payroll accrual at the payroll month start (v5 §4 row 10, §7.3):
+     * Dr 6100 gross, Dr 6110 employer costs, Dr 6120 EOS provision;
+     * Cr 2100 net accrued, Cr 2110 withholdings, Cr 2120 employer
+     * contributions, Cr 2200 EOS provision. Advances are applied at payment
+     * time (see payrollPayment), so 2100 starts at gross minus withholding.
      * @param {object} tx active transaction
      * @param {object} payroll payroll record
      * @param {object} [options] {replay}
@@ -1034,7 +1060,17 @@
     async payrollAccrual(tx, payroll, options) {
       const gross = round(payroll.baseMinor) + round(payroll.bonusMinor) +
         round(payroll.overtimeMinor) - round(payroll.deductionsMinor);
-      if (gross <= 0) return null;
+      const withholding = Math.max(0, round(payroll.withholdingMinor));
+      const employer = Math.max(0, round(payroll.employerCostMinor));
+      const eos = Math.max(0, round(payroll.endOfServiceMinor));
+      if (withholding > gross) {
+        throw BeeStore.errors.err('VALIDATION',
+          'الاستقطاعات أكبر من إجمالي الراتب — راجع مكونات الراتب');
+      }
+      const accrued = gross - withholding;
+      if (gross <= 0 && employer <= 0 && eos <= 0) return null;
+      const partyType = payroll.employeeId ? 'employee' : null;
+      const partyId = payroll.employeeId || null;
       return this.postParts(tx, {
         date: payroll.month + '-01',
         sourceType: SOURCE.PAYROLL,
@@ -1044,22 +1080,20 @@
         allowClosedDay: true,
         replay: options && options.replay,
         parts: [
-          {
-            key: 'salaries', debit: gross,
-            partyType: payroll.employeeId ? 'employee' : null,
-            partyId: payroll.employeeId || null,
-          },
-          {
-            key: 'accrued_salaries', credit: gross,
-            partyType: payroll.employeeId ? 'employee' : null,
-            partyId: payroll.employeeId || null,
-          },
+          { key: 'salaries', debit: gross, partyType, partyId },
+          { key: 'employer_costs', debit: employer, partyType, partyId },
+          { key: 'end_of_service_expense', debit: eos, partyType, partyId },
+          { key: 'accrued_salaries', credit: accrued, partyType, partyId },
+          { key: 'accrued_withholdings', credit: withholding, partyType, partyId },
+          { key: 'accrued_employer', credit: employer, partyType, partyId },
+          { key: 'end_of_service', credit: eos, partyType, partyId },
         ],
       });
     }
 
     /**
-     * Salary payment: Dr 2100 gross / Cr 1150 advances applied / Cr cash net.
+     * Salary payment: Dr 2100 net accrued / Cr 1150 advances applied / Cr cash
+     * net paid. Withholdings stay in 2110 until paid to the authority.
      * @param {object} tx active transaction
      * @param {object} payroll paid payroll record
      * @param {object} [options] {replay}
@@ -1068,19 +1102,21 @@
     async payrollPayment(tx, payroll, options) {
       const gross = round(payroll.baseMinor) + round(payroll.bonusMinor) +
         round(payroll.overtimeMinor) - round(payroll.deductionsMinor);
+      const withholding = Math.max(0, round(payroll.withholdingMinor));
+      const accrued = gross - withholding;
       const applied = round(payroll.advanceRepaymentMinor);
-      const net = payroll.netMinor != null ? round(payroll.netMinor) : gross - applied;
-      if (gross <= 0) return null;
-      if (net < 0 || applied < 0 || gross !== net + applied) {
+      const net = payroll.netMinor != null ? round(payroll.netMinor) : accrued - applied;
+      if (accrued <= 0 && applied <= 0 && net <= 0) return null;
+      if (withholding > gross) {
         throw BeeStore.errors.err('VALIDATION',
-          'دفع الراتب غير متوازن — الإجمالي ' + gross + '، السلف ' + applied + '، الصافي ' + net);
+          'الاستقطاعات أكبر من إجمالي الراتب — راجع مكونات الراتب');
       }
-      const money = await this.moneyAccount(tx, {
-        legacyAccountId: payroll.accountId,
-        method: payroll.method || 'cash',
-      });
+      if (net < 0 || applied < 0 || accrued !== net + applied) {
+        throw BeeStore.errors.err('VALIDATION',
+          'دفع الراتب غير متوازن — المستحق ' + accrued + '، السلف ' + applied + '، الصافي ' + net);
+      }
       const parts = [{
-        key: 'accrued_salaries', debit: gross,
+        key: 'accrued_salaries', debit: accrued,
         partyType: payroll.employeeId ? 'employee' : null,
         partyId: payroll.employeeId || null,
       }];
@@ -1091,7 +1127,14 @@
           partyId: payroll.employeeId || null,
         });
       }
-      if (net > 0) parts.push({ accountId: money.id, credit: net });
+      if (net > 0) {
+        const money = await this.moneyAccount(tx, {
+          legacyAccountId: payroll.accountId,
+          method: payroll.method || 'cash',
+          methodKind: payroll.methodKind,
+        });
+        parts.push({ accountId: money.id, credit: net });
+      }
       return this.postParts(tx, {
         date: payroll.paidDate,
         sourceType: SOURCE.PAYROLL,
@@ -1100,6 +1143,43 @@
         description: 'دفع راتب ' + payroll.employeeName + ' - ' + payroll.month,
         replay: options && options.replay,
         parts,
+      });
+    }
+
+    /**
+     * Payroll liability payment (v5 §4 row 11b): Dr 2110 / 2120 / 2200,
+     * Cr Cash/Bank.
+     * @param {object} tx active transaction
+     * @param {object} payment payrollLiabilityPayments record
+     * @param {object} [options] {replay}
+     * @returns {Promise<object|null>} entry
+     */
+    async payrollLiabilityPayment(tx, payment, options) {
+      const amount = round(payment.amountMinor);
+      if (amount <= 0) return null;
+      const key = payment.type === 'withholding' ? 'accrued_withholdings'
+        : payment.type === 'employer' ? 'accrued_employer'
+          : payment.type === 'end_of_service' ? 'end_of_service' : null;
+      if (!key) {
+        throw BeeStore.errors.err('VALIDATION',
+          'نوع مستحقات الرواتب غير معروف: ' + (payment.type || '(فارغ)'));
+      }
+      const money = await this.moneyAccount(tx, {
+        legacyAccountId: payment.accountId,
+        method: payment.method || 'cash',
+        methodKind: payment.methodKind,
+      });
+      return this.postParts(tx, {
+        date: payment.date,
+        sourceType: SOURCE.PAYROLL_LIABILITY,
+        sourceId: payment.id,
+        event: EVENTS.PAYROLL_LIABILITY_PAYMENT,
+        description: 'سداد ' + (payment.label || 'مستحقات رواتب'),
+        replay: options && options.replay,
+        parts: [
+          { key, debit: amount },
+          { accountId: money.id, credit: amount },
+        ],
       });
     }
 
@@ -1130,6 +1210,223 @@
             partyType: advance.employeeId ? 'employee' : null,
             partyId: advance.employeeId || null,
           },
+          { accountId: money.id, credit: amount },
+        ],
+      });
+    }
+
+    /**
+     * Pure v5 §8 straight-line depreciation plan. Depreciation starts the
+     * month after purchase; whole minor units are split evenly with the
+     * rounding remainder in the last month.
+     * @param {object} asset fixedAssets record
+     * @returns {Array<{date:string,month:string,amountMinor:number,index:number}>} schedule
+     */
+    fixedAssetDepreciationPlan(asset) {
+      const cost = Math.max(0, round(asset && asset.costMinor));
+      const salvage = Math.max(0, Math.min(cost, round(asset && asset.salvageValueMinor)));
+      const life = Math.max(0, Math.floor(Number(asset && asset.usefulLifeMonths) || 0));
+      const depreciable = cost - salvage;
+      if (!asset || !asset.purchaseDate || life <= 0 || depreciable <= 0) return [];
+      const base = Math.floor(depreciable / life);
+      const startMonth = String(asset.purchaseDate).slice(0, 7) + '-01';
+      const plan = [];
+      for (let i = 0; i < life; i++) {
+        const monthDate = BeeStore.dates.addMonths(startMonth, i + 1);
+        plan.push({
+          date: String(monthDate).slice(0, 10),
+          month: String(monthDate).slice(0, 7),
+          amountMinor: i === life - 1 ? depreciable - base * (life - 1) : base,
+          index: i,
+        });
+      }
+      return plan;
+    }
+
+    /**
+     * v5 §8 fixed-asset purchase: Dr 1500 cost; Cr Cash/Bank for the paid
+     * part; Cr 2020 for the unpaid part.
+     * @param {object} tx active transaction
+     * @param {object} asset fixedAssets record
+     * @param {object} [options] {replay}
+     * @returns {Promise<object|null>} entry
+     */
+    async fixedAssetPurchase(tx, asset, options) {
+      const cost = round(asset.costMinor);
+      if (cost <= 0) return null;
+      const paid = Math.max(0, Math.min(cost, asset.initialPaidMinor != null
+        ? round(asset.initialPaidMinor) : round(asset.paidMinor)));
+      const unpaid = cost - paid;
+      const parts = [{ key: 'fixed_assets', debit: cost }];
+      if (paid > 0) {
+        const money = await this.moneyAccount(tx, {
+          legacyAccountId: asset.accountId,
+          method: asset.method || 'cash',
+          methodKind: asset.methodKind,
+        });
+        parts.push({ accountId: money.id, credit: paid });
+      }
+      if (unpaid > 0) parts.push({ key: 'accrued_expenses', credit: unpaid });
+      return this.postParts(tx, {
+        date: asset.purchaseDate,
+        sourceType: SOURCE.FIXED_ASSET,
+        sourceId: asset.id,
+        event: EVENTS.FIXED_ASSET_PURCHASE,
+        description: 'شراء أصل ثابت: ' + (asset.name || asset.id),
+        replay: options && options.replay,
+        parts,
+      });
+    }
+
+    /**
+     * One scheduled monthly depreciation entry: Dr 6300 / Cr 1590.
+     * @param {object} tx active transaction
+     * @param {object} asset fixedAssets record
+     * @param {object} item plan row
+     * @param {object} [options] {replay}
+     * @returns {Promise<object|null>} entry
+     */
+    async fixedAssetDepreciation(tx, asset, item, options) {
+      const amount = round(item && item.amountMinor);
+      if (amount <= 0) return null;
+      return this.postParts(tx, {
+        date: item.date,
+        sourceType: SOURCE.FIXED_ASSET,
+        sourceId: asset.id,
+        event: EVENTS.FIXED_ASSET_DEPRECIATION,
+        description: 'إهلاك ' + (asset.name || asset.id) + ' - ' + item.month,
+        isScheduled: true,
+        replay: options && options.replay,
+        parts: [
+          { key: 'depreciation', debit: amount },
+          { key: 'accumulated_depreciation', credit: amount },
+        ],
+      });
+    }
+
+    /**
+     * Creates every missing scheduled depreciation entry. A disposed asset
+     * only gets entries through its disposal date so replay never resurrects
+     * future depreciation, and a voided asset gets none.
+     * @param {object} tx active transaction
+     * @param {object} asset fixedAssets record
+     * @param {object} [options] {replay}
+     * @returns {Promise<object[]>} newly created entries
+     */
+    async ensureFixedAssetDepreciation(tx, asset, options) {
+      if (!asset || asset.voided || asset.status === 'void') return [];
+      const plan = this.fixedAssetDepreciationPlan(asset);
+      const cutoff = asset.status === 'disposed' && asset.disposalDate
+        ? asset.disposalDate : null;
+      const active = await this._sourceActive(tx, SOURCE.FIXED_ASSET, asset.id);
+      const existing = new Set(active
+        .filter(e => e.event === EVENTS.FIXED_ASSET_DEPRECIATION)
+        .map(e => e.date));
+      const created = [];
+      for (const item of plan) {
+        if (cutoff && item.date > cutoff) continue;
+        if (existing.has(item.date)) continue;
+        const entry = await this.fixedAssetDepreciation(tx, asset, item, options);
+        if (entry) created.push(entry);
+      }
+      return created;
+    }
+
+    /**
+     * Reverses remaining scheduled depreciation dated after a disposal.
+     * Historical depreciation already recognized up to the disposal date is
+     * never touched.
+     * @param {object} tx active transaction
+     * @param {object} asset fixedAssets record
+     * @param {object} [options] {replay}
+     * @returns {Promise<object[]>} reversal entries
+     */
+    async reverseFixedAssetFutureDepreciation(tx, asset, options) {
+      if (!asset || !asset.disposalDate) return [];
+      const active = await this._sourceActive(tx, SOURCE.FIXED_ASSET, asset.id);
+      const future = active.filter(e =>
+        e.event === EVENTS.FIXED_ASSET_DEPRECIATION &&
+        e.date > asset.disposalDate);
+      if (future.length === 0) return [];
+      return BeeStore.journal.reverseEntries(tx, future, {
+        description: 'إلغاء إهلاك مستقبلي — بيع الأصل ' + (asset.name || asset.id),
+        sourceType: SOURCE.FIXED_ASSET,
+        sourceId: asset.id,
+      }, { allowClosedDay: true, replay: !!(options && options.replay) });
+    }
+
+    /**
+     * v5 §8 disposal: reverse future scheduled depreciation, then Dr Cash
+     * proceeds + Dr 1590 accumulated + Dr 6350 loss (or Cr 4110 gain),
+     * Cr 1500 cost. The book value uses the schedule through the disposal date.
+     * @param {object} tx active transaction
+     * @param {object} asset fixedAssets record
+     * @param {object} [options] {replay}
+     * @returns {Promise<object|null>} disposal entry
+     */
+    async fixedAssetDisposal(tx, asset, options) {
+      const cost = round(asset.costMinor);
+      if (cost <= 0) return null;
+      await this.reverseFixedAssetFutureDepreciation(tx, asset, options);
+      const plan = this.fixedAssetDepreciationPlan(asset);
+      let accumulated = 0;
+      for (const item of plan) {
+        if (asset.disposalDate && item.date <= asset.disposalDate) {
+          accumulated += item.amountMinor;
+        }
+      }
+      const book = cost - accumulated;
+      const proceeds = Math.max(0, round(asset.proceedsMinor));
+      const gain = Math.max(0, proceeds - book);
+      const loss = Math.max(0, book - proceeds);
+      const parts = [];
+      if (proceeds > 0) {
+        const money = await this.moneyAccount(tx, {
+          legacyAccountId: asset.disposalAccountId,
+          method: asset.disposalMethod || 'cash',
+          methodKind: asset.disposalMethodKind,
+        });
+        parts.push({ accountId: money.id, debit: proceeds });
+      }
+      if (accumulated > 0) parts.push({ key: 'accumulated_depreciation', debit: accumulated });
+      if (loss > 0) parts.push({ key: 'asset_sale_loss', debit: loss });
+      if (gain > 0) parts.push({ key: 'asset_sale_gain', credit: gain });
+      parts.push({ key: 'fixed_assets', credit: cost });
+      return this.postParts(tx, {
+        date: asset.disposalDate,
+        sourceType: SOURCE.FIXED_ASSET,
+        sourceId: asset.id,
+        event: EVENTS.FIXED_ASSET_DISPOSAL,
+        description: 'بيع أصل ثابت: ' + (asset.name || asset.id),
+        replay: options && options.replay,
+        parts,
+      });
+    }
+
+    /**
+     * v5 §8 later fixed-asset payment: Dr 2020 / Cr Cash/Bank.
+     * @param {object} tx active transaction
+     * @param {object} payment fixedAssetPayments record
+     * @param {object} [options] {replay}
+     * @returns {Promise<object|null>} entry
+     */
+    async fixedAssetPayment(tx, payment, options) {
+      const amount = round(payment.amountMinor);
+      if (amount <= 0) return null;
+      const money = await this.moneyAccount(tx, {
+        legacyAccountId: payment.accountId,
+        method: payment.method || 'cash',
+        methodKind: payment.methodKind,
+      });
+      return this.postParts(tx, {
+        date: payment.date,
+        sourceType: SOURCE.FIXED_ASSET_PAYMENT,
+        sourceId: payment.id,
+        event: EVENTS.FIXED_ASSET_PAYMENT,
+        description: 'دفعة أصل ثابت: ' + (payment.assetName || payment.assetId),
+        replay: options && options.replay,
+        parts: [
+          { key: 'accrued_expenses', debit: amount, memo: 'أصل ثابت' },
           { accountId: money.id, credit: amount },
         ],
       });
@@ -1419,6 +1716,9 @@
         ['expensePayments', null],
         ['employeeAdvances', null],
         ['payroll', null],
+        ['payrollLiabilityPayments', null],
+        ['fixedAssets', null],
+        ['fixedAssetPayments', null],
         ['ownerTransactions', null],
         ['transfers', null],
         ['cashAdjustments', null],
@@ -1661,6 +1961,57 @@
           }
           const nowActive = await this._sourceActive(tx, SOURCE.PAYROLL, doc.id);
           await this._linkActive(tx, 'payroll', doc, nowActive);
+          return posted;
+        }
+        case 'payrollLiabilityPayments': {
+          if (await reverseIfVoided(SOURCE.PAYROLL_LIABILITY,
+            'payrollLiabilityPayments')) return posted;
+          const active = await this._sourceActive(tx, SOURCE.PAYROLL_LIABILITY, doc.id);
+          if (active.length === 0) {
+            add(await this.payrollLiabilityPayment(tx, doc, { replay: true }));
+          }
+          const nowActive = await this._sourceActive(tx, SOURCE.PAYROLL_LIABILITY, doc.id);
+          await this._linkActive(tx, 'payrollLiabilityPayments', doc, nowActive);
+          return posted;
+        }
+        case 'fixedAssets': {
+          if (doc.voided || doc.status === 'void') {
+            const active = await this._sourceActive(tx, SOURCE.FIXED_ASSET, doc.id);
+            if (active.length > 0) {
+              await BeeStore.journal.reverseActiveSourceTx(tx, SOURCE.FIXED_ASSET,
+                doc.id, { description: 'عكس أصل ثابت ملغى أثناء الترحيل' },
+                { allowClosedDay: true, replay: true });
+              posted += active.length;
+            }
+            const all = await BeeStore.journal._forSourceTx(tx, SOURCE.FIXED_ASSET, doc.id);
+            if (all.length > 0 && this._linkActive(tx, 'fixedAssets', doc, all)) posted++;
+            return posted;
+          }
+          const active = await this._sourceActive(tx, SOURCE.FIXED_ASSET, doc.id);
+          if (!this._hasEvent(active, EVENTS.FIXED_ASSET_PURCHASE)) {
+            add(await this.fixedAssetPurchase(tx, doc, { replay: true }));
+          }
+          entries(await this.ensureFixedAssetDepreciation(tx, doc, { replay: true }));
+          if (doc.status === 'disposed' && doc.disposalDate &&
+            !this._hasEvent(await this._sourceActive(tx, SOURCE.FIXED_ASSET, doc.id),
+              EVENTS.FIXED_ASSET_DISPOSAL)) {
+            add(await this.fixedAssetDisposal(tx, doc, { replay: true }));
+          } else if (doc.status === 'disposed' && doc.disposalDate) {
+            await this.reverseFixedAssetFutureDepreciation(tx, doc, { replay: true });
+          }
+          const nowActive = await this._sourceActive(tx, SOURCE.FIXED_ASSET, doc.id);
+          await this._linkActive(tx, 'fixedAssets', doc, nowActive);
+          return posted;
+        }
+        case 'fixedAssetPayments': {
+          if (await reverseIfVoided(SOURCE.FIXED_ASSET_PAYMENT,
+            'fixedAssetPayments')) return posted;
+          const active = await this._sourceActive(tx, SOURCE.FIXED_ASSET_PAYMENT, doc.id);
+          if (active.length === 0) {
+            add(await this.fixedAssetPayment(tx, doc, { replay: true }));
+          }
+          const nowActive = await this._sourceActive(tx, SOURCE.FIXED_ASSET_PAYMENT, doc.id);
+          await this._linkActive(tx, 'fixedAssetPayments', doc, nowActive);
           return posted;
         }
         case 'ownerTransactions': {

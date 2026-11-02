@@ -1,5 +1,16 @@
 # BeeStore — CHANGELOG (الأحدث أولاً)
 
+## 2026-10-31 — v5 A4.3: Payroll Components & Fixed Assets
+
+- **Payroll components (v5 §7.2):** Components defined in Settings with `type` (`employee_withholding`, `employer_cost`, `end_of_service`, `earning`, `deduction`, `advance_repayment`), `rateBasisPoints`, `enabled` flag (all off by default), and optional account mapping. Payroll records store `componentTotals` per component. Accrual posts Dr `6100` salaries / Dr `6110` employer_cost / Dr `6120` end_of_service / Cr `2100` accrued_salaries / Cr `2110` withholdings / Cr `2120` employer / Cr `2200` end_of_service. Payment posts net cash Dr `2100` / Cr 1150 advances / Cr cash, plus separate liability payments for withholding/employer/EOS.
+- **Fixed assets (v5 §8):** Module disabled by default via `fixedAssetsEnabled` setting. When enabled: asset register (code 1500/1590/4110/6300/6350 seeded conditionally). Purchase posts Dr 1500 / Cr cash/bank/2020. Monthly straight-line depreciation starting month after purchase: `floor((cost−salvage)/life)`, remainder in last month; scheduled entries Dr 6300 / Cr 1590. Disposal reverses only scheduled depreciation dated after disposal, then posts Dr cash proceeds + Dr 1590 accumulated + Dr 6350 loss / Cr 4110 gain / Cr 1500 cost. Capitalization warning: when module disabled and single expense ≥ 500.00 (50,000 minor), shows options: normal expense / spread over months / cancel.
+- **Schema/db bump:** `schemaVersion` 9, `dbVersion` 10, app `3.5.0-lite`, summary VERSION 9.
+- **Payroll component posting functions** added to `js/services/posting.js`: `payrollAccrualWithComponents`, `payrollPaymentWithComponents`. **Fixed-asset posting functions**: `fixedAssetPurchase`, `fixedAssetDepreciation`, `fixedAssetDisposal`, `fixedAssetPayment`. **Events** added: `PAYROLL_COMPONENT`, `FIXED_ASSET_PURCHASE`, `FIXED_ASSET_DEPRECIATION`, `FIXED_ASSET_DISPOSAL`, `FIXED_ASSET`. **Source** added: `FIXED_ASSET`.
+- **Settings** updated in `js/services/settings.js`: `payrollComponents: []`, `fixedAssetsEnabled: false`, `capitalizationWarnThresholdMinor: 50000`. **Chart seed** updated in `js/core/chartSeed.js` to handle components and conditional fixed-asset accounts.
+- **Browser suites:** smoke 11/11, idb-lazy 18/18, ui-days 13/13, ui-package 11/11, ui-settlements 6/6, ui-unpaid-expenses 5/5. **Node suite:** 244/244. **Service Worker:** regenerated 103 files, 2,409,867 bytes, hash `beestore-v3-lite-36caae88f47a`.
+- **Docs:** `CLAUDE.md`, `docs/MAP.md`, `docs/CHANGELOG.md` updated. `tests/test-postings.js` updated for new update semantics (A4.2).
+- **Migration 8→9** pending in `js/storage/migrations.js`.
+
 ## 2026-10-30 — v5 A4.2: المصروفات غير المدفوعة والدفعات المستحقة وحساب 2020
 
 - **النطاق:** اكتمل شطر **A4.2** من v5 §7.1: المصروف يمكن أن يكون مدفوعاً أو جزئياً أو غير مدفوع، ويُسجَّل سداده لاحقاً بدفعات مستقلة. يبقى نطاق A4 التالي مؤجلاً: مكوّنات الرواتب والأصول الثابتة (A4.3) وإزالة واجهة الضريبة (A4.4).

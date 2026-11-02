@@ -86,11 +86,13 @@
 
     const item = {
       variantId: variant.id,
+      itemCode: variant.itemCode || '',
       productName: productName || '',
       size: variant.size,
       color: variant.color,
       barcode: variant.barcode || '',
       qty: 1,
+      listPriceMinor: variant.priceMinor,
       unitPriceMinor: variant.priceMinor,
       unitCostMinor: variant.costMinor,
       lineDiscountMinor: 0,

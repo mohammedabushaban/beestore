@@ -335,6 +335,7 @@
       el('button', {
         class: 'btn btn-primary',
         onclick: async () => {
+          if (saving) return;
           const amount = BeeStore.money.fromMajor(amountInput.value);
           if (amount <= 0) { toast('أدخل مبلغاً صحيحاً', 'error'); return; }
           const status = statusSelect.value;
@@ -347,7 +348,7 @@
               return;
             }
           }
-          const res = await BeeStore.api.expenses.create({
+          const baseData = {
             date: dateInput.value || BeeStore.dates.today(),
             amountMinor: amount,
             categoryId: catSelect.value || null,
@@ -358,11 +359,94 @@
             paidMinor,
             payee: payeeInput.value.trim(),
             dueDate: dueDateInput.value || null,
-          });
-          if (res.ok) { toast('تم إضافة المصروف'); overlay.remove(); render(document.getElementById('page-content')); }
-          else toast(res.error.message, 'error');
+          };
+          const settings = await BeeStore.settings.get();
+          if (BeeStore.settings.capitalizationWarningNeeded(settings, amount)) {
+            saving = false;
+            _capitalizationWarning(amount, async (mode, months) => {
+              if (mode === 'cancel') return;
+              saving = true;
+              await saveExpense(baseData, mode === 'spread' ? months : null);
+            });
+            return;
+          }
+          saving = true;
+          await saveExpense(baseData, null);
         },
       }, 'حفظ'),
+    ]);
+
+    let saving = false;
+
+    async function saveExpense(data, months) {
+      const res = months
+        ? await BeeStore.api.expenses.spread({
+          ...data,
+          months,
+          startMonth: data.date.slice(0, 7),
+        })
+        : await BeeStore.api.expenses.create(data);
+      saving = false;
+      if (res.ok) {
+        toast(months ? 'تم تسجيل المصروف موزّعاً على ' + months + ' شهراً' : 'تم إضافة المصروف');
+        overlay.remove();
+        render(document.getElementById('page-content'));
+      } else toast(res.error.message, 'error');
+    }
+  }
+
+  /**
+   * v5 §8 capitalization warning while fixed assets are disabled. The owner
+   * must explicitly choose normal expense, monthly spread, or cancel.
+   * @param {number} amountMinor expense amount
+   * @param {function} decide callback (mode, months)
+   */
+  function _capitalizationWarning(amountMinor, decide) {
+    const { overlay } = BeeStore.dialogs.openDialog('هل هذا أصل ثابت؟', [
+      el('p', {},
+        'هذا المصروف (' + formatMoney(amountMinor) + ') كبير وقد يكون أصلاً ثابتاً. ' +
+        'تسجيله كمصروف واحد قد يشوّه أرباح هذا الشهر. اسأل المحاسب قبل المتابعة.'),
+      el('p', { class: 'form-hint' },
+        'يمكنك تسجيله كمصروف عادي، أو توزيعه على عدة أشهر (مدفوع مقدماً يُستهلك شهرياً)، أو الإلغاء للمراجعة.'),
+      el('div', { class: 'dialog-actions' }, [
+        el('button', {
+          class: 'btn btn-secondary',
+          onclick: () => { overlay.remove(); decide('cancel'); },
+        }, 'إلغاء'),
+        el('button', {
+          class: 'btn btn-secondary',
+          onclick: () => {
+            overlay.remove();
+            _askSpreadMonths(amountMinor, (months) => decide('spread', months));
+          },
+        }, 'توزيع على أشهر'),
+        el('button', {
+          class: 'btn btn-primary',
+          onclick: () => { overlay.remove(); decide('normal'); },
+        }, 'مصروف عادي'),
+      ]),
+    ]);
+  }
+
+  function _askSpreadMonths(amountMinor, done) {
+    const monthsInput = input('number', '12', { min: 2, max: 120, step: 1 });
+    const { overlay } = BeeStore.dialogs.openDialog('توزيع المصروف على أشهر', [
+      el('p', { class: 'form-hint' },
+        'سيُسجّل المبلغ مدفوعاً مقدماً، ثم يُستهلك ' + formatMoney(amountMinor) +
+        ' على الأشهر المختارة ابتداءً من شهر المصروف. راجع المحاسب للتأكد من العمر المناسب.'),
+      formField('عدد الأشهر', monthsInput, true, 'شهران على الأقل.'),
+      el('div', { class: 'dialog-actions' }, [
+        el('button', { class: 'btn btn-secondary', onclick: () => overlay.remove() }, 'إلغاء'),
+        el('button', {
+          class: 'btn btn-primary',
+          onclick: () => {
+            const months = Math.floor(BeeStore.money.parseDecimal(monthsInput.value) || 0);
+            if (months < 2) { toast('أدخل شهرين على الأقل', 'error'); return; }
+            overlay.remove();
+            done(months);
+          },
+        }, 'توزيع'),
+      ]),
     ]);
   }
 
@@ -417,13 +501,18 @@
   }
 
   function _deleteExpense(id) {
-    BeeStore.ui.confirmDialog('إلغاء المصروف', 'هل تريد إلغاء هذا المصروف؟ سيبقى ظاهراً في السجلات.', async () => {
-      const reason = prompt('سبب الإلغاء:');
-      if (!reason || !reason.trim()) return;
-      const res = await BeeStore.api.expenses.void(id, reason.trim());
-      if (res.ok) { toast('تم إلغاء المصروف'); render(document.getElementById('page-content')); }
-      else toast(res.error.message, 'error');
-    });
+    BeeStore.dialogs.voidDialog(
+      'إلغاء المصروف',
+      'مصروف',
+      async ({ reason }) => {
+        const res = await BeeStore.api.expenses.void(id, reason);
+        if (res.ok) {
+          toast('تم إلغاء المصروف');
+          render(document.getElementById('page-content'));
+        } else toast(res.error.message, 'error');
+      },
+      { id: id }
+    );
   }
 
   BeeStore.pages = BeeStore.pages || {};

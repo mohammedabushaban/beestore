@@ -185,7 +185,8 @@
         if (seenEmpMonth.has(key)) err('unique', 'راتب مكرر لموظف في ' + p.month, 'payroll', p.id);
         seenEmpMonth.add(key);
         const expectNet = (p.baseMinor || 0) + (p.bonusMinor || 0) + (p.overtimeMinor || 0) -
-          (p.deductionsMinor || 0) - (p.advanceRepaymentMinor || 0);
+          (p.deductionsMinor || 0) - (p.withholdingMinor || 0) -
+          (p.advanceRepaymentMinor || 0);
         if (p.status === 'paid' && p.netMinor !== expectNet) {
           err('payroll-math', 'راتب ' + p.employeeName + ' (' + p.month + '): الصافي غير متسق', 'payroll', p.id);
         }
@@ -269,6 +270,8 @@
         ['purchaseReturns', 'purchase-return'], ['customerPayments', 'customer-payment'],
         ['supplierPayments', 'supplier-payment'], ['expenses', 'expense'],
         ['expensePayments', 'expense-payment'],
+        ['payrollLiabilityPayments', 'payroll-liability-payment'],
+        ['fixedAssetPayments', 'fixed-asset-payment'],
         ['stockMovements', 'stock'], ['ownerTransactions', 'owner'],
         ['transfers', 'transfer'], ['dailyClosings', 'closing'],
         ['cashAdjustments', 'cash-adjustment'], ['cardSettlements', 'card-settlement'],
@@ -583,7 +586,8 @@
       const collections = [
         'products', 'variants', 'sales', 'salesReturns', 'customers', 'customerPayments',
         'suppliers', 'supplierPayments', 'purchases', 'expenses', 'expensePayments', 'expenseCategories',
-        'employees', 'payroll', 'employeeAdvances', 'accounts', 'ownerTransactions',
+        'employees', 'payroll', 'employeeAdvances', 'payrollLiabilityPayments',
+        'fixedAssets', 'fixedAssetPayments', 'accounts', 'ownerTransactions',
         'transfers', 'recurringExpenses', 'stockMovements', 'cardSettlements',
       ];
       for (const name of collections) {

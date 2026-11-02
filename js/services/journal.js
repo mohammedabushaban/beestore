@@ -326,7 +326,8 @@
           isScheduled: original.isScheduled === true,
           profile: meta.profile,
           postingVersion: meta.postingVersion,
-        }, { allowInactive: true, allowClosedDay: !!options.allowClosedDay });
+        }, { allowInactive: true, allowClosedDay: !!options.allowClosedDay,
+          replay: !!options.replay });
         out.push(reversal);
       }
       return out;

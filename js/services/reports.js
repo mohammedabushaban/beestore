@@ -49,8 +49,12 @@
 
       let netSales = 0;
       let cogs = 0;
+      let otherIncome = 0;
       for (const s of sales) {
         netSales += s.totalMinor - s.taxMinor;
+        if (s.overpaymentMode === 'other_income') {
+          otherIncome += Number(s.overpaymentMinor) || 0;
+        }
         for (const line of s.lines) {
           cogs += line.cogsMinor != null
             ? Math.round(Number(line.cogsMinor) || 0)
@@ -75,12 +79,22 @@
       // records of the month, paid or draft. Advance repayments never reduce
       // salary expense — they settle an asset (employee advances).
       let salaryExpense = 0;
+      let employerExpense = 0;
+      let endOfServiceExpense = 0;
       for (const p of payroll) {
         if (p.month >= from.slice(0, 7) && p.month <= to.slice(0, 7)) {
           salaryExpense += (p.baseMinor || 0) + (p.bonusMinor || 0) +
             (p.overtimeMinor || 0) - (p.deductionsMinor || 0);
+          employerExpense += Number(p.employerCostMinor) || 0;
+          endOfServiceExpense += Number(p.endOfServiceMinor) || 0;
         }
       }
+      const assetAmounts = BeeStore.fixedAssets && BeeStore.fixedAssets.periodAmounts
+        ? await BeeStore.fixedAssets.periodAmounts(from, to)
+        : { depreciationMinor: 0, gainMinor: 0, lossMinor: 0 };
+      const depreciationExpense = assetAmounts.depreciationMinor || 0;
+      const assetSaleGain = assetAmounts.gainMinor || 0;
+      const assetSaleLoss = assetAmounts.lossMinor || 0;
 
       let stockLosses = 0;
       let stockRevaluation = 0;
@@ -137,15 +151,20 @@
       if (cardFees) expensesByCategory['عمولات البطاقات والمحافظ'] = cardFees;
       // v3-Lite §4.3: shortages increase operating expenses, surpluses reduce
       // them. The signed line is returned for the Day/Period reports.
-      const operatingExpenses = singleTotal + salaryExpense + stockLosses +
-        stockRevaluation + cardFees - cashDifference;
-      const netProfit = grossProfit - operatingExpenses;
+      const operatingExpenses = singleTotal + salaryExpense + employerExpense +
+        endOfServiceExpense + depreciationExpense + assetSaleLoss - assetSaleGain +
+        stockLosses + stockRevaluation + cardFees - cashDifference;
+      // v4 R2.2: rounding/gratuity excess is income, not sales revenue. It is
+      // additive and never part of the manual cash-difference line.
+      const netProfit = grossProfit + otherIncome - operatingExpenses;
 
       return {
         from, to,
         netSales, cogs, grossProfit, margin,
-        operatingExpenses, salaryExpense, stockLosses, stockRevaluation, cardFees,
-        cashDifference, expensesByCategory,
+        operatingExpenses, salaryExpense, employerExpense, endOfServiceExpense,
+        depreciationExpense, assetSaleGain, assetSaleLoss,
+        stockLosses, stockRevaluation, cardFees,
+        cashDifference, otherIncome, expensesByCategory,
         netProfit,
       };
     }
@@ -192,6 +211,95 @@
         groups[key].net = groups[key].total - groups[key].returns;
       }
       return groups;
+    }
+
+    /**
+     * v4 R2.1 price variance: sales above and below the list price snapshot.
+     * @param {string} from YYYY-MM-DD
+     * @param {string} to YYYY-MM-DD
+     * @param {string} [groupBy] day|customer|item
+     * @returns {Promise<object>} grouped variance with totals
+     */
+    async priceVariance(from, to, groupBy) {
+      groupBy = groupBy || 'day';
+      const sales = await this.repo.listRange('sales', from, to, s => s.status !== 'void');
+      const groups = {};
+      const ensure = (key) => {
+        if (!groups[key]) {
+          groups[key] = { key, aboveMinor: 0, belowMinor: 0, netMinor: 0, lines: 0 };
+        }
+        return groups[key];
+      };
+      let aboveMinor = 0, belowMinor = 0;
+      for (const sale of sales) {
+        for (const line of (sale.lines || [])) {
+          const list = line.listPriceMinor != null
+            ? Math.round(Number(line.listPriceMinor) || 0)
+            : Math.round(Number(line.unitPriceMinor) || 0);
+          const actual = Math.round(Number(line.unitPriceMinor) || 0);
+          const diff = BeeStore.money.mul(actual - list, Number(line.qty) || 0);
+          if (!diff) continue;
+          let key;
+          if (groupBy === 'customer') key = sale.customerName || 'زبون عام';
+          else if (groupBy === 'item') key = line.productName || line.variantId;
+          else key = sale.date;
+          const g = ensure(key);
+          g.lines++;
+          g.netMinor += diff;
+          if (diff > 0) {
+            g.aboveMinor += diff;
+            aboveMinor += diff;
+          } else {
+            g.belowMinor += -diff;
+            belowMinor += -diff;
+          }
+        }
+      }
+      const rows = Object.keys(groups).map(k => groups[k])
+        .sort((a, b) => Math.abs(b.netMinor) - Math.abs(a.netMinor));
+      return {
+        from, to, groupBy, rows,
+        aboveMinor, belowMinor, netMinor: aboveMinor - belowMinor,
+      };
+    }
+
+    /**
+     * v4 R9 audit report: returns without a linked invoice.
+     * @param {string} from YYYY-MM-DD
+     * @param {string} to YYYY-MM-DD
+     * @returns {Promise<object>} rows and totals by day/profile
+     */
+    async unlinkedReturns(from, to) {
+      const returns = await this.repo.listRange('salesReturns', from, to);
+      const rows = [];
+      const byDay = {};
+      const byProfile = {};
+      let totalRefundMinor = 0;
+      for (const ret of returns) {
+        const unlinked = ret.saleId == null ||
+          (Array.isArray(ret.flags) && ret.flags.indexOf('NO_REFERENCE') >= 0) ||
+          (ret.lines || []).some(l => l.saleLineIndex == null);
+        if (!unlinked) continue;
+        const profile = ret.createdByProfile || 'owner';
+        totalRefundMinor += Number(ret.refundMinor) || 0;
+        byDay[ret.date] = (byDay[ret.date] || 0) + (Number(ret.refundMinor) || 0);
+        byProfile[profile] = (byProfile[profile] || 0) + (Number(ret.refundMinor) || 0);
+        rows.push({
+          id: ret.id,
+          number: ret.number,
+          date: ret.date,
+          time: ret.time || '',
+          refundMinor: Number(ret.refundMinor) || 0,
+          reason: ret.reason || '',
+          customerId: ret.customerId || null,
+          createdByProfile: ret.createdByProfile || null,
+          lines: ret.lines || [],
+        });
+      }
+      rows.sort((a, b) => (b.date + (b.time || '')).localeCompare(a.date + (a.time || '')));
+      return {
+        from, to, count: rows.length, totalRefundMinor, rows, byDay, byProfile,
+      };
     }
 
     async inventoryValuation() {
@@ -290,7 +398,8 @@
       for (const s of sales) {
         byDay[s.date] = (byDay[s.date] || 0) + s.totalMinor;
         for (const p of (s.payments || [])) {
-          byPayment[p.method] = (byPayment[p.method] || 0) + p.amountMinor;
+          const net = (Number(p.amountMinor) || 0) - (Number(p.changeMinor) || 0);
+          byPayment[p.method] = (byPayment[p.method] || 0) + net;
         }
         const emp = s.soldByEmployeeId || '—';
         byEmployee[emp] = (byEmployee[emp] || 0) + s.totalMinor;
@@ -458,7 +567,7 @@
           if (p.methodKind !== 'clearing') continue;
           const date = p.date || sale.date;
           if (!date || date > asOf) continue;
-          const amount = Number(p.amountMinor) || 0;
+          const amount = (Number(p.amountMinor) || 0) - (Number(p.changeMinor) || 0);
           if (amount > 0) clearing += amount;
         }
       }
@@ -547,6 +656,14 @@
       const prepaid = await BeeStore.expenses.prepaidAsOf(asOf);
       const accrued = await BeeStore.payroll.accruedAsOf(asOf);
       const advancesOutstanding = await BeeStore.payroll.advancesOutstandingAsOf(asOf);
+      const payrollLiabilities = BeeStore.payroll.liabilityBalancesAsOf
+        ? await BeeStore.payroll.liabilityBalancesAsOf(asOf)
+        : { withholding: 0, employer: 0, endOfService: 0 };
+      const fixedRegister = BeeStore.fixedAssets && BeeStore.fixedAssets.registerAsOf
+        ? await BeeStore.fixedAssets.registerAsOf(asOf)
+        : { costMinor: 0, accumulatedMinor: 0, netMinor: 0, rows: [] };
+      const unpaidFixedAssets = BeeStore.fixedAssets && BeeStore.fixedAssets.unpaidAsOf
+        ? await BeeStore.fixedAssets.unpaidAsOf(asOf) : 0;
       let unpaidExpenses = 0;
       if (useSummary) {
         unpaidExpenses = BeeStore.summary.unpaidExpensesThrough(summary, month);
@@ -610,8 +727,11 @@
         cumulativeProfit = pnl.netProfit;
       }
 
-      const assets = cashBalance + inventoryValue + receivables + prepaid.total + advancesOutstanding;
-      const liabilities = payables + customerCredits + accrued.total + taxPayable + unpaidExpenses;
+      const assets = cashBalance + inventoryValue + receivables + prepaid.total +
+        advancesOutstanding + fixedRegister.netMinor;
+      const liabilities = payables + customerCredits + accrued.total + taxPayable +
+        unpaidExpenses + unpaidFixedAssets + payrollLiabilities.withholding +
+        payrollLiabilities.employer + payrollLiabilities.endOfService;
       const equityTotal = openingEquity + capitalIn - withdrawals + cumulativeProfit;
       const retained = equityTotal - (capitalIn - withdrawals) - openingEquity;
       const balanced = Math.abs(assets - (liabilities + equityTotal)) < 1;
@@ -620,11 +740,19 @@
         asOf,
         assets: {
           cashBalance, cashByAccount, clearingOutstanding, inventoryValue,
-          receivables, prepaid: prepaid.total, advancesOutstanding, total: assets,
+          receivables, prepaid: prepaid.total, advancesOutstanding,
+          fixedAssetsCost: fixedRegister.costMinor,
+          accumulatedDepreciation: fixedRegister.accumulatedMinor,
+          fixedAssetsNet: fixedRegister.netMinor,
+          total: assets,
         },
         liabilities: {
-          payables, customerCredits, unpaidExpenses,
-          accruedSalaries: accrued.total, taxPayable, total: liabilities,
+          payables, customerCredits, unpaidExpenses, unpaidFixedAssets,
+          accruedSalaries: accrued.total,
+          accruedWithholdings: payrollLiabilities.withholding,
+          accruedEmployer: payrollLiabilities.employer,
+          endOfService: payrollLiabilities.endOfService,
+          taxPayable, total: liabilities,
         },
         equity: {
           openingEquity, capitalIn, withdrawals,
@@ -702,23 +830,45 @@
         this._ctxSystemBalance(ctx, 'sales_returns', '4020'));
       const cogs = this._ctxSystemBalance(ctx, 'cogs', '5010');
       const salaryExpense = this._ctxSystemBalance(ctx, 'salaries', '6100');
+      const employerExpense = this._ctxSystemBalance(ctx, 'employer_costs', '6110');
+      const endOfServiceExpense = this._ctxSystemBalance(ctx, 'end_of_service_expense', '6120');
+      const depreciationExpense = this._ctxSystemBalance(ctx, 'depreciation', '6300');
+      const assetSaleLoss = this._ctxSystemBalance(ctx, 'asset_sale_loss', '6350');
+      const assetSaleGain = -this._ctxSystemBalance(ctx, 'asset_sale_gain', '4110');
       const stockLosses = this._ctxSystemBalance(ctx, 'inventory_loss', '5020');
       const stockRevaluation = this._ctxSystemBalance(ctx, 'inventory_revaluation', '5030');
       const cardFees = this._ctxSystemBalance(ctx, 'card_fees', '6200');
       const cashShortage = this._ctxSystemBalance(ctx, 'cash_shortage', '6400');
-      const otherIncome = -this._ctxSystemBalance(ctx, 'other_income', '4100');
-      const cashDifference = otherIncome - cashShortage;
+      const otherIncomeAll = -this._ctxSystemBalance(ctx, 'other_income', '4100');
+      // 4100 also carries manual cash surpluses. Split them out so
+      // `cashDifference` stays manual-only and `otherIncome` reports rounding
+      // and gratuities from overpayments (v4 R2.2).
+      let cashSurplus = 0;
+      for (const entry of ctx.entries) {
+        if (entry.sourceType !== 'CASH_ADJUSTMENT' &&
+          String(entry.event || '').indexOf('CASH_DIFFERENCE') !== 0) continue;
+        for (const line of (entry.lines || [])) {
+          const account = ctx.byId.get(line.accountId);
+          if (!account || (account.systemKey !== 'other_income' &&
+            String(account.code) !== '4100')) continue;
+          cashSurplus += (Number(line.creditMinor) || 0) - (Number(line.debitMinor) || 0);
+        }
+      }
+      const otherIncome = otherIncomeAll - cashSurplus;
+      const cashDifference = cashSurplus - cashShortage;
 
       const special = new Set([
         'cogs', 'inventory_loss', 'inventory_revaluation',
-        'salaries', 'card_fees', 'cash_shortage',
+        'salaries', 'employer_costs', 'end_of_service_expense', 'depreciation',
+        'asset_sale_gain', 'asset_sale_loss', 'card_fees', 'cash_shortage',
       ]);
       const expensesByCategory = {};
       let otherExpenses = 0;
       for (const account of ctx.chart) {
         if (account.type !== 'expense') continue;
         if (special.has(account.systemKey)) continue;
-        if (['5010', '5020', '5030', '6100', '6200', '6400'].indexOf(String(account.code)) >= 0) continue;
+        if (['5010', '5020', '5030', '6100', '6110', '6120', '6200', '6300',
+          '6350', '6400'].indexOf(String(account.code)) >= 0) continue;
         const amount = this._ctxAccountBalance(ctx, account.id);
         if (!amount) continue;
         const key = account.nameAr || account.code || 'أخرى';
@@ -729,13 +879,16 @@
 
       const grossProfit = netSales - cogs;
       const margin = netSales > 0 ? (grossProfit / netSales * 100).toFixed(1) : '0.0';
-      const operatingExpenses = otherExpenses + salaryExpense + stockLosses +
-        stockRevaluation + cardFees - cashDifference;
+      const operatingExpenses = otherExpenses + salaryExpense + employerExpense +
+        endOfServiceExpense + depreciationExpense + assetSaleLoss - assetSaleGain +
+        stockLosses + stockRevaluation + cardFees - cashDifference;
       return {
         netSales, cogs, grossProfit, margin,
-        operatingExpenses, salaryExpense, stockLosses, stockRevaluation, cardFees,
+        operatingExpenses, salaryExpense, employerExpense, endOfServiceExpense,
+        depreciationExpense, assetSaleGain, assetSaleLoss,
+        stockLosses, stockRevaluation, cardFees,
         cashDifference, otherIncome, expensesByCategory,
-        netProfit: grossProfit - operatingExpenses,
+        netProfit: grossProfit + otherIncome - operatingExpenses,
         source: 'journal',
       };
     }
@@ -780,8 +933,30 @@
       const customerCredits = -this._ctxSystemBalance(ctx, 'customer_credits', '2030');
       const payables = -this._ctxSystemBalance(ctx, 'ap', '2010');
       const prepaid = this._ctxSystemBalance(ctx, 'prepaid', '1300');
-      const unpaidExpenses = -this._ctxSystemBalance(ctx, 'accrued_expenses', '2020');
+      const accruedExpensesTotal = -this._ctxSystemBalance(ctx, 'accrued_expenses', '2020');
       const accruedSalaries = -this._ctxSystemBalance(ctx, 'accrued_salaries', '2100');
+      const accruedWithholdings = -this._ctxSystemBalance(ctx, 'accrued_withholdings', '2110');
+      const accruedEmployer = -this._ctxSystemBalance(ctx, 'accrued_employer', '2120');
+      const endOfService = -this._ctxSystemBalance(ctx, 'end_of_service', '2200');
+      const fixedAssetsCost = this._ctxSystemBalance(ctx, 'fixed_assets', '1500');
+      const accumulatedDepreciation = -this._ctxSystemBalance(ctx, 'accumulated_depreciation', '1590');
+      const fixedAssetsNet = fixedAssetsCost - accumulatedDepreciation;
+      // 2020 also carries unpaid fixed-asset purchases. Split that portion by
+      // source so the document and journal snapshots compare like with like.
+      const accruedAccountIds = new Set(ctx.chart
+        .filter(a => a.systemKey === 'accrued_expenses' || String(a.code) === '2020')
+        .map(a => a.id));
+      let unpaidFixedAssets = 0;
+      for (const entry of ctx.entries) {
+        if (entry.sourceType !== 'FIXED_ASSET' &&
+          entry.sourceType !== 'FIXED_ASSET_PAYMENT') continue;
+        for (const line of (entry.lines || [])) {
+          if (!accruedAccountIds.has(line.accountId)) continue;
+          unpaidFixedAssets += (Number(line.creditMinor) || 0) -
+            (Number(line.debitMinor) || 0);
+        }
+      }
+      const unpaidExpenses = accruedExpensesTotal - unpaidFixedAssets;
       const taxPayable = -this._ctxSystemBalance(ctx, 'tax_payable', '2300');
       const advancesOutstanding = this._ctxSystemBalance(ctx, 'employee_advances', '1150');
       const openingEquity = -this._ctxSystemBalance(ctx, 'opening_equity', '3030');
@@ -790,19 +965,23 @@
       const cumulativeProfit = pnl.netProfit;
 
       const assets = cashBalance + inventoryValue + receivables + prepaid +
-        advancesOutstanding;
-      const liabilities = payables + customerCredits + accruedSalaries + taxPayable +
-        unpaidExpenses;
+        advancesOutstanding + fixedAssetsNet;
+      const liabilities = payables + customerCredits + accruedSalaries +
+        accruedWithholdings + accruedEmployer + endOfService + taxPayable +
+        unpaidExpenses + unpaidFixedAssets;
       const equityTotal = openingEquity + capitalIn - withdrawals + cumulativeProfit;
       return {
         asOf,
         assets: {
           cashBalance, cashByAccount, clearingOutstanding, inventoryValue,
-          receivables, prepaid, advancesOutstanding, total: assets,
+          receivables, prepaid, advancesOutstanding,
+          fixedAssetsCost, accumulatedDepreciation, fixedAssetsNet,
+          total: assets,
         },
         liabilities: {
-          payables, customerCredits, unpaidExpenses,
-          accruedSalaries, taxPayable, total: liabilities,
+          payables, customerCredits, unpaidExpenses, unpaidFixedAssets,
+          accruedSalaries, accruedWithholdings, accruedEmployer, endOfService,
+          taxPayable, total: liabilities,
         },
         equity: {
           openingEquity, capitalIn, withdrawals,
@@ -880,8 +1059,10 @@
 
     _pnlDifferences(documentPnl, journalPnl) {
       const keys = ['netSales', 'cogs', 'grossProfit', 'operatingExpenses',
-        'salaryExpense', 'stockLosses', 'stockRevaluation', 'cardFees', 'cashDifference',
-        'netProfit'];
+        'salaryExpense', 'employerExpense', 'endOfServiceExpense',
+        'depreciationExpense', 'assetSaleGain', 'assetSaleLoss',
+        'stockLosses', 'stockRevaluation', 'cardFees', 'cashDifference',
+        'otherIncome', 'netProfit'];
       const differences = {};
       const failures = [];
       for (const key of keys) {
@@ -924,11 +1105,17 @@
         ['assets.receivables', documentSnap.assets.receivables, journalSnap.assets.receivables],
         ['assets.prepaid', documentSnap.assets.prepaid, journalSnap.assets.prepaid],
         ['assets.advancesOutstanding', documentSnap.assets.advancesOutstanding, journalSnap.assets.advancesOutstanding],
+        ['assets.fixedAssetsNet', documentSnap.assets.fixedAssetsNet, journalSnap.assets.fixedAssetsNet],
+        ['assets.accumulatedDepreciation', documentSnap.assets.accumulatedDepreciation, journalSnap.assets.accumulatedDepreciation],
         ['assets.total', documentSnap.assets.total, journalSnap.assets.total],
         ['liabilities.payables', documentSnap.liabilities.payables, journalSnap.liabilities.payables],
         ['liabilities.customerCredits', documentSnap.liabilities.customerCredits, journalSnap.liabilities.customerCredits],
         ['liabilities.unpaidExpenses', documentSnap.liabilities.unpaidExpenses, journalSnap.liabilities.unpaidExpenses],
+        ['liabilities.unpaidFixedAssets', documentSnap.liabilities.unpaidFixedAssets, journalSnap.liabilities.unpaidFixedAssets],
         ['liabilities.accruedSalaries', documentSnap.liabilities.accruedSalaries, journalSnap.liabilities.accruedSalaries],
+        ['liabilities.accruedWithholdings', documentSnap.liabilities.accruedWithholdings, journalSnap.liabilities.accruedWithholdings],
+        ['liabilities.accruedEmployer', documentSnap.liabilities.accruedEmployer, journalSnap.liabilities.accruedEmployer],
+        ['liabilities.endOfService', documentSnap.liabilities.endOfService, journalSnap.liabilities.endOfService],
         ['liabilities.taxPayable', documentSnap.liabilities.taxPayable, journalSnap.liabilities.taxPayable],
         ['liabilities.total', documentSnap.liabilities.total, journalSnap.liabilities.total],
         ['equity.openingEquity', documentSnap.equity.openingEquity, journalSnap.equity.openingEquity],
@@ -1227,9 +1414,23 @@
       const dPre = d(snapOpen.assets.prepaid, snapClose.assets.prepaid);
       const dPay = d(snapOpen.liabilities.payables, snapClose.liabilities.payables);
       const dAcc = d(snapOpen.liabilities.accruedSalaries, snapClose.liabilities.accruedSalaries);
+      const dWithholding = d(snapOpen.liabilities.accruedWithholdings || 0,
+        snapClose.liabilities.accruedWithholdings || 0);
+      const dEmployer = d(snapOpen.liabilities.accruedEmployer || 0,
+        snapClose.liabilities.accruedEmployer || 0);
+      const dEos = d(snapOpen.liabilities.endOfService || 0,
+        snapClose.liabilities.endOfService || 0);
+      const dUnpaid = d(snapOpen.liabilities.unpaidExpenses || 0,
+        snapClose.liabilities.unpaidExpenses || 0);
+      const dUnpaidFixed = d(snapOpen.liabilities.unpaidFixedAssets || 0,
+        snapClose.liabilities.unpaidFixedAssets || 0);
+      const dFixed = d(snapOpen.assets.fixedAssetsNet || 0,
+        snapClose.assets.fixedAssetsNet || 0);
       const dAdv = d(snapOpen.assets.advancesOutstanding, snapClose.assets.advancesOutstanding);
       const dTax = d(snapOpen.liabilities.taxPayable, snapClose.liabilities.taxPayable);
-      const cashFromOperations = pnl.netProfit - dInv - dRec - dPre + dPay + dAcc - dAdv + dTax;
+      const cashFromOperations = pnl.netProfit - dInv - dRec - dPre + dPay +
+        dAcc + dWithholding + dEmployer + dEos + dUnpaid + dUnpaidFixed -
+        dFixed - dAdv + dTax;
       const capitalIn = snapClose.equity.capitalIn - snapOpen.equity.capitalIn;
       const withdrawals = snapClose.equity.withdrawals - snapOpen.equity.withdrawals;
       const cashChange = cashFromOperations + capitalIn - withdrawals;
@@ -1237,7 +1438,13 @@
       return {
         month, from, to,
         netProfit: pnl.netProfit,
-        deltas: { inventory: dInv, receivables: dRec, prepaid: dPre, payables: dPay, accrued: dAcc, advances: dAdv, tax: dTax },
+        deltas: {
+          inventory: dInv, receivables: dRec, prepaid: dPre, payables: dPay,
+          accrued: dAcc, withholding: dWithholding, employer: dEmployer,
+          endOfService: dEos, unpaidExpenses: dUnpaid,
+          unpaidFixedAssets: dUnpaidFixed, fixedAssets: dFixed,
+          advances: dAdv, tax: dTax,
+        },
         cashFromOperations, capitalIn, withdrawals, cashChange, actualCashChange,
         matches: Math.abs(cashChange - actualCashChange) < 1,
       };
@@ -1295,13 +1502,10 @@
       let refundMinor = 0;
       for (const s of sales) {
         totalSales += s.totalMinor;
-        let remaining = Math.max(0, s.totalMinor);
-        if (remaining <= 0) continue;
         for (const p of (s.payments || [])) {
-          const add = Math.min(p.amountMinor, remaining);
+          const add = (Number(p.amountMinor) || 0) - (Number(p.changeMinor) || 0);
           if (add <= 0) continue;
           salesByMethod[p.method] = (salesByMethod[p.method] || 0) + add;
-          remaining -= add;
         }
       }
       for (const r of refunds) refundMinor += r.refundMinor;

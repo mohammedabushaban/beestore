@@ -174,7 +174,6 @@
         el('div', { class: 'invoice-totals' }, [
           el('p', {}, 'المجموع الفرعي: ' + formatMoney(sale.subtotalMinor)),
           sale.discountMinor > 0 ? el('p', {}, 'الخصم: -' + formatMoney(sale.discountMinor)) : null,
-          sale.taxMinor > 0 ? el('p', {}, 'الضريبة: ' + formatMoney(sale.taxMinor)) : null,
           el('p', { class: 'total-final' }, 'الإجمالي: ' + formatMoney(sale.totalMinor)),
           el('p', {}, 'المدفوع: ' + formatMoney(sale.paidMinor)),
           el('p', {}, 'المتبقي: ' + formatMoney(sale.dueMinor)),

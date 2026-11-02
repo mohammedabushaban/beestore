@@ -14,12 +14,13 @@
   // returned transiently in `days` (never persisted) so an as-of date inside
   // the current month can be computed from that month's documents without
   // scanning the whole history.
-  const VERSION = 8;
+  const VERSION = 10;
 
   const COLLECTIONS = [
     'accounts', 'sales', 'purchases', 'customerPayments', 'supplierPayments',
     'expenses', 'expensePayments', 'employeeAdvances', 'ownerTransactions', 'transfers',
-    'salesReturns', 'purchaseReturns', 'payroll', 'stockMovements',
+    'salesReturns', 'purchaseReturns', 'payroll', 'payrollLiabilityPayments',
+    'fixedAssets', 'fixedAssetPayments', 'stockMovements',
     'cashAdjustments', 'cardSettlements',
   ];
 
@@ -50,9 +51,15 @@
         netSales: 0,
         cogs: 0,
         salaryExpense: 0,
+        employerExpense: 0,
+        endOfServiceExpense: 0,
+        depreciationExpense: 0,
+        assetSaleGain: 0,
+        assetSaleLoss: 0,
         stockLosses: 0,
         stockRevaluation: 0,
         cardFees: 0,
+        otherIncome: 0,
         tax: 0,
         expensesTotal: 0,
         spreadExpenses: 0,
@@ -203,6 +210,29 @@
     }
   }
 
+  // v5 §8: mirrors PostingService.fixedAssetDepreciationPlan without depending
+  // on the posting service being loaded during a summary rebuild.
+  function depreciationPlan(asset) {
+    const cost = Math.max(0, Math.round(Number(asset && asset.costMinor) || 0));
+    const salvage = Math.max(0, Math.min(cost,
+      Math.round(Number(asset && asset.salvageValueMinor) || 0)));
+    const life = Math.max(0, Math.floor(Number(asset && asset.usefulLifeMonths) || 0));
+    const depreciable = cost - salvage;
+    if (!asset || !asset.purchaseDate || life <= 0 || depreciable <= 0) return [];
+    const base = Math.floor(depreciable / life);
+    const startMonth = String(asset.purchaseDate).slice(0, 7) + '-01';
+    const out = [];
+    for (let i = 0; i < life; i++) {
+      const date = BeeStore.dates.addMonths(startMonth, i + 1);
+      out.push({
+        date: String(date).slice(0, 10),
+        month: String(date).slice(0, 7),
+        amountMinor: i === life - 1 ? depreciable - base * (life - 1) : base,
+      });
+    }
+    return out;
+  }
+
   /**
    * A document's effect on the summary. Every function here must be pure so
    * removing an old document and adding its replacement gives the exact same
@@ -245,16 +275,28 @@
         }
         for (const p of (doc.payments || [])) {
           const amount = Number(p.amountMinor) || 0;
+          const change = Number(p.changeMinor) || 0;
+          const netCash = amount - change;
           if (p.methodKind !== 'clearing') {
-            account('sale_payment', p.accountId, amount, p.date || doc.date);
+            account('sale_payment', p.accountId, netCash, p.date || doc.date);
           }
           // A payment attached to the invoice cuts the customer's balance on
-          // its own date; later collections are separate customerPayments.
-          addCustomerAt(out, doc.customerId, -amount, p.date || doc.date);
+          // its own date. Only the portion applied to the invoice does so; a
+          // rounding/gratuity excess is other income, not a customer credit.
+          const applied = p.appliedMinor != null
+            ? Number(p.appliedMinor) || 0 : amount;
+          addCustomerAt(out, doc.customerId, -applied, p.date || doc.date);
+        }
+        if (doc.overpaymentMode === 'customer_credit') {
+          addCustomerAt(out, doc.customerId, -(Number(doc.overpaymentMinor) || 0),
+            doc.date);
         }
         if (monthBucket) {
           monthBucket.pnl.netSales += (Number(doc.totalMinor) || 0) - (Number(doc.taxMinor) || 0);
           monthBucket.pnl.tax += Number(doc.taxMinor) || 0;
+          if (doc.overpaymentMode === 'other_income') {
+            monthBucket.pnl.otherIncome += Number(doc.overpaymentMinor) || 0;
+          }
           for (const line of (doc.lines || [])) {
             monthBucket.pnl.cogs += line.cogsMinor != null
               ? Math.round(Number(line.cogsMinor) || 0)
@@ -405,8 +447,48 @@
           monthBucket.pnl.salaryExpense += (Number(doc.baseMinor) || 0) +
             (Number(doc.bonusMinor) || 0) + (Number(doc.overtimeMinor) || 0) -
             (Number(doc.deductionsMinor) || 0);
+          monthBucket.pnl.employerExpense += Number(doc.employerCostMinor) || 0;
+          monthBucket.pnl.endOfServiceExpense += Number(doc.endOfServiceMinor) || 0;
         }
         break;
+      case 'payrollLiabilityPayments': {
+        if (doc.voided) break;
+        account('payroll_liability_payment', doc.accountId,
+          -(Number(doc.amountMinor) || 0), doc.date);
+        break;
+      }
+      case 'fixedAssets': {
+        if (doc.voided) break;
+        const paid = doc.initialPaidMinor != null
+          ? Number(doc.initialPaidMinor) || 0 : Number(doc.paidMinor) || 0;
+        if (paid) account('fixed_asset_purchase', doc.accountId, -paid, doc.purchaseDate);
+        const disposed = doc.status === 'disposed' && doc.disposalDate;
+        for (const item of depreciationPlan(doc)) {
+          if (disposed && item.date > doc.disposalDate) continue;
+          const target = ensureMonth(out, item.month);
+          if (target) target.pnl.depreciationExpense += item.amountMinor;
+        }
+        if (disposed) {
+          const target = ensureMonth(out, monthOf(doc.disposalDate));
+          const gainLoss = Number(doc.gainLossMinor) || 0;
+          if (target) {
+            if (gainLoss >= 0) target.pnl.assetSaleGain += gainLoss;
+            else target.pnl.assetSaleLoss += -gainLoss;
+          }
+          const proceeds = Number(doc.proceedsMinor) || 0;
+          if (proceeds) {
+            account('fixed_asset_disposal', doc.disposalAccountId, proceeds,
+              doc.disposalDate);
+          }
+        }
+        break;
+      }
+      case 'fixedAssetPayments': {
+        if (doc.voided) break;
+        account('fixed_asset_payment', doc.accountId,
+          -(Number(doc.amountMinor) || 0), doc.date);
+        break;
+      }
       case 'stockMovements': {
         const qty = Number(doc.qtyChange) || 0;
         const unitCost = Number(doc.unitCostMinor) || 0;
@@ -449,8 +531,10 @@
     if (bucket.capitalIn || bucket.withdrawals || bucket.openingInventory) return false;
     if (bucket.unpaidExpenses) return false;
     const pnl = bucket.pnl;
-    for (const key of ['netSales', 'cogs', 'salaryExpense', 'stockLosses', 'stockRevaluation',
-      'cardFees', 'tax', 'expensesTotal', 'spreadExpenses', 'cashDifference']) {
+    for (const key of ['netSales', 'cogs', 'salaryExpense', 'employerExpense',
+      'endOfServiceExpense', 'depreciationExpense', 'assetSaleGain', 'assetSaleLoss',
+      'stockLosses', 'stockRevaluation', 'cardFees', 'tax', 'expensesTotal',
+      'spreadExpenses', 'cashDifference']) {
       if (pnl[key]) return false;
     }
     return Object.keys(pnl.expensesByCategory).length === 0;
@@ -496,8 +580,10 @@
       applyNumeric(bucket.customers, source.customers, sign);
       applyNumeric(bucket.suppliers, source.suppliers, sign);
       applyNumeric(bucket.pnl.expensesByCategory, source.pnl.expensesByCategory, sign);
-      for (const key of ['netSales', 'cogs', 'salaryExpense', 'stockLosses', 'stockRevaluation',
-        'cardFees', 'tax', 'expensesTotal', 'spreadExpenses', 'cashDifference']) {
+      for (const key of ['netSales', 'cogs', 'salaryExpense', 'employerExpense',
+        'endOfServiceExpense', 'depreciationExpense', 'assetSaleGain', 'assetSaleLoss',
+        'stockLosses', 'stockRevaluation', 'cardFees', 'otherIncome', 'tax',
+        'expensesTotal', 'spreadExpenses', 'cashDifference']) {
         bucket.pnl[key] += sign * (Number(source.pnl[key]) || 0);
       }
       bucket.capitalIn += sign * (Number(source.capitalIn) || 0);
@@ -575,7 +661,10 @@
    */
   function pnlRange(summary, fromMonth, toMonth) {
     let netSales = 0, cogs = 0, salaryExpense = 0, stockLosses = 0;
-    let stockRevaluation = 0, cardFees = 0, expensesTotal = 0, cashDifference = 0;
+    let employerExpense = 0, endOfServiceExpense = 0, depreciationExpense = 0;
+    let assetSaleGain = 0, assetSaleLoss = 0;
+    let stockRevaluation = 0, cardFees = 0, otherIncome = 0;
+    let expensesTotal = 0, cashDifference = 0;
     const expensesByCategory = {};
     for (const month of monthKeys(summary)) {
       if (month < fromMonth || month > toMonth) continue;
@@ -583,9 +672,15 @@
       netSales += pnl.netSales || 0;
       cogs += pnl.cogs || 0;
       salaryExpense += pnl.salaryExpense || 0;
+      employerExpense += pnl.employerExpense || 0;
+      endOfServiceExpense += pnl.endOfServiceExpense || 0;
+      depreciationExpense += pnl.depreciationExpense || 0;
+      assetSaleGain += pnl.assetSaleGain || 0;
+      assetSaleLoss += pnl.assetSaleLoss || 0;
       stockLosses += pnl.stockLosses || 0;
       stockRevaluation += pnl.stockRevaluation || 0;
       cardFees += pnl.cardFees || 0;
+      otherIncome += pnl.otherIncome || 0;
       expensesTotal += pnl.expensesTotal || 0;
       cashDifference += pnl.cashDifference || 0;
       for (const key of Object.keys(pnl.expensesByCategory || {})) {
@@ -595,14 +690,17 @@
     const grossProfit = netSales - cogs;
     // Shortage (negative) increases operating expenses; surplus (positive)
     // reduces them. `cashDifference` keeps its signed form for the report.
-    const operatingExpenses = expensesTotal + salaryExpense + stockLosses +
-      stockRevaluation + cardFees - cashDifference;
+    const operatingExpenses = expensesTotal + salaryExpense + employerExpense +
+      endOfServiceExpense + depreciationExpense + assetSaleLoss - assetSaleGain +
+      stockLosses + stockRevaluation + cardFees - cashDifference;
     return {
       netSales, cogs, grossProfit,
       margin: netSales > 0 ? (grossProfit / netSales * 100).toFixed(1) : '0.0',
-      operatingExpenses, salaryExpense, stockLosses, stockRevaluation, cardFees, cashDifference,
+      operatingExpenses, salaryExpense, employerExpense, endOfServiceExpense,
+      depreciationExpense, assetSaleGain, assetSaleLoss,
+      stockLosses, stockRevaluation, cardFees, cashDifference, otherIncome,
       expensesByCategory,
-      netProfit: grossProfit - operatingExpenses,
+      netProfit: grossProfit + otherIncome - operatingExpenses,
     };
   }
 

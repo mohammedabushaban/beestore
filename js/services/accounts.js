@@ -147,6 +147,7 @@
         'sales', 'customerPayments', 'supplierPayments', 'purchases', 'expenses',
         'expensePayments', 'employeeAdvances', 'ownerTransactions', 'transfers', 'salesReturns',
         'purchaseReturns', 'cashAdjustments', 'cardSettlements',
+        'payrollLiabilityPayments', 'fixedAssets', 'fixedAssetPayments',
       ];
       const totals = { accounts: {}, customers: {}, suppliers: {}, tax: 0 };
       const add = (target, source) => {

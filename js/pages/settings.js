@@ -2,7 +2,7 @@
   'use strict';
   const BeeStore = root.BeeStore || (root.BeeStore = {});
   const { el, toast, confirmDialog } = BeeStore.ui;
-  const { input, select, formField, textarea } = BeeStore.dialogs;
+  const { input, select, formField, textarea, checkbox } = BeeStore.dialogs;
 
   async function render(container) {
     container.innerHTML = '';
@@ -14,6 +14,7 @@
       el('button', { class: 'tab active', onclick: function () { _showTab('general', content); _setActiveTab(this); } }, 'عام'),
       el('button', { class: 'tab', onclick: function () { _showTab('invoice', content); _setActiveTab(this); } }, 'الفاتورة والملصقات'),
       el('button', { class: 'tab', onclick: function () { _showTab('payments', content); _setActiveTab(this); } }, 'طرق الدفع'),
+      el('button', { class: 'tab', onclick: function () { _showTab('payrollAssets', content); _setActiveTab(this); } }, 'الرواتب والأصول'),
       el('button', { class: 'tab', onclick: function () { _showTab('security', content); _setActiveTab(this); } }, 'الأمان والملفات'),
       el('button', { class: 'tab', onclick: function () { _showTab('backup', content); _setActiveTab(this); } }, 'النسخ الاحتياطي'),
       el('button', { class: 'tab', onclick: function () { _showTab('data', content); _setActiveTab(this); } }, 'البيانات'),
@@ -41,6 +42,7 @@
     if (tab === 'general') _renderGeneral(panel);
     else if (tab === 'invoice') _renderInvoice(panel);
     else if (tab === 'payments') _renderPayments(panel);
+    else if (tab === 'payrollAssets') _renderPayrollAssets(panel);
     else if (tab === 'security') _renderSecurity(panel);
     else if (tab === 'backup') _renderBackup(panel);
     else if (tab === 'data') _renderData(panel);
@@ -90,17 +92,12 @@
       { value: 'A4', label: 'A4' },
       { value: '80mm', label: '80mm حراري' },
     ], s.invoicePaperSize || 'A4');
-    const taxEnabled = select([
-      { value: 'true', label: 'مفعل' },
-      { value: 'false', label: 'معطل' },
-    ], String(s.taxEnabled ? 'true' : 'false'));
 
     container.appendChild(el('div', { class: 'card' }, [
       el('h3', {}, 'إعدادات الفاتورة'),
       formField('بادئة الفاتورة', prefixInput),
       formField('نص التذييل', footerInput),
       formField('حجم الورق', paperSelect),
-      formField('الضريبة', taxEnabled),
       el('button', {
         class: 'btn btn-primary',
         onclick: async () => {
@@ -108,7 +105,6 @@
             invoicePrefix: prefixInput.value.trim(),
             invoiceFooter: footerInput.value,
             invoicePaperSize: paperSelect.value,
-            taxEnabled: taxEnabled.value === 'true',
           });
           if (saveRes.ok) toast('تم الحفظ');
           else toast(saveRes.error.message, 'error');
@@ -845,6 +841,103 @@
     ]));
 
     return el('div', { class: 'card' }, children);
+  }
+
+  async function _renderPayrollAssets(container) {
+    const res = await BeeStore.api.settings.get();
+    if (!res.ok) { toast(res.error.message, 'error'); return; }
+    const s = res.data || {};
+    const components = BeeStore.settings.payrollComponents(s);
+    const controls = [];
+    const rows = el('div', {});
+    const typeHints = {
+      employee_withholding: 'يُخصم من راتب الموظف ويبقى مستحقاً في 2110 حتى يُدفع.',
+      employer_cost: 'مصروف إضافي على صاحب العمل → 6110، ويبقى مستحقاً في 2120.',
+      end_of_service: 'مخصص شهري لنهاية الخدمة → 6120 / 2200. غير مفعّل افتراضياً.',
+      earning: 'بند إضافة (يُدار من سجل الراتب).',
+      deduction: 'بند خصم (يُدار من سجل الراتب).',
+      advance_repayment: 'سداد سلفة الموظف — يُخصم عند دفع الراتب.',
+    };
+    for (const component of components) {
+      const enabled = checkbox('مفعّل', component.enabled === true);
+      const enabledInput = enabled.querySelector('input');
+      const rateInput = input('number',
+        (Number(component.rateBasisPoints || 0) / 100).toFixed(2),
+        { min: 0, step: 0.01, placeholder: 'النسبة من الراتب' });
+      const fixedInput = input('number',
+        BeeStore.money.toMajor(component.fixedMinor || 0),
+        { min: 0, step: 0.01, placeholder: 'مبلغ ثابت' });
+      controls.push({ component, enabledInput, rateInput, fixedInput });
+      rows.appendChild(el('div', { class: 'card', style: 'margin-bottom:10px;' }, [
+        el('div', { style: 'display:flex; gap:12px; flex-wrap:wrap; align-items:flex-end;' }, [
+          el('div', { style: 'flex:2; min-width:220px;' }, [
+            el('strong', {}, component.nameAr),
+            el('p', { class: 'form-hint' }, typeHints[component.type] || ''),
+          ]),
+          el('div', { style: 'min-width:140px;' }, [
+            enabled,
+            formField('النسبة من الأساس ٪', rateInput),
+            formField('مبلغ ثابت شهري', fixedInput),
+          ]),
+        ]),
+      ]));
+    }
+
+    container.appendChild(el('div', { class: 'card' }, [
+      el('h3', {}, 'مكوّنات الرواتب'),
+      el('p', { class: 'form-hint' },
+        'كل المكوّنات الاختيارية معطّلة افتراضياً. راجع المحاسب قبل تفعيل أي نسبة قانونية. تُطبّق القيم على مسودات الرواتب الجديدة، ويمكن تعديلها لكل موظف قبل الدفع. الحسابات المحاسبية ثابتة: استقطاع الموظف 2110، مساهمة صاحب العمل 6110/2120، ونهاية الخدمة 6120/2200.'),
+      rows,
+      el('button', {
+        class: 'btn btn-primary',
+        onclick: async () => {
+          const list = controls.map(({ component, enabledInput, rateInput, fixedInput }) => ({
+            id: component.id,
+            nameAr: component.nameAr,
+            type: component.type,
+            enabled: enabledInput.checked,
+            rateBasisPoints: Math.max(0,
+              Math.round(BeeStore.money.parseDecimal(rateInput.value) * 100)),
+            fixedMinor: Math.max(0, BeeStore.money.fromMajor(fixedInput.value)),
+            accountId: component.accountId || null,
+          }));
+          const saveRes = await BeeStore.api.settings.update({ payrollComponents: list });
+          if (saveRes.ok) toast('تم حفظ مكوّنات الرواتب');
+          else toast(saveRes.error.message, 'error');
+        },
+      }, 'حفظ مكوّنات الرواتب'),
+    ]));
+
+    const fixedEnabled = checkbox('تفعيل وحدة الأصول الثابتة', s.fixedAssetsEnabled === true);
+    const fixedEnabledInput = fixedEnabled.querySelector('input');
+    const thresholdInput = input('number',
+      BeeStore.money.toMajor(s.capitalizationWarnThresholdMinor || 0),
+      { min: 0, step: 0.01 });
+    container.appendChild(el('div', { class: 'card' }, [
+      el('h3', {}, 'الأصول الثابتة والإهلاك'),
+      el('p', { class: 'form-hint' },
+        'الوحدة معطّلة افتراضياً. عند تفعيلها يُنشأ سجل للأصول، ويُهلك كل أصل بالقسط الثابت ابتداءً من الشهر التالي للشراء. راجع المحاسب قبل التفعيل.'),
+      fixedEnabled,
+      formField('حد التنبيه عند مصروف كبير', thresholdInput, false,
+        'يظهر تنبيه عند تسجيل مصروف واحد بهذا المبلغ أو أكثر بينما الوحدة معطّلة.'),
+      el('button', {
+        class: 'btn btn-primary',
+        onclick: async () => {
+          const enabled = fixedEnabledInput.checked;
+          const saveRes = await BeeStore.api.settings.update({
+            fixedAssetsEnabled: enabled,
+            capitalizationWarnThresholdMinor: Math.max(0,
+              BeeStore.money.fromMajor(thresholdInput.value)),
+          });
+          if (!saveRes.ok) { toast(saveRes.error.message, 'error'); return; }
+          if (enabled) {
+            const prepared = await BeeStore.api.fixedAssets.prepare();
+            if (!prepared.ok) { toast(prepared.error.message, 'error'); return; }
+          }
+          toast(enabled ? 'تم تفعيل الأصول الثابتة' : 'تم حفظ إعدادات الأصول الثابتة');
+        },
+      }, 'حفظ إعدادات الأصول'),
+    ]));
   }
 
   /**

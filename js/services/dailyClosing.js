@@ -226,7 +226,10 @@
       for (const sale of sales) {
         totalSalesMinor += Number(sale.totalMinor) || 0;
         for (const p of (sale.payments || [])) {
-          const amount = Number(p.amountMinor) || 0;
+          // v4 R2.2: cash received is net of change handed back. The physical
+          // receipt stays on the payment for display, while reconciliation
+          // counts what the drawer actually kept.
+          const amount = (Number(p.amountMinor) || 0) - (Number(p.changeMinor) || 0);
           if (amount <= 0) continue;
           // The report groups the invoice's payments by method. Expected cash
           // only counts payments actually dated this day.
@@ -697,7 +700,7 @@
         row.invoicesCount++;
         for (const p of (s.payments || [])) {
           if ((p.date || s.date) === s.date && p.accountId === acc.drawer) {
-            row.cashInMinor += Number(p.amountMinor) || 0;
+            row.cashInMinor += (Number(p.amountMinor) || 0) - (Number(p.changeMinor) || 0);
           }
         }
       }

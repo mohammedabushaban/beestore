@@ -100,6 +100,7 @@
           note: data.note || '',
           voided: false,
           journalEntryIds: [],
+          time: data.time || BeeStore.dates.nowTime(),
           createdAt: now,
           updatedAt: now,
         };
@@ -225,6 +226,7 @@
           note: data.note || '',
           voided: false,
           journalEntryIds: [],
+          time: data.time || BeeStore.dates.nowTime(),
           createdAt: now,
           updatedAt: now,
         };

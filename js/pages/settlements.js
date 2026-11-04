@@ -1,7 +1,7 @@
 (function (root) {
   'use strict';
   const BeeStore = root.BeeStore || (root.BeeStore = {});
-  const { el, formatMoney, formatDate, toast, table, emptyState } = BeeStore.ui;
+  const { el, formatMoney, formatDate, formatDocDate, toast, table, emptyState } = BeeStore.ui;
   const { input, select, textarea, formField } = BeeStore.dialogs;
 
   async function render(container) {
@@ -49,7 +49,7 @@
 
     container.appendChild(el('h3', {}, 'سجل التسويات'));
     const rows = historyRes.data.map(doc => [
-      formatDate(doc.date),
+      formatDocDate(doc),
       doc.number,
       doc.methodName || doc.method,
       formatMoney(doc.grossMinor),

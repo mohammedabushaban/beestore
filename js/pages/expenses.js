@@ -1,7 +1,7 @@
 (function (root) {
   'use strict';
   const BeeStore = root.BeeStore || (root.BeeStore = {});
-  const { el, formatMoney, formatDate, toast } = BeeStore.ui;
+  const { el, formatMoney, formatDate, formatDocDate, toast } = BeeStore.ui;
   const { input, select, formField } = BeeStore.dialogs;
 
   async function render(container) {
@@ -98,7 +98,7 @@
         onclick: () => _deleteExpense(e.id),
       }, 'إلغاء'));
       return [
-        formatDate(e.date),
+        formatDocDate(e),
         e.categoryName || '-',
         e.description || '-',
         formatMoney(e.amountMinor),

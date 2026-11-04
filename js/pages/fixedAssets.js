@@ -1,7 +1,7 @@
 (function (root) {
   'use strict';
   const BeeStore = root.BeeStore || (root.BeeStore = {});
-  const { el, formatMoney, formatDate, toast, confirmDialog } = BeeStore.ui;
+  const { el, formatMoney, formatDate, formatDocDate, toast, confirmDialog } = BeeStore.ui;
   const { input, select, formField, textarea } = BeeStore.dialogs;
 
   const STATUS_LABELS = { active: 'قيد الاستخدام', disposed: 'مباع' };
@@ -113,7 +113,7 @@
       actions.push(BeeStore.journalView.button(asset, { title: 'قيود الأصل ' + asset.name }));
       return [
         asset.name,
-        formatDate(asset.purchaseDate),
+        formatDocDate(asset, 'purchaseDate'),
         formatMoney(cost),
         String(life),
         formatMoney(monthly),
@@ -314,7 +314,7 @@
     const res = await BeeStore.api.fixedAssets.payments(asset.id);
     if (!res.ok) { toast(res.error.message, 'error'); return; }
     const rows = res.data.map(payment => [
-      formatDate(payment.date),
+      formatDocDate(payment),
       formatMoney(payment.amountMinor),
       payment.method || '-',
       payment.note || '-',

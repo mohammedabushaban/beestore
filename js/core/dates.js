@@ -48,6 +48,46 @@
     return formatDate(iso) + ' ' + pad(d.getHours()) + ':' + pad(d.getMinutes());
   }
 
+  // v4 R8: every record shows date + time. `time` is the stored local
+  // HH:mm[:ss]; older records fall back to `createdAt` only when it falls on
+  // the same business date (imported or migrated rows would otherwise show
+  // the import time). Time never decides which day a record belongs to.
+  let timeFormat = '12h';
+
+  function setTimeFormat(fmt) {
+    timeFormat = fmt === '24h' ? '24h' : '12h';
+  }
+
+  function getTimeFormat() { return timeFormat; }
+
+  function formatTime(hhmm, fmt) {
+    const m = /^(\d{1,2}):(\d{2})/.exec(String(hhmm || ''));
+    if (!m) return '';
+    const h = Number(m[1]);
+    if ((fmt || timeFormat) === '24h') return pad(h) + ':' + m[2];
+    const suffix = h < 12 ? 'ص' : 'م';
+    const h12 = h % 12 === 0 ? 12 : h % 12;
+    return h12 + ':' + m[2] + ' ' + suffix;
+  }
+
+  function docTime(doc, dateField) {
+    if (!doc) return '';
+    const businessDate = doc[dateField || 'date'];
+    if (doc.time && /^\d{1,2}:\d{2}/.test(String(doc.time))) return String(doc.time).slice(0, 5);
+    const created = doc.createdAt ? parseDate(doc.createdAt) : null;
+    if (!created) return '';
+    const localDate = created.getFullYear() + '-' + pad(created.getMonth() + 1) + '-' + pad(created.getDate());
+    if (businessDate && String(businessDate).slice(0, 10) !== localDate) return '';
+    return pad(created.getHours()) + ':' + pad(created.getMinutes());
+  }
+
+  function formatDocDateTime(doc, dateField) {
+    if (!doc) return '';
+    const date = formatDate(doc[dateField || 'date']);
+    const t = formatTime(docTime(doc, dateField));
+    return t ? date + ' ' + t : date;
+  }
+
   function monthKey(dateStr) { return (dateStr || today()).slice(0, 7); }
 
   // v2 §2: month helpers. Month keys are 'YYYY-MM' calendar months.
@@ -131,6 +171,7 @@
 
   BeeStore.dates = {
     pad, today, now, nowTime, parseDate, formatDate, formatDateTime,
+    setTimeFormat, getTimeFormat, formatTime, docTime, formatDocDateTime,
     monthKey, daysInMonth, addDays, addMonths, startOfMonth, endOfMonth, diffDays,
     monthOf, monthRange, isSameMonth, compare, setClock, resetClock,
   };

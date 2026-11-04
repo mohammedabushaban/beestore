@@ -143,6 +143,7 @@
           notes: data.notes || '',
           inventoryValueMinor: totalMinor,
           journalEntryIds: [],
+          time: data.time || BeeStore.dates.nowTime(),
           createdAt: BeeStore.dates.now(),
           updatedAt: BeeStore.dates.now(),
         };

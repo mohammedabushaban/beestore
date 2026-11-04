@@ -24,6 +24,7 @@
           amountMinor: BeeStore.money.roundMinor(data.amountMinor),
           accountId: data.accountId,
           note: data.note || '',
+          time: data.time || BeeStore.dates.nowTime(),
           createdAt: BeeStore.dates.now(),
           updatedAt: BeeStore.dates.now(),
         };
@@ -56,6 +57,7 @@
           toAccountId: data.toAccountId,
           amountMinor: BeeStore.money.roundMinor(data.amountMinor),
           note: data.note || '',
+          time: data.time || BeeStore.dates.nowTime(),
           createdAt: BeeStore.dates.now(),
           updatedAt: BeeStore.dates.now(),
         };

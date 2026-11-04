@@ -104,6 +104,11 @@
     return BeeStore.dates.formatDate(dateStr);
   }
 
+  /** v4 R8: a record's business date plus its time ("2026-11-04 2:20 م"). */
+  function formatDocDate(doc, dateField) {
+    return BeeStore.dates.formatDocDateTime(doc, dateField);
+  }
+
   function statusBadge(status) {
     const labels = {
       paid: 'مدفوع', partial: 'مدفوع جزئياً', unpaid: 'غير مدفوع', void: 'ملغي',
@@ -215,6 +220,6 @@
     }
   }
 
-  BeeStore.ui = { el, toast, confirmDialog, formatMoney, formatDate, statusBadge, emptyState, table, pagination, loadingSpinner, skeleton, dropdown, escapeHtml, safeWidget };
+  BeeStore.ui = { el, toast, confirmDialog, formatMoney, formatDate, formatDocDate, statusBadge, emptyState, table, pagination, loadingSpinner, skeleton, dropdown, escapeHtml, safeWidget };
   if (typeof module !== 'undefined') module.exports = BeeStore.ui;
 })(typeof window !== 'undefined' ? window : globalThis);

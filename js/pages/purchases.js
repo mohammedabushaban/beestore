@@ -1,7 +1,7 @@
 (function (root) {
   'use strict';
   const BeeStore = root.BeeStore || (root.BeeStore = {});
-  const { el, formatMoney, formatDate, toast, confirmDialog } = BeeStore.ui;
+  const { el, formatMoney, formatDate, formatDocDate, toast, confirmDialog } = BeeStore.ui;
   const { input, select, formField } = BeeStore.dialogs;
 
   async function render(container) {
@@ -106,7 +106,7 @@
     }
     const rows = data.map(r => [
       r.number,
-      formatDate(r.date),
+      formatDocDate(r),
       r.purchaseNumber || '-',
       r.supplierName || '-',
       formatMoney(r.totalMinor),
@@ -220,7 +220,7 @@
     }
     const rows = purchases.map(p => [
       p.number,
-      formatDate(p.date),
+      formatDocDate(p),
       p.supplierName || '-',
       formatMoney(p.totalMinor),
       p.status === 'received' ? el('span', { class: 'badge badge-success' }, 'مستلمة')

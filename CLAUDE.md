@@ -16,8 +16,12 @@ None. Next in v5 §13 order: **A6** (see below).
   ledger, journal), "القيد" button via `js/ui/journalView.js`, accountant
   package sheets 19–25, `docs/ACCOUNTANT_REVIEW.md`, `docs/PARALLEL_RUN.md`.
   Not done in A5: direct cash-flow-by-source report from the journal (§10).
-- v4 milestones done: M1, M2, M3, M7.
-- Node suite: 37 test files / 264 tests pass (`for t in tests/test-*.js; do node $t; done`).
+- v4 milestones done: M1, M2, M3, M7; M6 (R8 date+time) partly: `time` on new
+  documents, date+time display everywhere via `formatDocDate`, `timeFormat`
+  setting. Missing: backfill migration, editing time when back-dating, time on
+  stock movements, sort by time.
+- Invoices page shows overpayment (badge + view details).
+- Node suite: 38 test files / 268 tests pass (`for t in tests/test-*.js; do node $t; done`).
 - Browser suites: `tests/smoke.html`, `idb-lazy.html`, `ui-*.html`; offline
   verifier `tests/verify-offline.py` (needs `chromedriver --port=9515` and
   `/tmp/opencode/` for its screenshot). `ui-settlements`/`ui-unpaid-expenses`
@@ -30,7 +34,7 @@ None. Next in v5 §13 order: **A6** (see below).
   gapless numbers, document↔journal, orphan entries), property/invariant
   tests, 50,000-invoice performance test.
 - **v4 milestones**: M4 credit-sales presentation + write-off, M5 invoices
-  table, M6 date-time, M8 statements + item card, M9 purchases, M10 recurring
+  table, M6 date-time (rest, see above), M8 statements + item card, M9 purchases, M10 recurring
   expenses + daily allocation, M11 migration/regression sweep, M12 (replaced
   by v5 journal).
 

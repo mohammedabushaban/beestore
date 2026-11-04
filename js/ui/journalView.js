@@ -67,7 +67,7 @@
       ? el('span', { class: 'badge badge-warning' }, 'قيد عكسي')
       : (entry.reversed ? el('span', { class: 'badge badge-muted' }, 'معكوس') : null);
     return el('div', { class: 'card' }, [
-      el('h4', {}, [entry.number + ' · ' + entry.date + (entry.time ? ' ' + entry.time.slice(0, 5) : '') +
+      el('h4', {}, [entry.number + ' · ' + BeeStore.dates.formatDocDateTime(entry) +
         ' · ' + (entry.sourceLabel || entry.sourceType) + ' ', badge]),
       entry.description ? el('p', { class: 'form-hint' }, entry.description) : null,
       el('div', { class: 'table-wrapper' },

@@ -195,6 +195,7 @@
       const large = !!s.largeFont;
       document.documentElement.classList.toggle('large-font', large);
       if (document.body) document.body.classList.toggle('large-font', large);
+      if (BeeStore.dates && BeeStore.dates.setTimeFormat) BeeStore.dates.setTimeFormat(s.timeFormat);
     }
 
     touch() {

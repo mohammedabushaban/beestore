@@ -58,6 +58,10 @@
     const nameArInput = input('text', s.storeNameAr || '');
     const phoneInput = input('text', s.phone || '');
     const addressInput = input('text', s.address || '');
+    const timeFormatSelect = select([
+      { value: '12h', label: '12 ساعة (ص/م)' },
+      { value: '24h', label: '24 ساعة' },
+    ], s.timeFormat === '24h' ? '24h' : '12h');
 
     container.appendChild(el('div', { class: 'card' }, [
       el('h3', {}, 'معلومات المتجر'),
@@ -65,6 +69,8 @@
       formField('اسم المتجر (عربي)', nameArInput),
       formField('الهاتف', phoneInput),
       formField('العنوان', addressInput),
+      formField('صيغة الوقت', timeFormatSelect, false,
+        'يظهر التاريخ والوقت على كل الفواتير والدفعات والمستندات.'),
       el('button', {
         class: 'btn btn-primary',
         onclick: async () => {
@@ -73,9 +79,13 @@
             storeNameAr: nameArInput.value.trim(),
             phone: phoneInput.value.trim(),
             address: addressInput.value.trim(),
+            timeFormat: timeFormatSelect.value === '24h' ? '24h' : '12h',
           });
-          if (saveRes.ok) toast('تم الحفظ');
-          else toast(saveRes.error.message, 'error');
+          if (saveRes.ok) {
+            BeeStore.dates.setTimeFormat(timeFormatSelect.value);
+            if (BeeStore.settingsCache) BeeStore.settingsCache.timeFormat = timeFormatSelect.value;
+            toast('تم الحفظ');
+          } else toast(saveRes.error.message, 'error');
         },
       }, 'حفظ'),
     ]));

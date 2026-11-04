@@ -1,7 +1,7 @@
 (function (root) {
   'use strict';
   const BeeStore = root.BeeStore || (root.BeeStore = {});
-  const { el, formatMoney, formatDate, statusBadge, emptyState, table, toast, confirmDialog } = BeeStore.ui;
+  const { el, formatMoney, formatDate, formatDocDate, statusBadge, emptyState, table, toast, confirmDialog } = BeeStore.ui;
   const { input, select, formField } = BeeStore.dialogs;
 
   async function render(container) {
@@ -62,6 +62,47 @@
     }, full ? 'مرتجع كامل' : 'مرتجع جزئي');
   }
 
+  // v4 R2: what happened to money received above the invoice total. Older
+  // sales without `overpaymentMinor` are derived from their payments; the
+  // 9→10 migration tagged those historical excesses as customer credit.
+  const OVERPAYMENT_LABELS = {
+    change: 'أُعيد باقياً للزبون',
+    customer_credit: 'رصيد للزبون',
+    other_income: 'إيراد آخر / تقريب',
+  };
+
+  function _overpayment(sale) {
+    let amount = Number(sale.overpaymentMinor) || 0;
+    if (!amount && Array.isArray(sale.payments)) {
+      const tendered = sale.payments.reduce((sum, p) => sum + (Number(p.amountMinor) || 0), 0);
+      amount = Math.max(0, tendered - (Number(sale.totalMinor) || 0));
+    }
+    if (amount <= 0) return null;
+    const mode = sale.overpaymentMode || 'customer_credit';
+    return {
+      amountMinor: amount,
+      mode,
+      label: OVERPAYMENT_LABELS[mode] || OVERPAYMENT_LABELS.change,
+      tenderedMinor: (Number(sale.totalMinor) || 0) + amount,
+    };
+  }
+
+  // Payments embedded in the sale carry no time of their own; one dated on
+  // the sale's day was taken at the sale's time.
+  function _paymentWithTime(p, sale) {
+    if (p.time || p.createdAt) return p;
+    return p.date === sale.date ? { ...p, time: sale.time, createdAt: sale.createdAt } : p;
+  }
+
+  function _overpaymentBadge(sale) {
+    const over = _overpayment(sale);
+    if (!over) return null;
+    return el('span', {
+      class: 'badge badge-info',
+      title: 'دُفع ' + formatMoney(over.tenderedMinor) + ' — الزائد ' + formatMoney(over.amountMinor) + ': ' + over.label,
+    }, 'دفع زائد ' + formatMoney(over.amountMinor) + ' · ' + over.label);
+  }
+
   function _renderList(container, invoices) {
     container.innerHTML = '';
     if (invoices.length === 0) {
@@ -74,13 +115,14 @@
       const hasReturns = inv.returnStatus && inv.returnStatus !== 'none';
       return [
         inv.number,
-        formatDate(inv.date),
+        formatDocDate(inv),
         inv.customerName || 'نقدي',
         formatMoney(inv.totalMinor),
         inv.dueMinor > 0 ? formatMoney(inv.dueMinor) : '-',
         el('div', { style: 'display:flex; gap:6px; flex-wrap:wrap; align-items:center' }, [
           statusBadge(inv.status),
           _returnBadge(inv),
+          _overpaymentBadge(inv),
         ]),
         el('div', { class: 'row-actions' }, [
           el('button', { class: 'btn btn-sm btn-secondary', onclick: () => _viewInvoice(inv.id) }, 'عرض'),
@@ -156,7 +198,7 @@
         el('button', { class: 'btn-close', onclick: () => overlay.remove() }, '×'),
       ]),
       el('div', { class: 'dialog-body' }, [
-        el('p', {}, 'التاريخ: ' + formatDate(sale.date)),
+        el('p', {}, 'التاريخ: ' + formatDocDate(sale)),
         customer ? el('p', {}, 'الزبون: ' + customer.name) : null,
         (sale.contactPhone || (customer && customer.phone)) ? el('p', {}, 'الجوال: ' + (sale.contactPhone || customer.phone)) : null,
         sale.payerName ? el('p', {}, 'المحوِّل: ' + sale.payerName) : null,
@@ -179,6 +221,20 @@
           sale.discountMinor > 0 ? el('p', {}, 'الخصم: -' + formatMoney(sale.discountMinor)) : null,
           el('p', { class: 'total-final' }, 'الإجمالي: ' + formatMoney(sale.totalMinor)),
           el('p', {}, 'المدفوع: ' + formatMoney(sale.paidMinor)),
+          ...(() => {
+            const over = _overpayment(sale);
+            if (!over) return [];
+            return [
+              el('p', {}, 'المبلغ المستلم: ' + formatMoney(over.tenderedMinor)),
+              el('p', { style: 'font-weight:600' },
+                'المبلغ الزائد: ' + formatMoney(over.amountMinor) + ' (' + over.label + ')'),
+              over.mode === 'customer_credit'
+                ? el('p', { class: 'form-hint' }, 'أُضيف الزائد إلى رصيد الزبون الدائن ويمكن استخدامه في فاتورة لاحقة.')
+                : over.mode === 'other_income'
+                  ? el('p', { class: 'form-hint' }, 'سُجّل الزائد كإيراد آخر (4100).')
+                  : el('p', { class: 'form-hint' }, 'أُعيد الزائد للزبون نقداً؛ الصندوق يحتفظ بقيمة الفاتورة فقط.'),
+            ];
+          })(),
           el('p', {}, 'المتبقي: ' + formatMoney(sale.dueMinor)),
           refundedMinor > 0 ? el('p', { style: 'color:#856404; font-weight:600' }, 'المرتجع: -' + formatMoney(refundedMinor)) : null,
         ]),
@@ -190,7 +246,7 @@
             ])),
             el('tbody', {}, returns.map(r => el('tr', {}, [
               el('td', {}, r.number),
-              el('td', {}, formatDate(r.date)),
+              el('td', { class: 'num' }, formatDocDate(r)),
               el('td', {}, formatMoney(r.refundMinor)),
               el('td', {}, r.refundMode === 'cash_refund' ? 'استرداد نقدي' : r.refundMode === 'customer_credit' ? 'رصيد زبون' : 'استبدال'),
               el('td', {}, r.reason || '-'),
@@ -205,7 +261,7 @@
               el('th', {}, 'المحوِّل'), el('th', {}, 'الجوال'),
             ])),
             el('tbody', {}, payments.map(p => el('tr', {}, [
-              el('td', {}, formatDate(p.date)),
+              el('td', { class: 'num' }, formatDocDate(_paymentWithTime(p, sale))),
               el('td', {}, BeeStore.settings.methodLabel(settings || {}, p.method)),
               el('td', {}, formatMoney(p.amountMinor)),
               el('td', {}, p.payerName || '-'),

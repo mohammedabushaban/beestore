@@ -129,6 +129,7 @@
             ? (data.accountId || BeeStore.settings.resolvePaymentAccount(settings, method))
             : null,
           reason: data.reason || '',
+          time: data.time || BeeStore.dates.nowTime(),
           createdAt: BeeStore.dates.now(),
           updatedAt: BeeStore.dates.now(),
           journalEntryIds: [],

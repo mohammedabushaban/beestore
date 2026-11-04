@@ -6,7 +6,7 @@
 | `namespace.js` | Global namespace + version | `BeeStore`, `BeeStore.version`, `BeeStore.schemaVersion` | — |
 | `config.js` | App constants (DB name, paths, lock) | `BeeStore.config` | `namespace.js` |
 | `money.js` | Minor-unit money math (parse/format/round, Eastern-digit normalization, largest-remainder `allocate`) | `BeeStore.money.{roundMinor,parseDecimal,normalizeDigits,fromMajor,toMajor,format,add,sub,mul,sum,allocate}` | `namespace.js` |
-| `dates.js` | Business dates (local YYYY-MM-DD), month ops (monthOf/monthRange/addMonths/daysInMonth/isSameMonth/compare), injectable clock | `BeeStore.dates.{today,now,nowTime,parseDate,formatDate,formatDateTime,monthKey,daysInMonth,addDays,addMonths,startOfMonth,endOfMonth,diffDays,monthOf,monthRange,isSameMonth,compare,setClock,resetClock}` | `namespace.js` |
+| `dates.js` | Business dates (local YYYY-MM-DD), month ops (monthOf/monthRange/addMonths/daysInMonth/isSameMonth/compare), injectable clock; v4 R8 record time display (`formatTime` 12h ص/م or 24h via `setTimeFormat`, `docTime` = stored `time` or same-day `createdAt`, `formatDocDateTime`) | `BeeStore.dates.{today,now,nowTime,parseDate,formatDate,formatDateTime,setTimeFormat,getTimeFormat,formatTime,docTime,formatDocDateTime,monthKey,daysInMonth,addDays,addMonths,startOfMonth,endOfMonth,diffDays,monthOf,monthRange,isSameMonth,compare,setClock,resetClock}` | `namespace.js` |
 | `ids.js` | Prefixed random IDs, barcode generation | `BeeStore.ids.{randomId,nextBarcode,eanCheckDigit}` | `namespace.js` |
 | `validate.js` | Field validation helpers (required, min, max, phone, email) | `BeeStore.validate.{required,isNumber,min,max,phone,email}` | `namespace.js` |
 | `errors.js` | Typed error class + factory | `BeeStore.errors.{BeeError,err}` | `namespace.js` |
@@ -75,7 +75,7 @@
 | File | Responsibility | Exports | Depends On |
 |------|---------------|---------|------------|
 | `router.js` | Hash-based router (period travels as `?m=YYYY-MM`, wins over prefs) | `BeeStore.router`, `BeeStore.Router` | `namespace.js` |
-| `components.js` | Reusable UI primitives (el, toast, confirm, table, pagination, dropdown, skeletons, escapeHtml, safeWidget) | `BeeStore.ui.{el,toast,confirmDialog,formatMoney,formatDate,statusBadge,emptyState,table,pagination,loadingSpinner,skeleton,dropdown,escapeHtml,safeWidget}` | `namespace.js`, `money.js`, `dates.js` |
+| `components.js` | Reusable UI primitives (el, toast, confirm, table, pagination, dropdown, skeletons, escapeHtml, safeWidget) | `BeeStore.ui.{el,toast,confirmDialog,formatMoney,formatDate,formatDocDate,statusBadge,emptyState,table,pagination,loadingSpinner,skeleton,dropdown,escapeHtml,safeWidget}` | `namespace.js`, `money.js`, `dates.js` |
 | `dialogs.js` | Form dialog helpers (openDialog, formField, input, select, textarea, checkbox, radio, date, number, file) | `BeeStore.dialogs.{openDialog,formField,input,select,textarea,checkbox,radioGroup,fileInput,numberInput,dateInput,hiddenInput}` | `components.js` |
 | `backupUI.js` | Off-device backup UI flows: share/download toasts, file picker, passphrase retry, restore summary/warnings + confirmation, reload after restore | `BeeStore.backupUI.{restoreFromFile,shareBackup,downloadBackup}` | `components.js`, `dialogs.js`, `api.js`, `backupFile.js` |
 | `print.js` | Invoice (A4/80mm), label sheet with Code128 images, daily closing print, Day Report HTML/print (A4/80mm) | `BeeStore.print.{printInvoice,printLabelSheet,printDailyClosing,buildInvoiceHtml,buildLabelSheetHtml,buildDayReportHtml,printDayReport}` | `components.js`, `api.js`, `money.js`, `dates.js` |
@@ -133,6 +133,7 @@
 |------|---------------|
 | A1 audit gate (2026-10-29) | Complete serialized Node suite **230/230** after regenerating the stale SW hash; no new A1 defect found. Browser/device suites not rerun for this audit. |
 | `test-storage-policy.js` | Window bounds, in-memory ranges, date fields, index definitions, `lastManyByIndex` (7 tests) |
+| `test-datetime-overpay.js` | v4 R8/R2: 12h/24h time formatting, same-day `createdAt` fallback, `time` stored on new documents, 23:59/00:01 business dates, overpayment fields on sales (4 tests) |
 | `test-a5.js` | v5 A5: general ledger opening/running/closing = trial balance, `forDocument` with reversal and linked ids, cashier blocked from journal reads, accountant package journal sheets balanced and reconciled (4 tests) |
 | `test-journal.js` | v5 A1: chart seeding/links/fixed assets, balanced append + gapless numbering/rollback, append-only enforcement, day/month/scheduled locks, trial balance ranges, exact reversal, inactive historical account, source queries, tamper detection, randomized balanced/reversal invariants, v3→v4/v1 migrations, backup round-trip (16 tests) |
 | `test-inventory.js` | v5 A2: `money.allocate` largest remainder, exact rounding/remainders, partial-return discounts, purchase-return 5030 difference, purchase/sale void reversals, adjustments/stocktakes, revaluation, negative-stock `COST_ESTIMATED`, migration 4→5 tracked value + legacy discount reconstruction, randomized trial-balance/journal/inventory invariants (14 tests) |

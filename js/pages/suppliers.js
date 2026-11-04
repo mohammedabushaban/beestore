@@ -1,7 +1,7 @@
 (function (root) {
   'use strict';
   const BeeStore = root.BeeStore || (root.BeeStore = {});
-  const { el, formatMoney, formatDate, toast } = BeeStore.ui;
+  const { el, formatMoney, formatDate, formatDocDate, toast } = BeeStore.ui;
   const { input, formField } = BeeStore.dialogs;
 
   async function render(container) {
@@ -91,7 +91,7 @@
             ])),
             el('tbody', {}, periodPurchases.map(p => el('tr', {}, [
               el('td', {}, p.number),
-              el('td', {}, formatDate(p.date)),
+              el('td', { class: 'num' }, formatDocDate(p)),
               el('td', {}, formatMoney(p.totalMinor)),
               el('td', {}, formatMoney(p.dueMinor)),
             ]))),
@@ -105,7 +105,7 @@
               el('th', {}, 'المحوِّل'), el('th', {}, 'الجوال'), el('th', {}, 'القيد'),
             ])),
             el('tbody', {}, periodPayments.map(p => el('tr', {}, [
-              el('td', {}, formatDate(p.date)),
+              el('td', { class: 'num' }, formatDocDate(p)),
               el('td', {}, formatMoney(p.amountMinor)),
               el('td', {}, BeeStore.settings.methodLabel(settings, p.method)),
               el('td', {}, p.payerName || '-'),

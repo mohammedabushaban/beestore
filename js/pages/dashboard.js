@@ -1,7 +1,7 @@
 (function (root) {
   'use strict';
   const BeeStore = root.BeeStore || (root.BeeStore = {});
-    const { el, formatMoney, formatDate, toast, safeWidget } = BeeStore.ui;
+    const { el, formatMoney, formatDate, formatDocDate, toast, safeWidget } = BeeStore.ui;
 
   let salesChart = null;
   let profitChart = null;
@@ -137,7 +137,7 @@
           d.recentInvoices.slice(0, 10).map(inv =>
             el('div', { class: 'recent-invoice' }, [
               el('span', {}, inv.number),
-              el('span', {}, formatDate(inv.date)),
+              el('span', {}, formatDocDate(inv)),
               el('span', {}, formatMoney(inv.totalMinor)),
               inv.status ? el('span', { class: 'badge ' + _statusBadgeClass(inv.status) }, _statusLabel(inv.status)) : null,
             ])
@@ -267,6 +267,15 @@
       el('div', { class: 'stat-sub' },
         (today.invoicesCount || 0) + ' فاتورة · المتوقع في الصندوق ' +
         formatMoney(today.expectedCashMinor || 0)),
+      // The expected cash starts from the drawer's opening balance (yesterday's
+      // retained float); without it a day with no invoices looks wrong.
+      today.openingCashMinor != null
+        ? el('div', { class: 'stat-sub' },
+          'منها رصيد افتتاحي ' + formatMoney(today.openingCashMinor) +
+          ((today.expectedCashMinor || 0) !== today.openingCashMinor
+            ? ' · حركات اليوم ' + signed((today.expectedCashMinor || 0) - today.openingCashMinor)
+            : ''))
+        : null,
       el('div', { class: 'day-home-actions' }, [
         todayClosed
           ? el('button', { class: 'btn btn-sm btn-secondary', onclick: () => openReport(today.date) }, 'تقرير اليوم')
@@ -566,7 +575,7 @@
     } else {
       const rows = recent.map(inv => el('tr', {}, [
         el('td', {}, inv.number),
-        el('td', {}, formatDate(inv.date)),
+        el('td', { class: 'num' }, formatDocDate(inv)),
         el('td', { style: 'text-align:left;' }, formatMoney(inv.totalMinor)),
         el('td', {}, inv.status === 'void' ? 'ملغاة' : 'محفوظة'),
       ]));

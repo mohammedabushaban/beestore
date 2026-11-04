@@ -1,7 +1,7 @@
 (function (root) {
   'use strict';
   const BeeStore = root.BeeStore || (root.BeeStore = {});
-  const { el, formatMoney, formatDate, toast } = BeeStore.ui;
+  const { el, formatMoney, formatDate, formatDocDate, toast } = BeeStore.ui;
   const { input, select, formField } = BeeStore.dialogs;
 
   async function render(container) {
@@ -74,7 +74,7 @@
       return [
         r.number,
         reference,
-        formatDate(r.date) + (r.time ? ' ' + r.time.slice(0, 5) : ''),
+        formatDocDate(r),
         r.customerName || 'زبون عام',
         r.reason || '-',
         formatMoney(r.refundMinor),
@@ -123,7 +123,7 @@
           onclick: () => { overlay.remove(); _showReturnForm(s); },
         }, [
           el('span', { class: 'search-result-name' }, s.number + ' — ' + (s.customerName || 'نقدي')),
-          el('span', { class: 'search-result-meta' }, formatDate(s.date) + ' • ' + formatMoney(s.totalMinor)),
+          el('span', { class: 'search-result-meta' }, formatDocDate(s) + ' • ' + formatMoney(s.totalMinor)),
         ]));
       }
     }

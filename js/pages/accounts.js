@@ -1,7 +1,7 @@
 (function (root) {
   'use strict';
   const BeeStore = root.BeeStore || (root.BeeStore = {});
-  const { el, formatMoney, formatDate, toast } = BeeStore.ui;
+  const { el, formatMoney, formatDate, formatDocDate, toast } = BeeStore.ui;
   const { input, select, formField } = BeeStore.dialogs;
 
   async function render(container) {
@@ -91,7 +91,7 @@
         return;
       }
       const rows = movements.map(m => [
-        formatDate(m.date),
+        formatDocDate(m),
         m.description,
         m.amountMinor >= 0 ? formatMoney(m.amountMinor) : '(' + formatMoney(Math.abs(m.amountMinor)) + ')',
         formatMoney(m.balanceAfter),
@@ -121,7 +121,7 @@
     for (const a of res.data) accountMap[a.id] = a;
 
     const rows = transfers.map(t => [
-      formatDate(t.date),
+      formatDocDate(t),
       accountMap[t.fromAccountId] ? accountMap[t.fromAccountId].name : '-',
       accountMap[t.toAccountId] ? accountMap[t.toAccountId].name : '-',
       formatMoney(t.amountMinor),
@@ -146,7 +146,7 @@
     txs.sort((a, b) => b.date.localeCompare(a.date));
 
     const rows = txs.map(t => [
-      formatDate(t.date),
+      formatDocDate(t),
       t.type === 'capital_in' ? 'رأس مال' : 'سحب',
       formatMoney(t.amountMinor),
       t.note || '-',

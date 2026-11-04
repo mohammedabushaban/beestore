@@ -228,6 +228,7 @@
           allocation,
           voided: false,
           voidReason: null,
+          time: data.time || BeeStore.dates.nowTime(),
           createdAt: BeeStore.dates.now(),
           updatedAt: BeeStore.dates.now(),
         };
@@ -724,6 +725,7 @@
             allocation: { mode: 'single' },
             voided: false,
             voidReason: null,
+            time: BeeStore.dates.nowTime(),
             createdAt: BeeStore.dates.now(),
             updatedAt: BeeStore.dates.now(),
           };

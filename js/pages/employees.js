@@ -1,7 +1,7 @@
 (function (root) {
   'use strict';
   const BeeStore = root.BeeStore || (root.BeeStore = {});
-  const { el, formatMoney, formatDate, toast, confirmDialog } = BeeStore.ui;
+  const { el, formatMoney, formatDate, formatDocDate, toast, confirmDialog } = BeeStore.ui;
   const { input, select, formField } = BeeStore.dialogs;
 
   async function render(container) {
@@ -145,7 +145,7 @@
 
     const rows = allAdvances.map(a => [
       a.employeeName,
-      formatDate(a.date),
+      formatDocDate(a),
       formatMoney(a.amountMinor),
       formatMoney(a.repaidMinor || 0),
       formatMoney(a.amountMinor - (a.repaidMinor || 0)),
@@ -219,7 +219,7 @@
     if (accountsRes.ok) for (const a of accountsRes.data) accountNames[a.id] = a.name;
     if (!paymentsRes.ok) { toast(paymentsRes.error.message, 'error'); return; }
     const rows = paymentsRes.data.filter(p => !p.date || p.date <= asOf).map(p => [
-      formatDate(p.date),
+      formatDocDate(p),
       labels[p.type] || p.label || p.type,
       p.label || '-',
       formatMoney(p.amountMinor),

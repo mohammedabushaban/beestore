@@ -90,6 +90,8 @@
     // v4 R9.2: an invoice-less return is owner-only until this is raised.
     cashierUnlinkedReturnLimitMinor: 0,
     largeFont: false,
+    // v4 R8: how record times are shown ("12h" with ص/م, or "24h").
+    timeFormat: '12h',
   };
 
   const METHOD_KINDS = ['cash', 'bank_direct', 'clearing', 'customer_credit'];

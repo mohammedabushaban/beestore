@@ -719,7 +719,7 @@
       const rows = d.rows.map(r => el('tr', {
         class: 'clickable', onclick: () => BeeStore.journalView.show(null, [r.entryId], 'القيد ' + r.number),
       }, [
-        el('td', { class: 'num' }, r.date),
+        el('td', { class: 'num' }, BeeStore.dates.formatDocDateTime(r)),
         el('td', { class: 'num' }, r.number),
         el('td', {}, sourceLabel(r.sourceType) + (r.reversalOf ? ' (عكسي)' : '')),
         el('td', {}, r.description + (r.memo ? ' — ' + r.memo : '')),
@@ -785,7 +785,7 @@
           class: 'clickable', onclick: () => BeeStore.journalView.show(null, [e.id], 'القيد ' + e.number),
         }, [
           el('td', { class: 'num' }, e.number),
-          el('td', { class: 'num' }, e.date + (e.time ? ' ' + e.time.slice(0, 5) : '')),
+          el('td', { class: 'num' }, BeeStore.dates.formatDocDateTime(e)),
           el('td', {}, sourceLabel(e.sourceType) + (e.reversalOf ? ' (عكسي)' : '')),
           el('td', {}, e.description || ''),
           el('td', { class: 'num' }, formatMoney(total)),

@@ -232,6 +232,7 @@
           allocation: { mode: 'single' },
           voided: false,
           voidReason: null,
+          time: BeeStore.dates.nowTime(),
           createdAt: BeeStore.dates.now(),
           updatedAt: BeeStore.dates.now(),
         };
@@ -288,6 +289,7 @@
           repaidMinor: 0,
           accountId: data.accountId || null,
           note: data.note || '',
+          time: data.time || BeeStore.dates.nowTime(),
           createdAt: BeeStore.dates.now(),
           updatedAt: BeeStore.dates.now(),
         };
@@ -439,6 +441,7 @@
           accountId,
           note: data.note || '',
           voided: false,
+          time: data.time || BeeStore.dates.nowTime(),
           createdAt: BeeStore.dates.now(),
           updatedAt: BeeStore.dates.now(),
         };

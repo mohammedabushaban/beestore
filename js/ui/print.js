@@ -15,7 +15,7 @@
     if (s.address) lines.push(s.address);
     lines.push('');
     lines.push('فاتورة بيع رقم ' + sale.number);
-    lines.push('التاريخ: ' + BeeStore.dates.formatDate(sale.date));
+    lines.push('التاريخ: ' + BeeStore.dates.formatDocDateTime(sale));
     if (customer) lines.push('الزبون: ' + customer.name);
     else if (sale.customerName) lines.push('الزبون: ' + sale.customerName);
     lines.push('');
@@ -48,7 +48,7 @@
       for (const p of payments) {
         const method = (BeeStore.settings && BeeStore.settings.methodLabel)
           ? BeeStore.settings.methodLabel(s, p.method) : p.method;
-        lines.push('- ' + method + ': ' + money(p.amountMinor) + ' (' + BeeStore.dates.formatDate(p.date) + ')');
+        lines.push('- ' + method + ': ' + money(p.amountMinor) + ' (' + BeeStore.dates.formatDocDateTime(p.time || p.createdAt || p.date !== sale.date ? p : { ...p, time: sale.time }) + ')');
       }
     }
     if (s.invoiceFooter) {
@@ -158,7 +158,7 @@
     html += '</div>';
 
     html += '<div class="invoice-title">فاتورة بيع</div>';
-    html += '<div class="info-row"><span>الرقم: ' + esc(sale.number) + '</span><span>التاريخ: ' + esc(BeeStore.dates.formatDate(sale.date)) + '</span></div>';
+    html += '<div class="info-row"><span>الرقم: ' + esc(sale.number) + '</span><span>التاريخ: ' + esc(BeeStore.dates.formatDocDateTime(sale)) + '</span></div>';
     if (customer) html += '<div class="info-row"><span>الزبون: ' + esc(customer.name) + '</span><span>الهاتف: ' + esc(customer.phone || sale.contactPhone || '-') + '</span></div>';
     else if (sale.contactPhone) html += '<div class="info-row"><span>الجوال: ' + esc(sale.contactPhone) + '</span></div>';
     if (sale.payerName) html += '<div class="info-row"><span>اسم المحوِّل: ' + esc(sale.payerName) + '</span></div>';
@@ -207,7 +207,7 @@
       html += '<table><thead><tr><th>التاريخ</th><th>طريقة الدفع</th><th>المبلغ</th><th>المحوِّل</th><th>الجوال</th></tr></thead><tbody>';
       for (const p of payments) {
         const method = (BeeStore.settings && BeeStore.settings.methodLabel) ? BeeStore.settings.methodLabel(settings || {}, p.method) : p.method;
-        html += '<tr><td>' + esc(BeeStore.dates.formatDate(p.date)) + '</td><td>' + esc(method) + '</td><td>' + BeeStore.money.format(p.amountMinor) + '</td><td>' + esc(p.payerName || '-') + '</td><td>' + esc(p.payerPhone || '-') + '</td></tr>';
+        html += '<tr><td>' + esc(BeeStore.dates.formatDocDateTime(p.time || p.createdAt || p.date !== sale.date ? p : { ...p, time: sale.time })) + '</td><td>' + esc(method) + '</td><td>' + BeeStore.money.format(p.amountMinor) + '</td><td>' + esc(p.payerName || '-') + '</td><td>' + esc(p.payerPhone || '-') + '</td></tr>';
       }
       html += '</tbody></table></div>';
     }

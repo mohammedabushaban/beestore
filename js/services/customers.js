@@ -174,6 +174,7 @@
           payerName: (data.payerName || '').trim(),
           payerPhone: (data.payerPhone || '').trim(),
           note: data.note || '',
+          time: data.time || BeeStore.dates.nowTime(),
           createdAt: BeeStore.dates.now(),
         };
         tx.put('customerPayments', payment);

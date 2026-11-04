@@ -255,7 +255,7 @@ function _addPurchase() {
     async function loadProducts(query) {
       if (productSearchTimeout) clearTimeout(productSearchTimeout);
       productSearchTimeout = setTimeout(async () => {
-        const res = await BeeStore.api.products.searchProducts(query || '');
+        const res = await BeeStore.api.products.search(query || '');
         if (!res.ok) return;
         const products = res.data;
         productSelect.innerHTML = '';
@@ -402,7 +402,11 @@ function _addPurchase() {
         },
       }, 'Save'),
     ]);
-  }      const res = await BeeStore.api.purchases.void(id);
+  }
+
+  function _voidPurchase(id, number) {
+    confirmDialog('إلغاء الفاتورة', 'هل أنت متأكد من إلغاء ' + number + '؟', async () => {
+      const res = await BeeStore.api.purchases.void(id);
       if (res.ok) { toast('تم الإلغاء'); render(document.getElementById('page-content')); }
       else toast(res.error.message, 'error');
     });

@@ -82,7 +82,10 @@
           statusBadge(inv.status),
           _returnBadge(inv),
         ]),
-        el('button', { class: 'btn btn-sm btn-secondary', onclick: () => _viewInvoice(inv.id) }, 'عرض'),
+        el('div', { class: 'row-actions' }, [
+          el('button', { class: 'btn btn-sm btn-secondary', onclick: () => _viewInvoice(inv.id) }, 'عرض'),
+          BeeStore.journalView.button(inv, { title: 'قيود الفاتورة ' + inv.number }),
+        ]),
         (inv.status !== 'void' && inv.dueMinor > 0 && inv.customerId)
           ? el('button', { class: 'btn btn-sm btn-success', onclick: () => _receiveInvoicePayment(inv) }, 'دفعة')
           : '',

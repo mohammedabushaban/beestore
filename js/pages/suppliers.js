@@ -102,7 +102,7 @@
           el('table', { class: 'data-table' }, [
             el('thead', {}, el('tr', {}, [
               el('th', {}, 'التاريخ'), el('th', {}, 'المبلغ'), el('th', {}, 'الطريقة'),
-              el('th', {}, 'المحوِّل'), el('th', {}, 'الجوال'),
+              el('th', {}, 'المحوِّل'), el('th', {}, 'الجوال'), el('th', {}, 'القيد'),
             ])),
             el('tbody', {}, periodPayments.map(p => el('tr', {}, [
               el('td', {}, formatDate(p.date)),
@@ -110,6 +110,7 @@
               el('td', {}, BeeStore.settings.methodLabel(settings, p.method)),
               el('td', {}, p.payerName || '-'),
               el('td', {}, p.payerPhone || '-'),
+              el('td', {}, BeeStore.journalView.button(p, { title: 'قيد الدفعة' })),
             ]))),
           ])
         ),

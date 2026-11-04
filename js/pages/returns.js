@@ -79,6 +79,7 @@
         r.reason || '-',
         formatMoney(r.refundMinor),
         r.refundMode === 'cash_refund' ? 'استرداد نقدي' : r.refundMode === 'customer_credit' ? 'رصيد زبون' : 'استبدال',
+        BeeStore.journalView.button(r, { title: 'قيود المرتجع ' + r.number }) || '',
       ];
     });
     container.appendChild(el('div', { class: 'table-wrapper' },
@@ -86,7 +87,7 @@
         el('thead', {}, el('tr', {}, [
           el('th', {}, 'الرقم'), el('th', {}, 'المرجع'), el('th', {}, 'التاريخ'),
           el('th', {}, 'الزبون'), el('th', {}, 'السبب'), el('th', {}, 'المبلغ'),
-          el('th', {}, 'الطريقة'),
+          el('th', {}, 'الطريقة'), el('th', {}, ''),
         ])),
         el('tbody', {}, rows.map(r => el('tr', {}, r.map(c => el('td', {}, c))))),
       ])

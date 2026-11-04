@@ -168,6 +168,7 @@
     'unclosedDays', 'getLowStock', 'categories', 'recurring', 'advances',
     'outstandingAdvances', 'inspect', 'list', 'trialBalance', 'verify',
     'byCode', 'bySystemKey', 'forSource', 'quote', 'overview',
+    'generalLedger', 'forDocument',
   ]);
 
   class AuthService {

@@ -21,6 +21,9 @@
       el('button', { class: 'tab', onclick: function () { _showTab('receivables', content); _setActiveTab(this); } }, 'ذمم الزبائن'),
       el('button', { class: 'tab', onclick: function () { _showTab('payables', content); _setActiveTab(this); } }, 'ذمم الموردين'),
       el('button', { class: 'tab', onclick: function () { _showTab('balance', content); _setActiveTab(this); } }, 'الميزانية'),
+      el('button', { class: 'tab', onclick: function () { _showTab('trial', content); _setActiveTab(this); } }, 'ميزان المراجعة'),
+      el('button', { class: 'tab', onclick: function () { _showTab('ledger', content); _setActiveTab(this); } }, 'دفتر الأستاذ'),
+      el('button', { class: 'tab', onclick: function () { _showTab('journal', content); _setActiveTab(this); } }, 'دفتر اليومية'),
     ]);
     container.appendChild(tabs);
     container.appendChild(content);
@@ -44,6 +47,9 @@
     else if (tab === 'receivables') _renderReceivables(container);
     else if (tab === 'payables') _renderPayables(container);
     else if (tab === 'balance') _renderBalance(container);
+    else if (tab === 'trial') _renderTrialBalance(container);
+    else if (tab === 'ledger') _renderLedger(container);
+    else if (tab === 'journal') _renderJournal(container);
   }
 
   function _monthInput() {
@@ -614,6 +620,190 @@
             el('p', { class: 'total-final' }, 'إجمالي حقوق الملكية: ' + formatMoney(d.equity.total)),
           ]),
         ]),
+      ]));
+    }
+  }
+
+  // v5 §10 journal reports. Amounts come straight from journal lines; a
+  // difference is shown, never plugged.
+  function _moneyCell(minor) {
+    return el('td', { class: 'num' }, minor ? formatMoney(minor) : '');
+  }
+
+  function _dateRow(fromInput, toInput, onLoad, extra) {
+    return el('div', { class: 'filter-row' }, [
+      el('label', {}, 'من'), fromInput, el('label', {}, 'إلى'), toInput,
+      ...(extra || []),
+      el('button', { class: 'btn btn-primary', onclick: onLoad }, 'عرض'),
+    ]);
+  }
+
+  async function _renderTrialBalance(container) {
+    const fromInput = input('date', '');
+    const toInput = input('date', BeeStore.dates.today());
+    container.appendChild(_dateRow(fromInput, toInput, load));
+    container.appendChild(el('p', { class: 'form-hint' },
+      'اترك "من" فارغاً لعرض الأرصدة التراكمية حتى التاريخ، أو حدده لعرض حركة الفترة فقط.'));
+    const out = el('div', {});
+    container.appendChild(out);
+    await load();
+
+    async function load() {
+      const res = await BeeStore.api.journal.trialBalance({
+        from: fromInput.value || undefined, to: toInput.value || undefined,
+      });
+      if (!res.ok) { toast(res.error.message, 'error'); return; }
+      const d = res.data;
+      out.innerHTML = '';
+      const rows = d.accounts.map(a => el('tr', {}, [
+        el('td', {}, a.code || ''),
+        el('td', {}, a.nameAr),
+        _moneyCell(a.debitMinor),
+        _moneyCell(a.creditMinor),
+        _moneyCell(a.balanceMinor > 0 ? a.balanceMinor : 0),
+        _moneyCell(a.balanceMinor < 0 ? -a.balanceMinor : 0),
+      ]));
+      out.appendChild(el('div', { class: 'card' }, [
+        el('h3', {}, 'ميزان المراجعة ' + (d.from ? 'من ' + d.from + ' ' : '') + (d.to ? 'حتى ' + d.to : '')),
+        el('p', {}, d.balanced
+          ? '✓ الميزان متوازن (' + d.entryCount + ' قيد)'
+          : '⚠ الميزان غير متوازن — الفرق ' + formatMoney(d.differenceMinor)),
+        el('div', { class: 'table-wrapper' },
+          el('table', { class: 'data-table' }, [
+            el('thead', {}, el('tr', {}, [
+              el('th', {}, 'الرمز'), el('th', {}, 'الحساب'),
+              el('th', { class: 'num' }, 'حركة مدينة'), el('th', { class: 'num' }, 'حركة دائنة'),
+              el('th', { class: 'num' }, 'رصيد مدين'), el('th', { class: 'num' }, 'رصيد دائن'),
+            ])),
+            el('tbody', {}, rows),
+            el('tfoot', {}, el('tr', {}, [
+              el('td', {}, ''), el('td', {}, 'الإجمالي'),
+              _moneyCell(d.totalDebitMinor), _moneyCell(d.totalCreditMinor),
+              _moneyCell(d.accounts.reduce((s, a) => s + Math.max(0, a.balanceMinor), 0)),
+              _moneyCell(d.accounts.reduce((s, a) => s + Math.max(0, -a.balanceMinor), 0)),
+            ])),
+          ])),
+      ]));
+    }
+  }
+
+  async function _renderLedger(container) {
+    const chartRes = await BeeStore.api.chart.list();
+    if (!chartRes.ok) { toast(chartRes.error.message, 'error'); return; }
+    const accounts = chartRes.data.slice().sort((a, b) =>
+      String(a.code).localeCompare(String(b.code), undefined, { numeric: true }));
+    if (accounts.length === 0) {
+      container.appendChild(el('p', { class: 'empty-state' }, 'لا يوجد دليل حسابات بعد'));
+      return;
+    }
+    const accountSelect = select(accounts.map(a => ({
+      value: a.id, label: a.code + ' — ' + a.nameAr + (a.active === false ? ' (موقوف)' : ''),
+    })), accounts[0].id);
+    const month = BeeStore.dates.today().slice(0, 7);
+    const fromInput = input('date', month + '-01');
+    const toInput = input('date', BeeStore.dates.today());
+    container.appendChild(_dateRow(fromInput, toInput, load, [accountSelect]));
+    const out = el('div', {});
+    container.appendChild(out);
+    await load();
+
+    async function load() {
+      const res = await BeeStore.api.journal.generalLedger({
+        accountId: accountSelect.value,
+        from: fromInput.value || undefined, to: toInput.value || undefined,
+      });
+      if (!res.ok) { toast(res.error.message, 'error'); return; }
+      const d = res.data;
+      out.innerHTML = '';
+      const sourceLabel = (t) => BeeStore.journal ? BeeStore.journal.sourceLabel(t) : t;
+      const rows = d.rows.map(r => el('tr', {
+        class: 'clickable', onclick: () => BeeStore.journalView.show(null, [r.entryId], 'القيد ' + r.number),
+      }, [
+        el('td', { class: 'num' }, r.date),
+        el('td', { class: 'num' }, r.number),
+        el('td', {}, sourceLabel(r.sourceType) + (r.reversalOf ? ' (عكسي)' : '')),
+        el('td', {}, r.description + (r.memo ? ' — ' + r.memo : '')),
+        _moneyCell(r.debitMinor),
+        _moneyCell(r.creditMinor),
+        el('td', { class: 'num' }, formatMoney(r.balanceMinor)),
+      ]));
+      out.appendChild(el('div', { class: 'card' }, [
+        el('h3', {}, 'دفتر الأستاذ: ' + d.account.code + ' — ' + d.account.nameAr),
+        el('p', { class: 'form-hint' }, 'الأرصدة موجبة للمدين وسالبة للدائن. اضغط على السطر لعرض القيد.'),
+        el('div', { class: 'table-wrapper' },
+          el('table', { class: 'data-table' }, [
+            el('thead', {}, el('tr', {}, [
+              el('th', {}, 'التاريخ'), el('th', {}, 'رقم القيد'), el('th', {}, 'المصدر'),
+              el('th', {}, 'البيان'), el('th', { class: 'num' }, 'مدين'),
+              el('th', { class: 'num' }, 'دائن'), el('th', { class: 'num' }, 'الرصيد'),
+            ])),
+            el('tbody', {}, [
+              el('tr', {}, [
+                el('td', { class: 'num' }, d.from || ''), el('td', {}, ''), el('td', {}, ''),
+                el('td', {}, 'رصيد افتتاحي'), el('td', {}, ''), el('td', {}, ''),
+                el('td', { class: 'num' }, formatMoney(d.openingMinor)),
+              ]),
+              ...rows,
+            ]),
+            el('tfoot', {}, el('tr', {}, [
+              el('td', {}, ''), el('td', {}, ''), el('td', {}, ''), el('td', {}, 'الإجمالي / الرصيد الختامي'),
+              _moneyCell(d.debitMinor), _moneyCell(d.creditMinor),
+              el('td', { class: 'num' }, formatMoney(d.closingMinor)),
+            ])),
+          ])),
+      ]));
+    }
+  }
+
+  async function _renderJournal(container) {
+    const month = BeeStore.dates.today().slice(0, 7);
+    const fromInput = input('date', month + '-01');
+    const toInput = input('date', BeeStore.dates.today());
+    const searchInput = input('search', '', { placeholder: 'رقم القيد أو البيان' });
+    container.appendChild(_dateRow(fromInput, toInput, load, [searchInput]));
+    const out = el('div', {});
+    container.appendChild(out);
+    await load();
+
+    async function load() {
+      const res = await BeeStore.api.journal.list({
+        from: fromInput.value || undefined, to: toInput.value || undefined,
+        search: searchInput.value.trim() || undefined,
+      });
+      if (!res.ok) { toast(res.error.message, 'error'); return; }
+      const entries = res.data;
+      out.innerHTML = '';
+      if (entries.length === 0) {
+        out.appendChild(el('p', { class: 'empty-state' }, 'لا توجد قيود في هذه الفترة'));
+        return;
+      }
+      const LIMIT = 300;
+      const sourceLabel = (t) => BeeStore.journal ? BeeStore.journal.sourceLabel(t) : t;
+      const rows = entries.slice(0, LIMIT).map((e) => {
+        const total = (e.lines || []).reduce((s, l) => s + (Number(l.debitMinor) || 0), 0);
+        return el('tr', {
+          class: 'clickable', onclick: () => BeeStore.journalView.show(null, [e.id], 'القيد ' + e.number),
+        }, [
+          el('td', { class: 'num' }, e.number),
+          el('td', { class: 'num' }, e.date + (e.time ? ' ' + e.time.slice(0, 5) : '')),
+          el('td', {}, sourceLabel(e.sourceType) + (e.reversalOf ? ' (عكسي)' : '')),
+          el('td', {}, e.description || ''),
+          el('td', { class: 'num' }, formatMoney(total)),
+        ]);
+      });
+      out.appendChild(el('div', { class: 'card' }, [
+        el('h3', {}, 'دفتر اليومية (' + entries.length + ' قيد)'),
+        entries.length > LIMIT
+          ? el('p', { class: 'form-hint' }, 'يُعرض أحدث ' + LIMIT + ' قيد فقط — ضيّق الفترة أو استخدم البحث.')
+          : null,
+        el('div', { class: 'table-wrapper' },
+          el('table', { class: 'data-table' }, [
+            el('thead', {}, el('tr', {}, [
+              el('th', {}, 'رقم القيد'), el('th', {}, 'التاريخ'), el('th', {}, 'المصدر'),
+              el('th', {}, 'البيان'), el('th', { class: 'num' }, 'المبلغ'),
+            ])),
+            el('tbody', {}, rows),
+          ])),
       ]));
     }
   }

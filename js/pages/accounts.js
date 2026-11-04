@@ -125,12 +125,13 @@
       accountMap[t.fromAccountId] ? accountMap[t.fromAccountId].name : '-',
       accountMap[t.toAccountId] ? accountMap[t.toAccountId].name : '-',
       formatMoney(t.amountMinor),
+      BeeStore.journalView.button(t, { title: 'قيد التحويل' }) || '',
     ]);
 
     container.appendChild(el('div', { class: 'table-wrapper' },
       el('table', { class: 'data-table' }, [
         el('thead', {}, el('tr', {}, [
-          el('th', {}, 'التاريخ'), el('th', {}, 'من'), el('th', {}, 'إلى'), el('th', {}, 'المبلغ'),
+          el('th', {}, 'التاريخ'), el('th', {}, 'من'), el('th', {}, 'إلى'), el('th', {}, 'المبلغ'), el('th', {}, 'القيد'),
         ])),
         el('tbody', {}, rows.map(r => el('tr', {}, r.map(c => el('td', {}, c))))),
       ])
@@ -149,12 +150,13 @@
       t.type === 'capital_in' ? 'رأس مال' : 'سحب',
       formatMoney(t.amountMinor),
       t.note || '-',
+      BeeStore.journalView.button(t, { title: 'قيد حركة المالك' }) || '',
     ]);
 
     container.appendChild(el('div', { class: 'table-wrapper' },
       el('table', { class: 'data-table' }, [
         el('thead', {}, el('tr', {}, [
-          el('th', {}, 'التاريخ'), el('th', {}, 'النوع'), el('th', {}, 'المبلغ'), el('th', {}, 'ملاحظة'),
+          el('th', {}, 'التاريخ'), el('th', {}, 'النوع'), el('th', {}, 'المبلغ'), el('th', {}, 'ملاحظة'), el('th', {}, 'القيد'),
         ])),
         el('tbody', {}, rows.map(r => el('tr', {}, r.map(c => el('td', {}, c))))),
       ])

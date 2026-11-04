@@ -59,6 +59,7 @@
       formatMoney(doc.netReceivedMinor),
       accountNames[doc.bankAccountId] || '—',
       doc.reference || '—',
+      BeeStore.journalView.button(doc, { title: 'قيود التسوية ' + doc.number }) || '',
       doc.voided
         ? el('span', { class: 'badge badge-muted' }, 'ملغاة')
         : el('button', {
@@ -68,7 +69,7 @@
     ]);
     container.appendChild(rows.length
       ? table(['التاريخ', 'الرقم', 'الطريقة', 'الإجمالي', 'العمولة المتوقعة',
-        'العمولة الفعلية', 'الفرق', 'الصافي', 'البنك', 'المرجع', ''], rows)
+        'العمولة الفعلية', 'الفرق', 'الصافي', 'البنك', 'المرجع', 'القيد', ''], rows)
       : emptyState('لا توجد تسويات مسجلة'));
   }
 

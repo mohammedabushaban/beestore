@@ -446,7 +446,7 @@
         '------------------------------------------------------------',
         '00-README.txt              هذا الملف / this file.',
         '01-Month-Review.pdf        تقرير الشهر بالعربية (صفحات صور آمنة للعربية).',
-        'accounting.xlsx            18 ورقة محاسبية / 18 accounting sheets.',
+        'accounting.xlsx            25 ورقة محاسبية / 25 accounting sheets.',
         'csv/                       نفس الجداول بترميز UTF-8 مع BOM.',
         'manifest.json              قائمة الملفات وبصمات SHA-256 ونتائج التحقق.',
         '',
@@ -470,6 +470,13 @@
         '16. Daily Closings — إقفالات الأيام: متوقع، معدود، فرق.',
         '17. Adjustments-Voids — تسويات الصندوق ومقتطف التدقيق والإلغاءات.',
         '18. Integrity Check — نتيجة فحص سلامة البيانات.',
+        '19. Chart of Accounts — دليل الحسابات (الرمز، النوع، الطبيعة).',
+        '20. Trial Balance — ميزان المراجعة: رصيد أول الشهر، حركة الشهر، رصيد آخر الشهر.',
+        '21. General Ledger — دفتر الأستاذ لكل حساب مع الرصيد الجاري.',
+        '22. Journal — دفتر اليومية: كل سطر في كل قيد خلال الشهر.',
+        '23. Reconciliations — مطابقة السجلات الفرعية مع حسابات الرقابة في الدفتر.',
+        '24. Card Settlements — تسويات البطاقات والمحافظ والعمولات والأرصدة غير المسوّاة.',
+        '25. Unpaid Expenses — المصاريف غير المدفوعة وأعمارها آخر الشهر.',
         '',
         'تعريفات / Definitions',
         '------------------------------------------------------------',
@@ -1165,11 +1172,251 @@
           ],
         });
 
+      // -----------------------------------------------------------------
+      // 19–25) v5 §10 journal sheets. When the journal services are not
+      // loaded the sheets are still written (empty) so the package layout
+      // never depends on the build.
+      // -----------------------------------------------------------------
+      const journalSvc = this._acc('journal');
+      const chartRows = await this.repo.list('chartOfAccounts');
+      chartRows.sort((a, b) => String(a.code).localeCompare(String(b.code), undefined, { numeric: true }));
+      const chartById = {};
+      for (const a of chartRows) chartById[a.id] = a;
+      const typeAr = {
+        asset: 'أصل / Asset', liability: 'التزام / Liability', equity: 'حقوق ملكية / Equity',
+        revenue: 'إيراد / Revenue', expense: 'مصروف / Expense', contra: 'حساب مقابل / Contra',
+      };
+      const sideAr = (side) => (side === 'debit' ? 'مدين / Debit' : side === 'credit' ? 'دائن / Credit' : '');
+      const chartTable = table('Chart of Accounts', 'csv/19-chart-of-accounts.csv',
+        ['الرمز / Code', 'الحساب / Account', 'النوع / Type', 'الطبيعة / Normal side',
+          'مفتاح النظام / System key', 'فعّال / Active'],
+        chartRows.map(a => [
+          String(a.code || ''), a.nameAr || '', typeAr[a.type] || a.type || '',
+          sideAr(a.normalSide), a.systemKey || '', boolAr(a.active !== false),
+        ]),
+        { widths: [10, 36, 20, 16, 24, 10] });
+
+      const sourceLabel = (t) => (journalSvc && journalSvc.sourceLabel ? journalSvc.sourceLabel(t) : String(t || ''));
+      const employees = await this.repo.list('employees');
+      const partyName = (type, id) => {
+        if (!id) return '';
+        if (type === 'customer') return customerMap[id] ? customerMap[id].name : id;
+        if (type === 'supplier') return supplierMap[id] ? supplierMap[id].name : id;
+        if (type === 'employee') {
+          const emp = employees.find(e => e.id === id);
+          return emp ? emp.name : id;
+        }
+        return id;
+      };
+      const tbClose = journalSvc ? await journalSvc.trialBalance({ asOf: to }) : null;
+      const tbMonth = journalSvc ? await journalSvc.trialBalance({ from, to }) : null;
+      const monthMove = {};
+      for (const row of (tbMonth ? tbMonth.accounts : [])) monthMove[row.accountId] = row;
+      const tbRows = (tbClose ? tbClose.accounts : []).map((row) => {
+        const move = monthMove[row.accountId] || { debitMinor: 0, creditMinor: 0 };
+        const opening = row.balanceMinor - (move.debitMinor - move.creditMinor);
+        return [
+          String(row.code || ''), row.nameAr,
+          major(opening), major(move.debitMinor), major(move.creditMinor),
+          major(Math.max(0, row.balanceMinor)), major(Math.max(0, -row.balanceMinor)),
+        ];
+      });
+      const trialTable = table('Trial Balance', 'csv/20-trial-balance.csv',
+        ['الرمز / Code', 'الحساب / Account', moneyHeader('رصيد أول الشهر (مدين+) / Opening (Dr+)'),
+          moneyHeader('حركة مدينة / Month debit'), moneyHeader('حركة دائنة / Month credit'),
+          moneyHeader('رصيد مدين / Closing debit'), moneyHeader('رصيد دائن / Closing credit')],
+        tbRows,
+        {
+          widths: [10, 36, 18, 16, 16, 16, 16],
+          moneyColumns: [2, 3, 4, 5, 6],
+          footer: tbClose ? [[
+            'الإجمالي / Total', tbClose.balanced ? 'متوازن / Balanced' : 'غير متوازن / NOT balanced',
+            '', major(tbMonth.totalDebitMinor), major(tbMonth.totalCreditMinor),
+            major(tbClose.accounts.reduce((sum, r) => sum + Math.max(0, r.balanceMinor), 0)),
+            major(tbClose.accounts.reduce((sum, r) => sum + Math.max(0, -r.balanceMinor), 0)),
+          ]] : [],
+        });
+
+      const monthEntries = journalSvc ? await this.repo.listRange('journalEntries', from, to) : [];
+      const entryNo = (e) => (BeeStore.chartSeed ? BeeStore.chartSeed.parseNumber(e.number) || 0 : 0);
+      monthEntries.sort((a, b) => String(a.date).localeCompare(String(b.date)) || entryNo(a) - entryNo(b));
+      const numberById = {};
+      for (const e of monthEntries) numberById[e.id] = e.number;
+      const journalRows = [];
+      const lineDetail = [];
+      for (const e of monthEntries) {
+        for (const line of (e.lines || [])) {
+          const account = chartById[line.accountId] || {};
+          const row = {
+            entry: e, line, code: String(account.code || ''), nameAr: account.nameAr || 'حساب غير معروف',
+          };
+          lineDetail.push(row);
+          journalRows.push([
+            e.number, e.date, e.time || '', sourceLabel(e.sourceType), e.sourceId || '',
+            e.description || '', e.reversalOf ? (numberById[e.reversalOf] || e.reversalOf) : '',
+            row.code, row.nameAr, partyName(line.partyType, line.partyId), line.memo || '',
+            major(line.debitMinor), major(line.creditMinor),
+          ]);
+        }
+      }
+      const journalTable = table('Journal', 'csv/22-journal.csv',
+        ['رقم القيد / Entry', 'التاريخ / Date', 'الوقت / Time', 'المصدر / Source', 'معرّف المستند / Source id',
+          'البيان / Description', 'عكس للقيد / Reverses', 'الرمز / Code', 'الحساب / Account',
+          'الطرف / Party', 'ملاحظة / Memo', moneyHeader('مدين / Debit'), moneyHeader('دائن / Credit')],
+        journalRows,
+        {
+          widths: [12, 11, 8, 18, 22, 36, 12, 8, 28, 20, 20, 14, 14],
+          moneyColumns: [11, 12],
+          footer: [[
+            'الإجمالي / Total', String(monthEntries.length) + ' قيد', '', '', '', '', '', '', '', '', '',
+            major(lineDetail.reduce((sum, r) => sum + (Number(r.line.debitMinor) || 0), 0)),
+            major(lineDetail.reduce((sum, r) => sum + (Number(r.line.creditMinor) || 0), 0)),
+          ]],
+        });
+
+      // General ledger: per account, opening at month start, then a running
+      // balance (debit-positive) through the month.
+      const ledgerRows = [];
+      const byAccount = {};
+      for (const r of lineDetail) (byAccount[r.line.accountId] = byAccount[r.line.accountId] || []).push(r);
+      for (const tbRow of (tbClose ? tbClose.accounts : [])) {
+        const lines = byAccount[tbRow.accountId] || [];
+        const move = monthMove[tbRow.accountId] || { debitMinor: 0, creditMinor: 0 };
+        let running = tbRow.balanceMinor - (move.debitMinor - move.creditMinor);
+        ledgerRows.push([String(tbRow.code || ''), tbRow.nameAr, from, '', 'رصيد افتتاحي / Opening', '', '', '', major(running)]);
+        for (const r of lines) {
+          running += (Number(r.line.debitMinor) || 0) - (Number(r.line.creditMinor) || 0);
+          ledgerRows.push([
+            r.code, r.nameAr, r.entry.date, r.entry.number,
+            (r.entry.description || sourceLabel(r.entry.sourceType)) + (r.line.memo ? ' — ' + r.line.memo : ''),
+            partyName(r.line.partyType, r.line.partyId),
+            major(r.line.debitMinor), major(r.line.creditMinor), major(running),
+          ]);
+        }
+      }
+      const ledgerTable = table('General Ledger', 'csv/21-general-ledger.csv',
+        ['الرمز / Code', 'الحساب / Account', 'التاريخ / Date', 'رقم القيد / Entry', 'البيان / Description',
+          'الطرف / Party', moneyHeader('مدين / Debit'), moneyHeader('دائن / Credit'),
+          moneyHeader('الرصيد (مدين+) / Balance (Dr+)')],
+        ledgerRows,
+        { widths: [10, 30, 11, 12, 40, 20, 14, 14, 16], moneyColumns: [6, 7, 8] });
+
+      // Reconciliations (v5 §9.2/§9.5): document sub-ledgers vs journal
+      // control accounts at month end, plus the journal invariant check.
+      const reconLabels = [
+        ['assets.cashBalance', 'النقدية والبنوك / Cash & bank'],
+        ['assets.clearingOutstanding', 'حسابات التسوية / Clearing'],
+        ['assets.inventoryValue', 'المخزون 1200 / Inventory'],
+        ['assets.receivables', 'ذمم الزبائن 1100 / Receivables'],
+        ['assets.prepaid', 'مدفوع مقدماً 1300 / Prepaid'],
+        ['assets.advancesOutstanding', 'سلف الموظفين 1150 / Advances'],
+        ['assets.fixedAssetsNet', 'صافي الأصول الثابتة / Fixed assets (net)'],
+        ['liabilities.payables', 'ذمم الموردين 2010 / Payables'],
+        ['liabilities.unpaidExpenses', 'مصاريف غير مدفوعة 2020 / Unpaid expenses'],
+        ['liabilities.unpaidFixedAssets', 'أصول غير مدفوعة 2020 / Unpaid fixed assets'],
+        ['liabilities.customerCredits', 'أرصدة الزبائن 2030 / Customer credits'],
+        ['liabilities.accruedSalaries', 'رواتب مستحقة 2100 / Accrued salaries'],
+        ['liabilities.accruedWithholdings', 'استقطاعات 2110 / Withholdings'],
+        ['liabilities.accruedEmployer', 'مساهمات صاحب العمل 2120 / Employer'],
+        ['liabilities.endOfService', 'نهاية الخدمة 2200 / End of service'],
+        ['equity.total', 'حقوق الملكية / Equity total'],
+      ];
+      const pick = (obj, path) => path.split('.').reduce((o, k) => (o ? o[k] : undefined), obj);
+      const reconSubRows = [];
+      let reconDiffCount = 0;
+      if (journalSvc && reports._documentBalanceSnapshot && reports._journalBalanceSnapshot) {
+        const docSnap = await reports._documentBalanceSnapshot(to, { legacy: true });
+        const jSnap = await reports._journalBalanceSnapshot(to);
+        for (const [path, label] of reconLabels) {
+          const docValue = Number(pick(docSnap, path)) || 0;
+          const jValue = Number(pick(jSnap, path)) || 0;
+          if (docValue !== jValue) reconDiffCount++;
+          reconSubRows.push([label, major(docValue), major(jValue), major(jValue - docValue),
+            docValue === jValue ? 'مطابق / OK' : 'فرق / Difference']);
+        }
+      }
+      const journalCheck = journalSvc ? await journalSvc.verify() : null;
+      if (journalCheck) {
+        reconSubRows.push([]);
+        reconSubRows.push(['فحص دفتر اليومية / Journal verification',
+          '', '', '', journalCheck.ok ? 'سليم / OK' : 'أخطاء / Errors: ' + (journalCheck.errors || []).length]);
+        for (const e of (journalCheck.errors || []).slice(0, 200)) {
+          reconSubRows.push(['  ' + (e.number || e.entryId || ''), '', '', '', e.message || e.code || '']);
+        }
+        reconSubRows.push(['ميزان المراجعة آخر الشهر / Trial balance at month end', '', '', '',
+          tbClose && tbClose.balanced ? 'متوازن / Balanced' : 'غير متوازن / NOT balanced']);
+      }
+      const subledgerTable = table('Reconciliations', 'csv/23-reconciliations.csv',
+        ['البند / Item', moneyHeader('السجلات الفرعية / Sub-ledger'), moneyHeader('دفتر اليومية / Journal'),
+          moneyHeader('الفرق / Difference'), 'النتيجة / Result'],
+        reconSubRows,
+        { widths: [44, 18, 18, 16, 24], moneyColumns: [1, 2, 3] });
+
+      const settlementsSvc = this._acc('settlements');
+      const cardDocs = await this.repo.listRange('cardSettlements', from, to);
+      const cardRows = cardDocs.map(doc => [
+        doc.date, doc.number || '', doc.methodName || doc.method || '',
+        major(doc.grossMinor), major(doc.expectedFeeMinor), major(doc.feeMinor),
+        major(doc.feeDifferenceMinor), major(doc.netReceivedMinor),
+        doc.reference || '', doc.voided ? 'ملغاة / Void' : 'نشطة / Active',
+      ]);
+      let unsettled = [];
+      if (settlementsSvc && journalSvc) {
+        try {
+          unsettled = (await settlementsSvc.overview(to)).methods || [];
+        } catch (e) {
+          unsettled = [];
+        }
+      }
+      const activeCards = cardDocs.filter(d => !d.voided);
+      const cardTable = table('Card Settlements', 'csv/24-card-settlements.csv',
+        ['التاريخ / Date', 'الرقم / Number', 'الطريقة / Method', moneyHeader('الإجمالي / Gross'),
+          moneyHeader('العمولة المتوقعة / Expected fee'), moneyHeader('العمولة / Fee'),
+          moneyHeader('فرق العمولة / Fee difference'), moneyHeader('الصافي / Net'),
+          'المرجع / Reference', 'الحالة / Status'],
+        cardRows,
+        {
+          widths: [11, 12, 18, 14, 14, 14, 14, 14, 18, 14],
+          moneyColumns: [3, 4, 5, 6, 7],
+          footer: [
+            ['الإجمالي / Total', '', '', major(activeCards.reduce((x, d) => x + (Number(d.grossMinor) || 0), 0)),
+              major(activeCards.reduce((x, d) => x + (Number(d.expectedFeeMinor) || 0), 0)),
+              major(activeCards.reduce((x, d) => x + (Number(d.feeMinor) || 0), 0)),
+              major(activeCards.reduce((x, d) => x + (Number(d.feeDifferenceMinor) || 0), 0)),
+              major(activeCards.reduce((x, d) => x + (Number(d.netReceivedMinor) || 0), 0)), '', ''],
+            ...unsettled.map(m => ['غير مسوّى آخر الشهر / Unsettled at ' + to, '', m.methodName || m.method,
+              major(m.unsettledMinor), '', '', '', '', '',
+              m.reconciled ? 'مطابق للإيصالات / Matches receipts' : 'لا يطابق الإيصالات / Does not match']),
+          ],
+        });
+
+      const expensesSvc = this._acc('expenses');
+      const aging = expensesSvc && expensesSvc.aging ? await expensesSvc.aging(to) : { rows: [], buckets: {}, totalMinor: 0 };
+      const unpaidTable = table('Unpaid Expenses', 'csv/25-unpaid-expenses.csv',
+        ['التاريخ / Date', 'الاستحقاق / Due', 'التصنيف / Category', 'الوصف / Description',
+          'المستفيد / Payee', moneyHeader('المبلغ / Amount'), moneyHeader('المدفوع / Paid'),
+          moneyHeader('المتبقي / Remaining'), 'أيام التأخير / Days past due', 'الفئة / Bucket'],
+        aging.rows.map(r => [
+          r.date, r.dueDate || '', r.categoryName || '', r.description || '', r.payee || '',
+          major(r.amountMinor), major(r.paidMinor), major(r.remainingMinor),
+          r.daysPastDue, r.bucket,
+        ]),
+        {
+          widths: [11, 11, 18, 30, 20, 14, 14, 14, 10, 8],
+          moneyColumns: [5, 6, 7],
+          footer: [
+            ['الإجمالي / Total', '', '', '', '', '', '', major(aging.totalMinor), '', ''],
+            ...['0-30', '31-60', '61-90', '90+'].map(b =>
+              ['فئة / Bucket ' + b, '', '', '', '', '', '', major((aging.buckets || {})[b] || 0), '', b]),
+          ],
+        });
+
       const tables = [
         summaryTable, salesJournalTable, salesLinesTable, returnsTable, purchasesTable,
         expensesTable, payrollTable, cashBookTable, bankTable, receivablesTable,
         payablesTable, inventoryTable, stockTable, balanceTable, reconTable,
         closingTable, adjustmentsTable, integrityTable,
+        chartTable, trialTable, ledgerTable, journalTable, subledgerTable, cardTable, unpaidTable,
       ];
 
       // -----------------------------------------------------------------
@@ -1289,6 +1536,15 @@
       addCheck('integrity_check_has_no_errors',
         'فحص سلامة البيانات بلا أخطاء',
         true, integrityOk);
+
+      if (tbClose) {
+        addCheck('trial_balance_is_balanced',
+          'ميزان المراجعة آخر الشهر متوازن',
+          true, !!tbClose.balanced);
+        addCheck('subledgers_match_journal',
+          'السجلات الفرعية تطابق حسابات الرقابة في دفتر اليومية',
+          0, reconDiffCount);
+      }
 
       // Verify the checksums before the manifest is written. This is the exact
       // check the accountant can repeat with any SHA-256 tool.

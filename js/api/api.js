@@ -293,6 +293,8 @@
       byNumber: async (number) => ok(await BeeStore.journal.byNumber(number)),
       forSource: async (sourceType, sourceId) => ok(await BeeStore.journal.forSource(sourceType, sourceId)),
       trialBalance: async (filters) => ok(await BeeStore.journal.trialBalance(filters)),
+      generalLedger: async (filters) => ok(await BeeStore.journal.generalLedger(filters)),
+      forDocument: async (sourceId, entryIds) => ok(await BeeStore.journal.forDocument(sourceId, entryIds)),
       verify: async () => ok(await BeeStore.journal.verify()),
     };
 

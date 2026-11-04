@@ -701,6 +701,8 @@ textarea:focus {
 .data-table tbody tr:hover { background: var(--amber-50); }
 .data-table tbody tr:last-child td { border-bottom: none; }
 .data-table td.num, .data-table th.num { font-variant-numeric: tabular-nums; white-space: nowrap; }
+.data-table tr.clickable { cursor: pointer; }
+.row-actions { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
 
 .pagination {
   display: flex;

@@ -179,10 +179,10 @@ test('accountant package: contents, checksums, BOM CSV, watermark status and all
     assert.deepStrictEqual(Array.from(findEntry(entries, '01-Month-Review.pdf').data),
       Array.from(DUMMY_PDF));
 
-    // accounting.xlsx is a real ZIP with 18 sheets and inline-string cells.
+    // accounting.xlsx is a real ZIP with 25 sheets and inline-string cells.
     const xlsxEntries = BeeStore.zip.readEntries(findEntry(entries, 'accounting.xlsx').data);
     const sheetFiles = xlsxEntries.filter(e => /^xl\/worksheets\/sheet\d+\.xml$/.test(e.name));
-    assert.strictEqual(sheetFiles.length, 18, '18 accounting sheets');
+    assert.strictEqual(sheetFiles.length, 25, '25 accounting sheets');
     const workbook = decode(findEntry(xlsxEntries, 'xl/workbook.xml').data);
     assert.match(workbook, /Summary-PL/);
     assert.match(workbook, /Sales Journal/);

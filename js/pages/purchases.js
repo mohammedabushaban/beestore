@@ -226,9 +226,12 @@
       p.status === 'received' ? el('span', { class: 'badge badge-success' }, 'مستلمة')
         : p.status === 'void' ? el('span', { class: 'badge badge-muted' }, 'ملغاة')
         : el('span', { class: 'badge badge-warning' }, p.status),
-      p.status === 'void'
-        ? ''
-        : el('button', { class: 'btn btn-sm btn-danger', onclick: () => _voidPurchase(p.id, p.number) }, 'إلغاء'),
+      el('div', { class: 'row-actions' }, [
+        BeeStore.journalView.button(p, { title: 'قيود فاتورة الشراء ' + p.number }),
+        p.status === 'void'
+          ? null
+          : el('button', { class: 'btn btn-sm btn-danger', onclick: () => _voidPurchase(p.id, p.number) }, 'إلغاء'),
+      ]),
     ]);
     container.appendChild(el('div', { class: 'table-wrapper' },
       el('table', { class: 'data-table' }, [

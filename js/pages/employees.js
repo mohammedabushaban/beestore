@@ -106,7 +106,10 @@
         formatMoney(p.endOfServiceMinor || 0),
         formatMoney(p.netMinor),
         p.status === 'paid' ? 'مدفوع' : 'مسودة',
-        p.status !== 'paid' ? el('button', { class: 'btn btn-sm btn-success', onclick: () => _payPayroll(p.id) }, 'دفع') : '-',
+        el('div', { class: 'row-actions' }, [
+          p.status !== 'paid' ? el('button', { class: 'btn btn-sm btn-success', onclick: () => _payPayroll(p.id) }, 'دفع') : null,
+          BeeStore.journalView.button(p, { title: 'قيود راتب ' + p.employeeName + ' ' + p.month }),
+        ]),
       ];
     });
 
@@ -146,13 +149,14 @@
       formatMoney(a.amountMinor),
       formatMoney(a.repaidMinor || 0),
       formatMoney(a.amountMinor - (a.repaidMinor || 0)),
+      BeeStore.journalView.button(a, { title: 'قيد السلفة' }) || '',
     ]);
 
     container.appendChild(el('div', { class: 'table-wrapper' },
       el('table', { class: 'data-table' }, [
         el('thead', {}, el('tr', {}, [
           el('th', {}, 'الموظف'), el('th', {}, 'التاريخ'), el('th', {}, 'المبلغ'),
-          el('th', {}, 'المسدد'), el('th', {}, 'المتبقي'),
+          el('th', {}, 'المسدد'), el('th', {}, 'المتبقي'), el('th', {}, 'القيد'),
         ])),
         el('tbody', {}, rows.map(r => el('tr', {}, r.map(c => el('td', {}, c))))),
       ])
@@ -220,6 +224,7 @@
       p.label || '-',
       formatMoney(p.amountMinor),
       accountNames[p.accountId] || p.method || '-',
+      BeeStore.journalView.button(p, { title: 'قيود سداد المستحقات' }) || '',
       p.voided ? 'ملغى' : el('button', {
         class: 'btn btn-sm btn-danger',
         onclick: () => {
@@ -239,7 +244,7 @@
       el('table', { class: 'data-table' }, [
         el('thead', {}, el('tr', {}, [
           el('th', {}, 'التاريخ'), el('th', {}, 'النوع'), el('th', {}, 'البيان'),
-          el('th', {}, 'المبلغ'), el('th', {}, 'الحساب'), el('th', {}, ''),
+          el('th', {}, 'المبلغ'), el('th', {}, 'الحساب'), el('th', {}, 'القيد'), el('th', {}, ''),
         ])),
         el('tbody', {}, rows.map(r => el('tr', {}, r.map(c => el('td', {}, c))))),
       ])

@@ -45,6 +45,42 @@
     }));
   }
 
+  const SOURCE_LABELS = {
+    SALE: 'فاتورة بيع',
+    SALE_RETURN: 'مرتجع بيع',
+    CUSTOMER_PAYMENT: 'تحصيل من زبون',
+    CARD_SETTLEMENT: 'تسوية بطاقات/محافظ',
+    PURCHASE: 'فاتورة شراء',
+    PURCHASE_RETURN: 'مرتجع شراء',
+    SUPPLIER_PAYMENT: 'دفعة لمورد',
+    EXPENSE: 'مصروف',
+    EXPENSE_PAYMENT: 'دفعة مصروف',
+    PAYROLL: 'رواتب',
+    PAYROLL_LIABILITY: 'سداد مستحقات رواتب',
+    EMPLOYEE_ADVANCE: 'سلفة موظف',
+    FIXED_ASSET: 'أصل ثابت',
+    FIXED_ASSET_PAYMENT: 'دفعة أصل ثابت',
+    OWNER_TRANSACTION: 'حركة المالك',
+    TRANSFER: 'تحويل بين الحسابات',
+    CASH_ADJUSTMENT: 'تسوية الصندوق',
+    OPENING: 'رصيد افتتاحي',
+    STOCK_ADJUSTMENT: 'تسوية مخزون',
+    REVALUATION: 'إعادة تقييم تكلفة',
+    MANUAL: 'قيد يدوي',
+  };
+
+  function sourceLabel(type) {
+    return SOURCE_LABELS[type] || String(type || '');
+  }
+
+  // Ledger order: business date, then the gapless entry number.
+  function chronological(a, b) {
+    if (a.date !== b.date) return String(a.date).localeCompare(String(b.date));
+    const na = BeeStore.chartSeed.parseNumber(a.number) || 0;
+    const nb = BeeStore.chartSeed.parseNumber(b.number) || 0;
+    return na - nb;
+  }
+
   function sortNumbers(a, b) {
     const na = BeeStore.chartSeed.parseNumber(a.number) || 0;
     const nb = BeeStore.chartSeed.parseNumber(b.number) || 0;
@@ -559,6 +595,129 @@
         balanced: totalDebit === totalCredit,
         entryCount: entries.length,
       };
+    }
+
+    /**
+     * v5 §10 general ledger for one account: opening balance before `from`,
+     * then every line in date/number order with a running balance. Balances
+     * are debit-positive like the trial balance.
+     * @param {object} filters {accountId|code, from, to, partyType, partyId, sourceType}
+     * @returns {Promise<object>} {account, openingMinor, rows, totals, closingMinor}
+     */
+    async generalLedger(filters) {
+      filters = filters || {};
+      const from = filters.from ? String(filters.from) : null;
+      const to = filters.to ? String(filters.to) : null;
+      if (from && !isDate(from)) throw BeeStore.errors.err('VALIDATION', 'تاريخ البداية غير صالح');
+      if (to && !isDate(to)) throw BeeStore.errors.err('VALIDATION', 'تاريخ النهاية غير صالح');
+      if (from && to && from > to) {
+        throw BeeStore.errors.err('VALIDATION', 'تاريخ البداية بعد تاريخ النهاية');
+      }
+      const chart = await this.repo.list('chartOfAccounts');
+      const account = chart.find(a => a.id === filters.accountId) ||
+        (filters.code ? chart.find(a => String(a.code) === String(filters.code)) : null);
+      if (!account) throw BeeStore.errors.err('NOT_FOUND', 'اختر حساباً محاسبياً');
+
+      // Opening needs every earlier entry, so the ledger reads up to `to`.
+      const entries = to
+        ? await this.repo.listRange('journalEntries', undefined, to)
+        : await this.repo.list('journalEntries');
+      entries.sort(chronological);
+      const matches = (entry, line) => line.accountId === account.id &&
+        (!filters.partyType || line.partyType === filters.partyType) &&
+        (!filters.partyId || line.partyId === filters.partyId) &&
+        (!filters.sourceType || entry.sourceType === filters.sourceType);
+
+      let openingMinor = 0;
+      let running = 0;
+      let debitMinor = 0;
+      let creditMinor = 0;
+      const rows = [];
+      for (const entry of entries) {
+        const before = from && entry.date < from;
+        for (const line of (entry.lines || [])) {
+          if (!matches(entry, line)) continue;
+          const d = Number(line.debitMinor) || 0;
+          const c = Number(line.creditMinor) || 0;
+          if (before) {
+            openingMinor += d - c;
+            continue;
+          }
+          if (rows.length === 0) running = openingMinor;
+          running += d - c;
+          debitMinor += d;
+          creditMinor += c;
+          rows.push({
+            entryId: entry.id,
+            number: entry.number,
+            date: entry.date,
+            time: entry.time || '',
+            description: entry.description || '',
+            sourceType: entry.sourceType,
+            sourceId: entry.sourceId,
+            reversalOf: entry.reversalOf || null,
+            partyType: line.partyType || null,
+            partyId: line.partyId || null,
+            memo: line.memo || '',
+            debitMinor: d,
+            creditMinor: c,
+            balanceMinor: running,
+          });
+        }
+      }
+      return {
+        account: {
+          id: account.id, code: account.code, nameAr: account.nameAr,
+          type: account.type, normalSide: account.normalSide,
+        },
+        from, to,
+        openingMinor,
+        rows,
+        debitMinor,
+        creditMinor,
+        closingMinor: openingMinor + debitMinor - creditMinor,
+      };
+    }
+
+    /**
+     * Every entry behind one document (v5 §10 "عرض القيد المحاسبي"): entries
+     * whose sourceId is the document plus any ids the document links in
+     * `journalEntryIds`. Lines carry the account code and name.
+     * @param {string} sourceId document id
+     * @param {string[]} [entryIds] extra linked entry ids
+     * @returns {Promise<object[]>} entries oldest first
+     */
+    async forDocument(sourceId, entryIds) {
+      const byId = new Map();
+      if (sourceId) {
+        for (const e of await this._forSourceTx(this.repo, null, sourceId)) byId.set(e.id, e);
+      }
+      for (const id of (entryIds || [])) {
+        if (!id || byId.has(id)) continue;
+        const e = await this.repo.get('journalEntries', id);
+        if (e) byId.set(e.id, e);
+      }
+      const chart = await this.repo.list('chartOfAccounts');
+      const accounts = new Map(chart.map(a => [a.id, a]));
+      const reversed = new Set();
+      for (const e of byId.values()) if (e.reversalOf) reversed.add(e.reversalOf);
+      return Array.from(byId.values()).sort(chronological).map(e => ({
+        ...e,
+        sourceLabel: sourceLabel(e.sourceType),
+        reversed: reversed.has(e.id),
+        lines: (e.lines || []).map((line) => {
+          const account = accounts.get(line.accountId);
+          return {
+            ...line,
+            code: account ? account.code : '',
+            nameAr: account ? account.nameAr : 'حساب غير معروف',
+          };
+        }),
+      }));
+    }
+
+    sourceLabel(type) {
+      return sourceLabel(type);
     }
 
     /**

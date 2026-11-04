@@ -110,6 +110,7 @@
         class: 'btn btn-sm btn-secondary',
         onclick: () => _showPayments(asset, () => _renderRegister(container)),
       }, 'الدفعات'));
+      actions.push(BeeStore.journalView.button(asset, { title: 'قيود الأصل ' + asset.name }));
       return [
         asset.name,
         formatDate(asset.purchaseDate),
@@ -317,6 +318,7 @@
       formatMoney(payment.amountMinor),
       payment.method || '-',
       payment.note || '-',
+      BeeStore.journalView.button(payment, { title: 'قيد دفعة الأصل' }) || '',
       el('button', {
         class: 'btn btn-sm btn-danger',
         onclick: () => {
@@ -341,7 +343,7 @@
           el('table', { class: 'data-table' }, [
             el('thead', {}, el('tr', {}, [
               el('th', {}, 'التاريخ'), el('th', {}, 'المبلغ'),
-              el('th', {}, 'الطريقة'), el('th', {}, 'ملاحظة'), el('th', {}, ''),
+              el('th', {}, 'الطريقة'), el('th', {}, 'ملاحظة'), el('th', {}, 'القيد'), el('th', {}, ''),
             ])),
             el('tbody', {}, rows.map(r => el('tr', {}, r.map(c => el('td', {}, c))))),
           ])

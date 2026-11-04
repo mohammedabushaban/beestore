@@ -92,6 +92,7 @@
           onclick: () => _payExpense(e, remaining, reload),
         }, 'دفع'));
       }
+      actions.push(BeeStore.journalView.button(e, { title: 'قيود المصروف' }));
       actions.push(el('button', {
         class: 'btn btn-sm btn-danger',
         onclick: () => _deleteExpense(e.id),

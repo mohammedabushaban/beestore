@@ -3,8 +3,13 @@
 ## Active Task
 None. Next in v5 §13 order: **A6** (see below).
 
-## Current state (verified 2026-11-04)
+## Current state (verified 2026-11-05)
 - App `3.6.0-lite`, `schemaVersion` 10, `dbVersion` 10, summary `VERSION` 10.
+- Purchase invoices now search **products** by name/item code/barcode (not a
+  flat size/colour variant list), load the chosen product's variants, prefill
+  cost from the variant, and offer inline Quick Add. A product created there is
+  selected immediately; its Quick Add opening quantity stays 0 so the purchase
+  is the only stock receipt.
 - v5 A1–A4 done: chart of accounts, append-only journal, tracked inventory
   value, postings for every document, parity report/approval, card clearing +
   settlements + fees, unpaid expenses + payments (2020), payroll components +
@@ -21,8 +26,10 @@ None. Next in v5 §13 order: **A6** (see below).
   setting. Missing: backfill migration, editing time when back-dating, time on
   stock movements, sort by time.
 - Invoices page shows overpayment (badge + view details).
-- Node suite: 38 test files / 268 tests pass (`for t in tests/test-*.js; do node $t; done`).
-- Browser suites: `tests/smoke.html`, `idb-lazy.html`, `ui-*.html`; offline
+- Node suite: 38 test files / 269 tests pass
+  (`node --test --test-concurrency=1 tests/*.js`).
+- Browser suites: `tests/smoke.html`, `idb-lazy.html`, `ui-*.html` (including
+  `ui-purchases.html` 4/4); offline
   verifier `tests/verify-offline.py` (needs `chromedriver --port=9515` and
   `/tmp/opencode/` for its screenshot). `ui-settlements`/`ui-unpaid-expenses`
   need a clean origin IndexedDB (they time out on the lock screen otherwise).

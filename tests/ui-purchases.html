@@ -1,0 +1,297 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="UTF-8">
+  <title>BeeStore M1 Purchase Picker UI Tests</title>
+  <style>
+    body { font-family: monospace; padding: 16px; }
+    .pass { color: #15803d; }
+    .fail { color: #b91c1c; white-space: pre-wrap; }
+    #test-page { margin-top: 12px; }
+  </style>
+</head>
+<body>
+  <h1>BeeStore M1 Purchase Picker UI Tests</h1>
+  <p>Product search + inline Quick Add inside the purchase invoice dialog.</p>
+  <div id="results"></div>
+  <div id="test-page"><div id="page-content"></div></div>
+
+  <script src="../js/core/namespace.js"></script>
+  <script src="../js/core/config.js"></script>
+  <script src="../js/core/money.js"></script>
+  <script src="../js/core/dates.js"></script>
+  <script src="../js/core/ids.js"></script>
+  <script src="../js/core/validate.js"></script>
+  <script src="../js/core/errors.js"></script>
+  <script src="../js/core/chartSeed.js"></script>
+  <script src="../js/storage/repository.js"></script>
+  <script src="../js/storage/summary.js"></script>
+  <script src="../js/storage/memoryRepository.js"></script>
+  <script src="../js/services/settings.js"></script>
+  <script src="../js/services/audit.js"></script>
+  <script src="../js/services/accounts.js"></script>
+  <script src="../js/services/chartOfAccounts.js"></script>
+  <script src="../js/services/categories.js"></script>
+  <script src="../js/services/products.js"></script>
+  <script src="../js/services/variants.js"></script>
+  <script src="../js/services/stock.js"></script>
+  <script src="../js/services/sales.js"></script>
+  <script src="../js/services/customers.js"></script>
+  <script src="../js/services/returns.js"></script>
+  <script src="../js/services/purchases.js"></script>
+  <script src="../js/services/purchaseReturns.js"></script>
+  <script src="../js/services/suppliers.js"></script>
+  <script src="../js/services/expenses.js"></script>
+  <script src="../js/services/employees.js"></script>
+  <script src="../js/services/payroll.js"></script>
+  <script src="../js/services/transactions.js"></script>
+  <script src="../js/services/periods.js"></script>
+  <script src="../js/services/journal.js"></script>
+  <script src="../js/services/posting.js"></script>
+  <script src="../js/services/dailyClosing.js"></script>
+  <script src="../js/services/reports.js"></script>
+  <script src="../js/services/dashboard.js"></script>
+  <script src="../js/services/backup.js"></script>
+  <script src="../js/services/maintenance.js"></script>
+  <script src="../js/api/api.js"></script>
+  <script src="../js/ui/components.js"></script>
+  <script src="../js/ui/dialogs.js"></script>
+  <script src="../js/ui/scanner.js"></script>
+  <script src="../js/ui/journalView.js"></script>
+  <script src="../js/pages/products.js"></script>
+  <script src="../js/pages/purchases.js"></script>
+  <script>
+    const results = document.getElementById('results');
+    const state = { passed: 0, failed: 0, tests: [] };
+    const pageErrors = [];
+
+    function report(ok, name, detail) {
+      state.tests.push({ name, ok, detail: detail || '' });
+      const div = document.createElement('div');
+      div.className = ok ? 'pass' : 'fail';
+      div.textContent = (ok ? '✓ ' : '✗ ') + name + (detail ? ': ' + detail : '');
+      results.appendChild(div);
+      if (ok) state.passed++; else state.failed++;
+      window.__testResults = state;
+    }
+
+    async function test(name, fn) {
+      try {
+        const detail = await fn();
+        report(true, name, detail ? String(detail) : '');
+      } catch (e) {
+        report(false, name, (e && e.message) || String(e));
+      }
+    }
+
+    function assert(cond, msg) {
+      if (!cond) throw new Error(msg || 'Assertion failed');
+    }
+
+    function wait(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+    async function waitFor(fn, label, timeout) {
+      const deadline = Date.now() + (timeout || 5000);
+      let last = null;
+      while (Date.now() < deadline) {
+        try {
+          const value = await fn();
+          if (value) return value;
+        } catch (e) { last = e; }
+        await wait(40);
+      }
+      throw new Error('انتهت المهلة: ' + label + (last ? ' — ' + last.message : ''));
+    }
+
+    function overlayByTitle(title) {
+      return Array.from(document.querySelectorAll('.dialog-overlay')).find(o => {
+        const h = o.querySelector('.dialog-header h3');
+        return h && (h.textContent || '').indexOf(title) >= 0;
+      }) || null;
+    }
+
+    function field(root, labelText) {
+      const groups = Array.from(root.querySelectorAll('.form-group'));
+      const group = groups.find(g => {
+        const label = g.querySelector('.form-label');
+        return label && (label.textContent || '').indexOf(labelText) >= 0;
+      });
+      if (!group) throw new Error('الحقل غير موجود: ' + labelText);
+      const control = group.querySelector('input, select, textarea');
+      if (!control) throw new Error('عنصر الحقل غير موجود: ' + labelText);
+      return control;
+    }
+
+    function buttonByText(root, text) {
+      return Array.from(root.querySelectorAll('button'))
+        .find(b => (b.textContent || '').trim() === text) || null;
+    }
+
+    async function openPurchaseDialog() {
+      const add = await waitFor(() => buttonByText(document.getElementById('test-page'), '+ فاتورة مشتريات'),
+        'زر فاتورة مشتريات');
+      add.click();
+      return waitFor(() => overlayByTitle('فاتورة مشتريات'), 'حوار فاتورة المشتريات');
+    }
+
+    async function chooseSupplier(dialog, supplierId) {
+      const select = field(dialog, 'المورد');
+      select.value = supplierId;
+    }
+
+    async function savePurchase(dialog) {
+      const save = buttonByText(dialog, 'حفظ');
+      assert(save, 'زر حفظ المشتريات غير موجود');
+      save.click();
+      await waitFor(() => !document.querySelector('.dialog-overlay'), 'إغلاق حوار المشتريات');
+    }
+
+    async function boot() {
+      window.addEventListener('error', e => pageErrors.push('error: ' + (e.message || '')));
+      window.addEventListener('unhandledrejection', e => {
+        pageErrors.push('rejection: ' + ((e.reason && e.reason.message) || String(e.reason)));
+      });
+
+      const BeeStore = window.BeeStore;
+      const repo = new BeeStore.MemoryRepository();
+      await repo.open();
+      const api = new BeeStore.Api(repo);
+      BeeStore.repo = repo;
+      BeeStore.api = api;
+
+      const today = BeeStore.dates.today();
+      assert((await api.settings.save({
+        systemStartDate: today,
+        blockFutureDates: true,
+      })).ok, 'settings');
+      await BeeStore.chart.ensureSeeded();
+
+      const supplier = (await api.suppliers.create({ name: 'مورد الاختبار' })).data;
+      const item = (await api.products.quickAdd({
+        name: 'شاي أخضر',
+        barcode: '6281000000017',
+        costMinor: 500,
+        priceMinor: 1000,
+        openingQuantity: 0,
+        date: today,
+      })).data;
+
+      const page = document.getElementById('page-content');
+      await BeeStore.pages.purchases.render(page);
+      return { BeeStore, api, supplier, item, today };
+    }
+
+    (async function run() {
+      let env;
+      try {
+        env = await boot();
+        const { api, supplier, item, today } = env;
+
+        await test('Purchase dialog searches products by name and selects the default variant', async () => {
+          const dialog = await openPurchaseDialog();
+          const search = field(dialog, 'المنتج');
+          assert(search.getAttribute('placeholder').indexOf('الرمز أو الباركود') >= 0,
+            'حقل البحث لا يذكر الرمز والباركود');
+          assert(field(dialog, 'الصنف / الوحدة').disabled,
+            'قائمة الأصناف يجب أن تبقى معطلة قبل اختيار المنتج');
+
+          search.value = 'شاي';
+          search.dispatchEvent(new Event('input', { bubbles: true }));
+          const result = await waitFor(() => {
+            return Array.from(document.querySelectorAll('#purchase-product-results button'))
+              .find(b => (b.textContent || '').indexOf('شاي أخضر') >= 0);
+          }, 'نتيجة البحث بالاسم');
+          assert(result.textContent.indexOf('الرمز: ' + item.product.itemCode) >= 0,
+            'نتيجة البحث لا تعرض رمز المنتج');
+          result.click();
+
+          await waitFor(() => {
+            const status = dialog.querySelector('.form-hint');
+            return status && status.textContent.indexOf('شاي أخضر') >= 0;
+          }, 'تحديد المنتج');
+          const variant = field(dialog, 'الصنف / الوحدة');
+          await waitFor(() => !variant.disabled, 'تحميل أصناف المنتج');
+          assert(variant.options.length === 1, 'عدد أصناف المنتج الافتراضي يجب أن يكون 1');
+          assert(variant.options[0].textContent.indexOf('افتراضي') >= 0,
+            'اسم الصنف الافتراضي غير ظاهر');
+          assert(field(dialog, 'سعر الشراء').value === '5.00',
+            'سعر الشراء لم يُعبأ من تكلفة المنتج');
+
+          chooseSupplier(dialog, supplier.id);
+          field(dialog, 'الكمية').value = '2';
+          await savePurchase(dialog);
+
+          const purchases = (await api.purchases.list()).data;
+          assert(purchases.length === 1, 'لم تُحفظ فاتورة الشراء');
+          assert(purchases[0].lines[0].variantId === item.variant.id,
+            'سطر الشراء لا يشير إلى الصنف الافتراضي');
+          assert(purchases[0].lines[0].qty === 2, 'كمية الشراء غير صحيحة');
+        });
+
+        await test('Inline Quick Add creates a product and selects it as a purchase line', async () => {
+          const dialog = await openPurchaseDialog();
+          const addProduct = buttonByText(dialog, '+ منتج جديد');
+          assert(addProduct, 'زر إضافة منتج جديد غير موجود');
+          addProduct.click();
+
+          const quick = await waitFor(() => overlayByTitle('منتج جديد من فاتورة المشتريات'),
+            'حوار الإضافة السريعة');
+          field(quick, 'اسم الصنف').value = 'عسل طبيعي';
+          field(quick, 'التكلفة').value = '12.50';
+          field(quick, 'سعر البيع').value = '18.00';
+          assert(field(quick, 'الكمية الافتتاحية').value === '0',
+            'الكمية الافتتاحية الافتراضية يجب أن تكون صفراً داخل المشتريات');
+          buttonByText(quick, 'حفظ').click();
+
+          await waitFor(() => !overlayByTitle('منتج جديد من فاتورة المشتريات'),
+            'إغلاق حوار الإضافة السريعة');
+          await waitFor(() => {
+            const status = dialog.querySelector('.form-hint');
+            return status && status.textContent.indexOf('عسل طبيعي') >= 0;
+          }, 'تحديد المنتج الجديد');
+          const variant = field(dialog, 'الصنف / الوحدة');
+          await waitFor(() => !variant.disabled && variant.value, 'صنف المنتج الجديد');
+
+          const products = (await api.products.list()).data;
+          const created = products.find(p => p.name === 'عسل طبيعي');
+          assert(created, 'المنتج الجديد لم يُحفظ');
+          assert(created.itemCode, 'المنتج الجديد بلا رمز');
+          chooseSupplier(dialog, supplier.id);
+          field(dialog, 'الكمية').value = '4';
+          await savePurchase(dialog);
+
+          const purchases = (await api.purchases.list()).data;
+          assert(purchases.length === 2, 'فاتورة المنتج الجديد لم تُحفظ');
+          const line = purchases.find(p => p.lines[0].variantId === variant.value);
+          assert(line && line.lines[0].qty === 4, 'سطر المنتج الجديد غير صحيح');
+          const stored = (await api.variants.get(variant.value)).data;
+          assert(stored.quantity === 4, 'الكمية افتُتحت مرتين بدل مرة واحدة');
+        });
+
+        await test('Purchase search finds a product by barcode', async () => {
+          const dialog = await openPurchaseDialog();
+          const search = field(dialog, 'المنتج');
+          search.value = '6281000000017';
+          search.dispatchEvent(new Event('input', { bubbles: true }));
+          const result = await waitFor(() => {
+            return Array.from(document.querySelectorAll('#purchase-product-results button'))
+              .find(b => (b.textContent || '').indexOf('شاي أخضر') >= 0);
+          }, 'نتيجة البحث بالباركود');
+          result.click();
+          await waitFor(() => {
+            const status = dialog.querySelector('.form-hint');
+            return status && status.textContent.indexOf('شاي أخضر') >= 0;
+          }, 'تحديد المنتج بالباركود');
+          dialog.querySelector('.btn-close').click();
+        });
+
+        await test('No JavaScript errors occurred during the purchase picker flows', async () => {
+          assert(pageErrors.length === 0, pageErrors.join(' | '));
+        });
+      } catch (e) {
+        report(false, 'Purchase picker suite crashed', (e && e.message) || String(e));
+      }
+    })();
+  </script>
+</body>
+</html>

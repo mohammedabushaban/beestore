@@ -165,6 +165,42 @@ test('M1: variants get parent-prefixed codes and duplicate variant codes are rej
   assert.strictEqual(clash.error.code, 'DUPLICATE');
 });
 
+test('M1: a product created inline for a purchase is searchable and bought immediately', async () => {
+  const { api } = await freshApi();
+  const supplier = ok(await api.suppliers.create({ name: 'مورد المشتريات' }), 'supplier');
+  const { product, variant } = ok(await api.products.quickAdd({
+    name: 'زيت زيتون',
+    barcode: '6281000000017',
+    costMinor: 1500,
+    priceMinor: 2200,
+    openingQuantity: 0,
+    date: '2026-11-01',
+  }), 'inline quick add');
+
+  // The purchase picker searches products by name, item code and barcode —
+  // not by a separate category/variant list.
+  const byName = ok(await api.products.search('زيت زيتون'));
+  assert.deepStrictEqual(byName.map(p => p.id), [product.id]);
+  const byCode = ok(await api.products.search(product.itemCode));
+  assert.deepStrictEqual(byCode.map(p => p.id), [product.id]);
+  const byBarcode = ok(await api.products.search('6281000000017'));
+  assert.deepStrictEqual(byBarcode.map(p => p.id), [product.id]);
+
+  const purchase = ok(await api.purchases.create({
+    date: '2026-11-02',
+    supplierId: supplier.id,
+    supplierName: supplier.name,
+    lines: [{ variantId: variant.id, qty: 3, unitCostMinor: 1500 }],
+    payments: [],
+  }), 'purchase from inline item');
+
+  assert.strictEqual(purchase.lines[0].variantId, variant.id);
+  assert.strictEqual(purchase.totalMinor, 4500);
+  const stored = ok(await api.variants.get(variant.id));
+  assert.strictEqual(stored.quantity, 3, 'opening quantity stays zero until the purchase');
+  assert.strictEqual(stored.costMinor, 1500);
+});
+
 /* ------------------------------------------------------------------ M3 ---- */
 
 test('M3: line prices snapshot the list price and price variance reports both directions', async () => {

@@ -244,63 +244,184 @@
     ));
   }
 
+  function _productLabel(product) {
+    const name = String(product && product.name || 'منتج');
+    const code = String(product && product.itemCode || '').trim();
+    return code ? name + ' — ' + code : name;
+  }
+
+  function _variantLabel(variant) {
+    const dims = [variant && variant.size, variant && variant.color]
+      .filter(Boolean).join(' / ');
+    return dims || 'افتراضي';
+  }
+
+  function _variantOptionLabel(variant) {
+    const code = String(variant && variant.itemCode || '').trim();
+    const qty = Number(variant && variant.quantity) || 0;
+    return _variantLabel(variant) +
+      (code ? ' · ' + code : '') +
+      ' · متوفر: ' + qty;
+  }
+
+  /**
+   * v4 R1/R11: purchase entry searches the item catalogue by product name,
+   * item code or barcode — not by the size/colour variant list. A product can
+   * be created inline with Quick Add and is selected immediately as a line.
+   */
   function _addPurchase() {
     const supplierSelect = select([{ value: '', label: 'اختر المورد' }], '');
     BeeStore.api.suppliers.list().then(res => {
       if (res.ok) for (const s of res.data) supplierSelect.appendChild(el('option', { value: s.id }, s.name));
     });
 
-    const variantSelect = select([{ value: '', label: 'اختر الصنف' }], '');
-    BeeStore.api.variants.list().then(res => {
-      if (res.ok) for (const v of res.data) {
-        variantSelect.appendChild(el('option', { value: v.id }, v.size + ' / ' + v.color));
-      }
+    const productSearchInput = input('text', '', {
+      placeholder: 'ابحث باسم المنتج أو الرمز أو الباركود...',
+      autocomplete: 'off',
+      'aria-label': 'البحث عن منتج للشراء',
     });
+    const productStatus = el('p', { class: 'form-hint' }, 'لم يتم اختيار منتج بعد');
+    const productResults = el('div', { class: 'search-results', id: 'purchase-product-results' });
+    const newProductBtn = el('button', {
+      class: 'btn btn-sm btn-secondary',
+      type: 'button',
+      onclick: () => _quickAddForPurchase(productSearchInput, selectProduct),
+    }, '+ منتج جديد');
 
+    const variantSelect = select([{ value: '', label: 'اختر المنتج أولاً' }], '');
+    variantSelect.disabled = true;
     const qtyInput = input('number', '1', { min: 1 });
     const costInput = input('number', '', { min: 0, step: 0.01, placeholder: 'سعر الشراء' });
-
-    // Receiving: scan the supplier label → select the variant + prefill cost.
-    let scannedVariant = null;
-    const selectVariant = (v) => {
-      if (!v) return;
-      const exists = Array.prototype.some.call(variantSelect.options, (o) => o.value === v.id);
-      if (!exists) variantSelect.appendChild(el('option', { value: v.id }, v.size + ' / ' + v.color));
-      variantSelect.value = v.id;
-      if (!costInput.value) costInput.value = ((v.costMinor || 0) / 100).toFixed(2);
-    };
-    const variantScanBtn = BeeStore.scanner.scanButton(() => selectVariant(scannedVariant), {
-      label: 'مسح',
-      title: 'مسح صنف المشتريات',
-      validate: async (code) => {
-        const v = await BeeStore.scanning.lookupVariant(BeeStore.api, code);
-        if (!v) {
-          toast('باركود غير موجود: ' + code, 'error', {
-            actionText: 'إضافة صنف',
-            duration: 12000,
-            onAction: () => {
-              const products = BeeStore.pages && BeeStore.pages.products;
-              if (products && typeof products.openAddVariant === 'function') {
-                products.openAddVariant({
-                  barcode: code,
-                  onSaved: (created) => { selectVariant(created); toast('تمت إضافة الصنف واختياره'); },
-                });
-              }
-            },
-          });
-          return { ok: false, message: 'باركود غير موجود' };
-        }
-        scannedVariant = v;
-        return { ok: true, label: v.size + ' / ' + v.color };
-      },
-    });
     const paymentInput = input('number', '0', { min: 0, step: 0.01, placeholder: 'المدفوع' });
     const dateInput = input('date', BeeStore.dates.today());
+
+    let selectedProduct = null;
+    let selectedVariant = null;
+    let variantsById = {};
+    let searchTimer = null;
+    let searchToken = 0;
+
+    function applyVariant(variant) {
+      selectedVariant = variant || null;
+      if (!variant) return;
+      const cost = Number(variant.costMinor) || 0;
+      costInput.value = cost > 0 ? (cost / 100).toFixed(2) : '';
+    }
+
+    async function selectProduct(product, preferredVariantId) {
+      if (!product) return;
+      selectedProduct = product;
+      selectedVariant = null;
+      variantsById = {};
+      productStatus.textContent = 'المنتج المحدد: ' + _productLabel(product);
+      productSearchInput.value = product.name || '';
+      productResults.innerHTML = '';
+      variantSelect.disabled = true;
+      variantSelect.innerHTML = '';
+      variantSelect.appendChild(el('option', { value: '' }, 'جارٍ تحميل الأصناف...'));
+
+      const res = await BeeStore.api.products.getWithVariants(product.id);
+      // A slower request must not overwrite a newer product selection.
+      if (selectedProduct !== product) return;
+      const variants = res.ok && res.data && Array.isArray(res.data.variants)
+        ? res.data.variants.filter(v => v.active !== false)
+        : [];
+      variantSelect.innerHTML = '';
+      if (variants.length === 0) {
+        variantSelect.appendChild(el('option', { value: '' }, 'لا توجد أصناف لهذا المنتج'));
+        toast('لا توجد أصناف لهذا المنتج. أضف صنفاً من صفحة المنتجات.', 'error');
+        return;
+      }
+      for (const v of variants) {
+        variantsById[v.id] = v;
+        variantSelect.appendChild(el('option', { value: v.id }, _variantOptionLabel(v)));
+      }
+      variantSelect.disabled = false;
+      const chosen = variants.find(v => v.id === preferredVariantId) ||
+        variants.find(v => v.id === product.defaultVariantId) || variants[0];
+      variantSelect.value = chosen.id;
+      applyVariant(chosen);
+    }
+
+    variantSelect.addEventListener('change', () => {
+      applyVariant(variantsById[variantSelect.value]);
+    });
+
+    function renderProductResults(products) {
+      productResults.innerHTML = '';
+      if (!products.length) {
+        productResults.appendChild(el('p', { class: 'empty-state' }, 'لا توجد منتجات مطابقة.'));
+        return;
+      }
+      for (const p of products) {
+        productResults.appendChild(el('button', {
+          class: 'search-result-item',
+          type: 'button',
+          onclick: () => selectProduct(p),
+        }, [
+          el('span', { class: 'search-result-name' }, p.name || 'منتج'),
+          el('span', { class: 'search-result-meta' },
+            'الرمز: ' + (p.itemCode || '—') +
+            (p.hasVariants ? ' · له أصناف متعددة' : ' · صنف افتراضي')),
+        ]));
+      }
+    }
+
+    async function loadProducts(query) {
+      const token = ++searchToken;
+      const res = query
+        ? await BeeStore.api.products.search(query)
+        : await BeeStore.api.products.list();
+      if (token !== searchToken) return;
+      if (!res.ok) { toast(res.error.message, 'error'); return; }
+      const products = res.data
+        .filter(p => p && p.active !== false)
+        .slice(0, 10);
+      renderProductResults(products);
+    }
+
+    productSearchInput.addEventListener('input', () => {
+      if (searchTimer) clearTimeout(searchTimer);
+      searchTimer = setTimeout(() => loadProducts(productSearchInput.value.trim()), 150);
+    });
+    productSearchInput.addEventListener('keydown', (e) => {
+      if (e.key !== 'Enter') return;
+      e.preventDefault();
+      const first = productResults.querySelector('button.search-result-item');
+      if (first) first.click();
+    });
+
+    const productScanBtn = BeeStore.scanner.scanButton(async (code) => {
+      const variant = await BeeStore.scanning.lookupVariant(BeeStore.api, code);
+      if (!variant) {
+        toast('باركود غير موجود: ' + code, 'error', {
+          actionText: 'إضافة منتج',
+          duration: 12000,
+          onAction: () => _quickAddForPurchase(productSearchInput, selectProduct, code),
+        });
+        return;
+      }
+      const productRes = await BeeStore.api.products.get(variant.productId);
+      if (!productRes.ok || !productRes.data) {
+        toast('تعذّر العثور على المنتج', 'error');
+        return;
+      }
+      await selectProduct(productRes.data, variant.id);
+      toast('تم اختيار ' + _productLabel(productRes.data) + ' — ' + _variantLabel(variant));
+    }, { label: 'مسح', title: 'مسح منتج المشتريات' });
+
+    loadProducts('');
 
     const { overlay } = BeeStore.dialogs.openDialog('فاتورة مشتريات', [
       formField('التاريخ', dateInput, true),
       formField('المورد', supplierSelect, true),
-      formField('الصنف', variantSelect, true, null, variantScanBtn),
+      el('div', { class: 'form-group' }, [
+        el('label', { class: 'form-label' }, 'المنتج *'),
+        el('div', { class: 'field-with-action' }, [productSearchInput, productScanBtn, newProductBtn]),
+        productStatus,
+        productResults,
+      ]),
+      formField('الصنف / الوحدة', variantSelect, true),
       formField('الكمية', qtyInput, true),
       formField('سعر الشراء', costInput, true),
       formField('المدفوع', paymentInput),
@@ -308,17 +429,19 @@
         class: 'btn btn-primary',
         onclick: async () => {
           if (!supplierSelect.value) { toast('اختر المورد', 'error'); return; }
-          if (!variantSelect.value) { toast('اختر الصنف', 'error'); return; }
+          if (!selectedProduct) { toast('اختر المنتج', 'error'); return; }
+          if (!variantSelect.value || !selectedVariant) { toast('اختر الصنف', 'error'); return; }
           const qty = Number(qtyInput.value) || 0;
           if (qty <= 0) { toast('أدخل كمية صحيحة', 'error'); return; }
           const cost = BeeStore.money.fromMajor(costInput.value);
+          if (!(cost >= 0)) { toast('أدخل سعر شراء صحيحاً', 'error'); return; }
           const paid = BeeStore.money.fromMajor(paymentInput.value);
           const supplierName = supplierSelect.selectedIndex >= 0 ? supplierSelect.options[supplierSelect.selectedIndex].text : '';
           const res = await BeeStore.api.purchases.create({
             date: dateInput.value || BeeStore.dates.today(),
             supplierId: supplierSelect.value,
             supplierName,
-            lines: [{ variantId: variantSelect.value, qty, unitCostMinor: cost }],
+            lines: [{ variantId: selectedVariant.id, qty, unitCostMinor: cost }],
             payments: paid > 0 ? [{ method: 'cash', amountMinor: paid }] : [],
           });
           if (res.ok) { toast('تم حفظ المشتريات'); overlay.remove(); render(document.getElementById('page-content')); }
@@ -326,6 +449,29 @@
         },
       }, 'حفظ'),
     ]);
+  }
+
+  /** Opens Quick Add from the purchase dialog and selects the new item. */
+  function _quickAddForPurchase(searchInput, selectProduct, barcode) {
+    const productsPage = BeeStore.pages && BeeStore.pages.products;
+    if (!productsPage || typeof productsPage.quickAdd !== 'function') {
+      toast('صفحة المنتجات غير متاحة', 'error');
+      return;
+    }
+    if (BeeStore.auth && BeeStore.auth.isCashier()) {
+      toast('إضافة منتج جديد تتطلب صلاحية المالك', 'error');
+      return;
+    }
+    productsPage.quickAdd({
+      barcode: barcode || '',
+      title: 'منتج جديد من فاتورة المشتريات',
+      onSaved: async (data) => {
+        if (!data || !data.product) return;
+        if (searchInput) searchInput.value = data.product.name || '';
+        await selectProduct(data.product, data.variant && data.variant.id);
+        toast('تمت إضافة المنتج واختياره');
+      },
+    });
   }
 
   function _voidPurchase(id, number) {

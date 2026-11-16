@@ -1,0 +1,290 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="UTF-8">
+  <title>BeeStore POS Held Invoices UI Tests</title>
+  <style>
+    body { font-family: monospace; padding: 16px; }
+    .pass { color: #15803d; }
+    .fail { color: #b91c1c; white-space: pre-wrap; }
+    #test-page { margin-top: 12px; }
+  </style>
+</head>
+<body>
+  <h1>BeeStore POS Held Invoices UI Tests</h1>
+  <p>تعليق أكثر من فاتورة، الاستئناف، الحفظ، البقاء بعد إعادة الرسم، والحذف.</p>
+  <div id="results"></div>
+  <div id="test-page"><div id="page-content"></div></div>
+
+  <script src="../js/core/namespace.js"></script>
+  <script src="../js/core/config.js"></script>
+  <script src="../js/core/money.js"></script>
+  <script src="../js/core/dates.js"></script>
+  <script src="../js/core/ids.js"></script>
+  <script src="../js/core/validate.js"></script>
+  <script src="../js/core/errors.js"></script>
+  <script src="../js/core/chartSeed.js"></script>
+  <script src="../js/storage/repository.js"></script>
+  <script src="../js/storage/summary.js"></script>
+  <script src="../js/storage/memoryRepository.js"></script>
+  <script src="../js/services/settings.js"></script>
+  <script src="../js/services/audit.js"></script>
+  <script src="../js/services/accounts.js"></script>
+  <script src="../js/services/chartOfAccounts.js"></script>
+  <script src="../js/services/categories.js"></script>
+  <script src="../js/services/products.js"></script>
+  <script src="../js/services/variants.js"></script>
+  <script src="../js/services/stock.js"></script>
+  <script src="../js/services/sales.js"></script>
+  <script src="../js/services/customers.js"></script>
+  <script src="../js/services/returns.js"></script>
+  <script src="../js/services/purchases.js"></script>
+  <script src="../js/services/purchaseReturns.js"></script>
+  <script src="../js/services/suppliers.js"></script>
+  <script src="../js/services/expenses.js"></script>
+  <script src="../js/services/payroll.js"></script>
+  <script src="../js/services/employees.js"></script>
+  <script src="../js/services/transactions.js"></script>
+  <script src="../js/services/periods.js"></script>
+  <script src="../js/services/journal.js"></script>
+  <script src="../js/services/posting.js"></script>
+  <script src="../js/services/dailyClosing.js"></script>
+  <script src="../js/services/reports.js"></script>
+  <script src="../js/services/dashboard.js"></script>
+  <script src="../js/services/backup.js"></script>
+  <script src="../js/services/maintenance.js"></script>
+  <script src="../js/services/scan.js"></script>
+  <script src="../js/services/posDrafts.js"></script>
+  <script src="../js/api/api.js"></script>
+  <script src="../js/ui/components.js"></script>
+  <script src="../js/ui/dialogs.js"></script>
+  <script src="../js/ui/period.js"></script>
+  <script src="../js/ui/scanner.js"></script>
+  <script src="../js/pages/pos.js"></script>
+  <script>
+    const results = document.getElementById('results');
+    const state = { passed: 0, failed: 0, tests: [] };
+    const pageErrors = [];
+
+    function report(ok, name, detail) {
+      state.tests.push({ name, ok, detail: detail || '' });
+      const div = document.createElement('div');
+      div.className = ok ? 'pass' : 'fail';
+      div.textContent = (ok ? '✓ ' : '✗ ') + name + (detail ? ': ' + detail : '');
+      results.appendChild(div);
+      if (ok) state.passed++; else state.failed++;
+      window.__testResults = state;
+    }
+
+    async function test(name, fn) {
+      try {
+        const detail = await fn();
+        report(true, name, detail ? String(detail) : '');
+      } catch (e) {
+        report(false, name, (e && e.message) || String(e));
+      }
+    }
+
+    function assert(cond, msg) {
+      if (!cond) throw new Error(msg || 'Assertion failed');
+    }
+
+    function wait(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+    async function waitFor(fn, label, timeout) {
+      const deadline = Date.now() + (timeout || 6000);
+      let last = null;
+      while (Date.now() < deadline) {
+        try {
+          const value = await fn();
+          if (value) return value;
+        } catch (e) { last = e; }
+        await wait(40);
+      }
+      throw new Error('انتهت المهلة: ' + label + (last ? ' — ' + last.message : ''));
+    }
+
+    function cartRows() {
+      return Array.from(document.querySelectorAll('#pos-cart tbody tr'));
+    }
+
+    function heldChips() {
+      return Array.from(document.querySelectorAll('#pos-held .pos-held-item'));
+    }
+
+    function heldTitles() {
+      return heldChips().map(c => (c.querySelector('.pos-held-title').textContent || '').trim());
+    }
+
+    function buttonByText(root, text) {
+      return Array.from(root.querySelectorAll('button'))
+        .find(b => (b.textContent || '').trim() === text) || null;
+    }
+
+    function customerSelect() {
+      return document.querySelector('select[aria-label="اختر الزبون"]');
+    }
+
+    async function addByBarcode(code, productName) {
+      const input = document.getElementById('pos-barcode');
+      input.value = code;
+      input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+      await waitFor(() => cartRows().some(r => (r.textContent || '').indexOf(productName) >= 0),
+        'إضافة ' + productName);
+    }
+
+    async function hold() {
+      const before = heldChips().length;
+      const btn = buttonByText(document.querySelector('.pos-actions'), 'تعليق (F8)');
+      assert(btn, 'زر التعليق غير موجود');
+      btn.click();
+      await waitFor(() => heldChips().length === before + 1, 'ظهور الفاتورة المعلّقة');
+    }
+
+    async function chooseCustomer(customer) {
+      const select = customerSelect();
+      assert(select, 'قائمة الزبائن غير موجودة');
+      select.value = customer.id;
+      select.dispatchEvent(new Event('change', { bubbles: true }));
+      await waitFor(() => select.value === customer.id, 'اختيار الزبون');
+    }
+
+    async function boot() {
+      window.addEventListener('error', e => pageErrors.push('error: ' + (e.message || '')));
+      window.addEventListener('unhandledrejection', e => {
+        pageErrors.push('rejection: ' + ((e.reason && e.reason.message) || String(e.reason)));
+      });
+
+      const BeeStore = window.BeeStore;
+      const repo = new BeeStore.MemoryRepository();
+      await repo.open();
+      const api = new BeeStore.Api(repo);
+      BeeStore.repo = repo;
+      BeeStore.api = api;
+
+      localStorage.clear();
+      const today = BeeStore.dates.today();
+      assert((await api.settings.save({
+        systemStartDate: today,
+        blockFutureDates: true,
+      })).ok, 'settings');
+      await BeeStore.settings.ensureDefaults();
+      await BeeStore.chart.ensureSeeded();
+
+      const first = (await api.products.quickAdd({
+        name: 'قميص أزرق',
+        barcode: '6281000000017',
+        costMinor: 500,
+        priceMinor: 1000,
+        openingQuantity: 10,
+        date: today,
+      })).data;
+      const second = (await api.products.quickAdd({
+        name: 'بنطال رمادي',
+        barcode: '6281000000024',
+        costMinor: 800,
+        priceMinor: 2000,
+        openingQuantity: 10,
+        date: today,
+      })).data;
+      const ahmed = (await api.customers.create({ name: 'أحمد' })).data;
+      const sara = (await api.customers.create({ name: 'سارة' })).data;
+
+      const page = document.getElementById('page-content');
+      await BeeStore.pages.pos.render(page);
+      return { BeeStore, api, page, first, second, ahmed, sara, today };
+    }
+
+    (async function run() {
+      let env;
+      try {
+        env = await boot();
+        const { BeeStore, api, page, first, second, ahmed, sara } = env;
+
+        await test('holding an invoice opens a clean invoice for the next customer', async () => {
+          await addByBarcode(first.variant.barcode, first.product.name);
+          assert(cartRows().length === 1, 'السلة يجب أن تحتوي صنفاً واحداً');
+          await hold();
+          assert(cartRows().length === 0, 'السلة لم تُفرّغ بعد التعليق');
+          assert(heldTitles().join('|').indexOf('زبون نقدي') >= 0, 'عنوان الفاتورة المعلّقة غير ظاهر');
+          assert(localStorage.getItem('beestore.posDrafts.v1:owner'), 'الفاتورة لم تُحفظ محلياً');
+
+          await addByBarcode(second.variant.barcode, second.product.name);
+          await chooseCustomer(ahmed);
+          await hold();
+          assert(cartRows().length === 0, 'السلة لم تُفرّغ بعد التعليق الثاني');
+          const titles = heldTitles();
+          assert(titles.length === 2, 'يجب أن تظهر فاتورتان معلّقتان');
+          assert(titles.indexOf('أحمد') >= 0, 'اسم زبون الفاتورة الثانية غير ظاهر');
+        });
+
+        await test('resuming a held invoice auto-parks the current one', async () => {
+          await addByBarcode(first.variant.barcode, first.product.name);
+          await chooseCustomer(sara);
+          const chip = heldChips().find(c =>
+            (c.querySelector('.pos-held-title').textContent || '').trim() === 'أحمد');
+          assert(chip, 'فاتورة أحمد غير موجودة في الشريط');
+          chip.querySelector('.pos-held-main').click();
+          await waitFor(() => cartRows().some(r =>
+            (r.textContent || '').indexOf(second.product.name) >= 0), 'استعادة سلة أحمد');
+          assert(customerSelect().value === ahmed.id, 'زبون الفاتورة المستعادة غير صحيح');
+          assert(cartRows().length === 1, 'السلة المستعادة يجب أن تحتوي صنفاً واحداً');
+          await waitFor(() => heldTitles().indexOf('سارة') >= 0, 'حفظ فاتورة سارة تلقائياً');
+          assert(heldTitles().indexOf('أحمد') < 0, 'الفاتورة النشطة يجب أن تختفي من الشريط');
+        });
+
+        await test('saving a resumed invoice removes its held snapshot', async () => {
+          const save = buttonByText(document.querySelector('.pos-actions'), 'حفظ الفاتورة (Ctrl+Enter)');
+          assert(save, 'زر الحفظ غير موجود');
+          save.click();
+          await waitFor(async () => {
+            const res = await api.sales.list();
+            return res.ok && res.data.length === 1;
+          }, 'حفظ الفاتورة');
+          const sales = (await api.sales.list()).data;
+          assert(sales[0].customerId === ahmed.id, 'الفاتورة المحفوظة لزبون مختلف');
+          await waitFor(() => cartRows().length === 0, 'تفريغ السلة بعد الحفظ');
+          await waitFor(() => heldTitles().indexOf('أحمد') < 0, 'إزالة نسخة الفاتورة المحفوظة');
+          const titles = heldTitles();
+          assert(titles.length === 2, 'يجب أن تبقى فاتورتا سارة والزبون النقدي');
+          assert(titles.indexOf('سارة') >= 0, 'فاتورة سارة المعلّقة اختفت');
+        });
+
+        await test('held invoices survive a POS re-render', async () => {
+          await BeeStore.pages.pos.render(page);
+          await waitFor(() => heldTitles().indexOf('سارة') >= 0, 'ظهور الفاتورة المعلّقة بعد إعادة الرسم');
+          const chip = heldChips().find(c =>
+            (c.querySelector('.pos-held-title').textContent || '').trim() === 'سارة');
+          chip.querySelector('.pos-held-main').click();
+          await waitFor(() => cartRows().some(r =>
+            (r.textContent || '').indexOf(first.product.name) >= 0), 'استعادة فاتورة سارة');
+          assert(customerSelect().value === sara.id, 'زبون سارة غير مستعاد');
+        });
+
+        await test('deleting a held invoice clears its local snapshot', async () => {
+          await hold();
+          assert(heldTitles().indexOf('سارة') >= 0, 'الفاتورة لم تعد إلى الشريط بعد التعليق');
+          while (heldChips().length > 0) {
+            const before = heldChips().length;
+            heldChips()[0].querySelector('.pos-held-remove').click();
+            const overlay = await waitFor(() => document.querySelector('.dialog-overlay'), 'حوار تأكيد الحذف');
+            const confirm = buttonByText(overlay, 'تأكيد');
+            assert(confirm, 'زر التأكيد غير موجود');
+            confirm.click();
+            await waitFor(() => heldChips().length === before - 1, 'حذف الفاتورة المعلّقة');
+          }
+          assert(!localStorage.getItem('beestore.posDrafts.v1:owner') ||
+            JSON.parse(localStorage.getItem('beestore.posDrafts.v1:owner')).length === 0,
+            'نسخة الفاتورة ما زالت في التخزين المحلي');
+        });
+
+        await test('no page errors during the flow', async () => {
+          assert(pageErrors.length === 0, pageErrors.join('\n'));
+        });
+      } catch (e) {
+        report(false, 'boot', (e && e.message) || String(e));
+      }
+    })();
+  </script>
+</body>
+</html>

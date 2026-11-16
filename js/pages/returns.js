@@ -61,6 +61,22 @@
     await _load();
   }
 
+  /**
+   * Quick-action route (`/returns/direct`): show the returns page and open the
+   * invoice-less return dialog immediately. After saving, go back to the
+   * regular returns list so the route and page title stay in sync.
+   */
+  async function renderDirect(container) {
+    await render(container);
+    if (!container.isConnected) return;
+    await _showUnlinkedReturnForm({
+      afterSave: () => {
+        if (BeeStore.router) BeeStore.router.navigate('/returns');
+      },
+      shouldOpen: () => container.isConnected,
+    });
+  }
+
   function _renderList(container, returns) {
     container.innerHTML = '';
     if (returns.length === 0) {
@@ -225,6 +241,7 @@
     }, { label: 'مسح' });
 
     const customersRes = await BeeStore.api.customers.list();
+    if (typeof options.shouldOpen === 'function' && !options.shouldOpen()) return;
     const customerSelect = select([{ value: '', label: 'بدون زبون' }], '');
     if (customersRes.ok) {
       for (const c of customersRes.data) {
@@ -233,7 +250,7 @@
     }
     const dateInput = input('date', options.date || BeeStore.dates.today());
     const reasonInput = input('text', '', {
-      placeholder: 'سبب المرتجع (مطلوب)',
+      placeholder: 'سبب المرتجع (اختياري)',
     });
     const refundMode = select([
       { value: 'cash_refund', label: 'استرداد نقدي' },
@@ -254,7 +271,7 @@
 
     const { overlay } = BeeStore.dialogs.openDialog('مرتجع بدون فاتورة', [
       el('p', { class: 'alert alert-warning' },
-        'بدون فاتورة: السعر الافتراضي هو سعر القائمة، وتكلفة الإرجاع تُحسب بمتوسط التكلفة الحالي. السبب مطلوب.'),
+        'بدون فاتورة: السعر الافتراضي هو سعر القائمة، وتكلفة الإرجاع تُحسب بمتوسط التكلفة الحالي. السبب اختياري.'),
       el('div', { class: 'form-group' }, [
         el('label', { class: 'form-label' }, 'إضافة صنف'),
         el('div', { class: 'field-with-action' }, [searchInput, scanBtn]),
@@ -262,17 +279,13 @@
       ]),
       itemsDiv,
       formField('التاريخ', dateInput, true),
-      formField('السبب', reasonInput, true),
+      formField('السبب', reasonInput),
       formField('الزبون (اختياري)', customerSelect),
       formField('طريقة الاسترداد', refundMode),
       accountField,
       el('button', {
         class: 'btn btn-primary',
         onclick: async () => {
-          if (!reasonInput.value.trim()) {
-            toast('سبب المرتجع مطلوب', 'error');
-            return;
-          }
           if (items.length === 0) {
             toast('أضف صنفاً واحداً على الأقل', 'error');
             return;
@@ -312,7 +325,8 @@
           if (res.ok) {
             toast('تم إنشاء المرتجع بدون فاتورة');
             overlay.remove();
-            render(document.getElementById('page-content'));
+            if (typeof options.afterSave === 'function') options.afterSave();
+            else render(document.getElementById('page-content'));
           } else toast(res.error.message, 'error');
         },
       }, 'حفظ'),
@@ -340,7 +354,7 @@
     });
     lines.forEach(row => linesDiv.appendChild(row));
 
-    const reasonInput = input('text', '', { placeholder: 'السبب' });
+    const reasonInput = input('text', '', { placeholder: 'السبب (اختياري)' });
     const dateInput = input('date', BeeStore.dates.today());
     const refundMode = select([
       { value: 'cash_refund', label: 'استرداد نقدي' },
@@ -486,6 +500,6 @@
   }
 
   BeeStore.pages = BeeStore.pages || {};
-  BeeStore.pages.returns = { render };
-  if (typeof module !== 'undefined') module.exports = { render };
+  BeeStore.pages.returns = { render, renderDirect };
+  if (typeof module !== 'undefined') module.exports = { render, renderDirect };
 })(typeof window !== 'undefined' ? window : globalThis);

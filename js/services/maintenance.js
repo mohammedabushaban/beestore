@@ -31,6 +31,27 @@
     return Math.max(0, (Number(nowMs) - time) / (24 * 60 * 60 * 1000));
   }
 
+  // Initial-stock corrections are entered through «تعديل الكمية» with this
+  // reason. They change inventory value but their offset belongs to opening
+  // equity (3030), not to stock P&L (5020/5030).
+  const EQUITY_CORRECTION_NOTE = 'تصحيح';
+
+  function trackedValue(movement) {
+    if (!movement) return 0;
+    if (movement.valueChangeMinor != null) {
+      return roundMinor(movement.valueChangeMinor);
+    }
+    const qty = Number(movement.qtyChange) || 0;
+    const unit = movement.avgCostAfterMinor != null
+      ? Number(movement.avgCostAfterMinor) : (Number(movement.unitCostMinor) || 0);
+    return roundMinor(qty * unit);
+  }
+
+  function isEquityCorrectionType(movement) {
+    return !!movement &&
+      (movement.type === 'adjustment' || movement.type === 'stocktake');
+  }
+
   class MaintenanceService {
     constructor(repo) {
       this.repo = repo;
@@ -57,6 +78,186 @@
         }
         return updates;
       });
+    }
+
+    /**
+     * Read-only preview of initial-stock corrections that still sit in stock
+     * P&L. By default it selects adjustment/stocktake movements whose reason
+     * is «تصحيح»; pass {movementIds:[...]} to target explicit records.
+     * @param {object} [options] {movementIds?:string[],note?:string}
+     * @returns {Promise<object>} candidates, already reclassified, totals
+     */
+    async previewStockEquityReclassification(options) {
+      options = options || {};
+      const selectedIds = Array.isArray(options.movementIds)
+        ? new Set(options.movementIds.map(String)) : null;
+      const note = options.note != null
+        ? String(options.note).trim() : EQUITY_CORRECTION_NOTE;
+      const [movements, variants, products, journalEntries] = await Promise.all([
+        this.repo.list('stockMovements'),
+        this.repo.list('variants'),
+        this.repo.list('products'),
+        this.repo.list('journalEntries'),
+      ]);
+      const variantMap = new Map(variants.map(v => [v.id, v]));
+      const productMap = new Map(products.map(p => [p.id, p]));
+      const entriesBySource = new Map();
+      for (const entry of journalEntries) {
+        if (!entry || !entry.sourceId) continue;
+        const key = String(entry.sourceType || '') + '\u0000' + String(entry.sourceId);
+        const list = entriesBySource.get(key) || [];
+        list.push(entry);
+        entriesBySource.set(key, list);
+      }
+      const activeEntries = (movement) => {
+        const all = [];
+        for (const sourceType of ['STOCK_ADJUSTMENT', 'REVALUATION', 'STOCK_EQUITY_RECLASS']) {
+          const rows = entriesBySource.get(sourceType + '\u0000' + movement.id) || [];
+          for (const row of rows) all.push(row);
+        }
+        const reversed = new Set(all.filter(e => e.reversalOf).map(e => e.reversalOf));
+        return all.filter(e => !e.reversalOf && !reversed.has(e.id));
+      };
+      const describe = (movement) => {
+        const variant = variantMap.get(movement.variantId);
+        const product = variant ? productMap.get(variant.productId) : null;
+        const active = activeEntries(movement);
+        const hasReclass = active.some(e => e.event === 'STOCK_EQUITY_RECLASS');
+        const hasOriginal = active.some(e => e.event !== 'STOCK_EQUITY_RECLASS');
+        return {
+          id: movement.id,
+          date: movement.date,
+          type: movement.type,
+          variantId: movement.variantId,
+          itemCode: (variant && variant.itemCode) || (product && product.itemCode) || '',
+          productName: (product && product.name) || '',
+          size: (variant && variant.size) || '',
+          color: (variant && variant.color) || '',
+          qtyChange: Number(movement.qtyChange) || 0,
+          valueChangeMinor: trackedValue(movement),
+          note: movement.note || '',
+          journalState: hasReclass ? 'reclassified' : (hasOriginal ? 'posted' : 'unposted'),
+          journalNumbers: active.map(e => e.number).filter(Boolean),
+        };
+      };
+
+      const candidates = [];
+      const already = [];
+      let totalMinor = 0;
+      let alreadyMinor = 0;
+      for (const movement of movements) {
+        if (!isEquityCorrectionType(movement)) continue;
+        const flagged = movement.pnlTreatment === 'equity';
+        const selected = selectedIds
+          ? selectedIds.has(String(movement.id))
+          : String(movement.note || '').trim() === note;
+        if (!flagged && !selected) continue;
+        const value = trackedValue(movement);
+        if (!flagged && value === 0) continue;
+        const row = describe(movement);
+        if (flagged) {
+          already.push(row);
+          alreadyMinor += value;
+        } else {
+          candidates.push(row);
+          totalMinor += value;
+        }
+      }
+      candidates.sort((a, b) => String(a.date).localeCompare(String(b.date)) ||
+        String(a.id).localeCompare(String(b.id)));
+      already.sort((a, b) => String(a.date).localeCompare(String(b.date)) ||
+        String(a.id).localeCompare(String(b.id)));
+      return {
+        note,
+        candidates,
+        already,
+        count: candidates.length,
+        totalMinor,
+        alreadyCount: already.length,
+        alreadyMinor,
+      };
+    }
+
+    /**
+     * Reclassifies initial-stock corrections from stock P&L to opening equity.
+     * The journal stays append-only: a balanced reclassification entry is
+     * appended for already-posted movements, and the movement is flagged
+     * pnlTreatment='equity' so every report route excludes it. Idempotent.
+     * @param {object} [options] {movementIds?:string[],note?:string}
+     * @returns {Promise<object>} applied/skipped rows and the net amount
+     */
+    async reclassifyStockEquity(options) {
+      options = options || {};
+      if (!BeeStore.posting || !BeeStore.posting.available() ||
+        !BeeStore.journal || !BeeStore.journal.activeForSourceTx) {
+        throw BeeStore.errors.err('VALIDATION', 'خدمة الترحيل المحاسبي غير محمّلة');
+      }
+      const selectedIds = Array.isArray(options.movementIds)
+        ? new Set(options.movementIds.map(String)) : null;
+      const note = options.note != null
+        ? String(options.note).trim() : EQUITY_CORRECTION_NOTE;
+      const applied = [];
+      const skipped = [];
+      let totalMinor = 0;
+
+      await this.repo.transaction(async (tx) => {
+        const movements = await tx.list('stockMovements');
+        for (const movement of movements) {
+          if (!isEquityCorrectionType(movement)) continue;
+          const selected = selectedIds
+            ? selectedIds.has(String(movement.id))
+            : String(movement.note || '').trim() === note;
+          if (!selected) continue;
+          if (movement.pnlTreatment === 'equity') {
+            skipped.push({ id: movement.id, reason: 'already' });
+            continue;
+          }
+          const value = trackedValue(movement);
+          if (value === 0) {
+            skipped.push({ id: movement.id, reason: 'zero' });
+            continue;
+          }
+
+          let original = [];
+          let reclass = [];
+          for (const sourceType of ['STOCK_ADJUSTMENT', 'REVALUATION', 'STOCK_EQUITY_RECLASS']) {
+            const active = await BeeStore.journal.activeForSourceTx(tx, sourceType, movement.id);
+            for (const entry of active) {
+              if (entry.event === 'STOCK_EQUITY_RECLASS') reclass.push(entry);
+              else original.push(entry);
+            }
+          }
+
+          let entry = null;
+          if (reclass.length === 0) {
+            entry = original.length > 0
+              ? await BeeStore.posting.stockEquityReclass(tx, movement, value)
+              : await BeeStore.posting.stockEquityAdjustment(tx, movement, value, {
+                replay: true,
+              });
+            if (entry) BeeStore.posting.link(movement, entry);
+          }
+
+          movement.pnlTreatment = 'equity';
+          movement.equityReclassifiedAt = BeeStore.dates.now();
+          const reclassEntry = reclass[0] || entry;
+          if (reclassEntry) movement.equityReclassEntryId = reclassEntry.id;
+          tx.put('stockMovements', movement);
+
+          applied.push({
+            id: movement.id,
+            valueChangeMinor: value,
+            entryNumber: reclassEntry ? reclassEntry.number : null,
+          });
+          totalMinor += value;
+        }
+      });
+
+      if (BeeStore.audit && applied.length > 0) {
+        BeeStore.audit.record('stock_equity_reclass', 'stock', null,
+          'تصنيف ' + applied.length + ' تسوية مخزون كرصيد افتتاحي بمقدار ' + totalMinor);
+      }
+      return { applied, skipped, totalMinor, count: applied.length };
     }
 
     async resetAll() {

@@ -282,8 +282,18 @@
       const target = e.target && e.target.closest ? e.target.closest('[data-route]') : null;
       if (!target) return;
       if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+      const route = target.getAttribute('data-route');
+      // Quick actions (e.g. «مرتجع بدون فاتورة») re-run their page when the
+      // user is already on it, so the dialog opens again. Do not stack
+      // dialogs when one is already open.
+      if (target.hasAttribute('data-reroute') &&
+          BeeStore.router.currentRoute === route) {
+        e.preventDefault();
+        if (!document.querySelector('.dialog-overlay')) BeeStore.router.rerender();
+        return;
+      }
       e.preventDefault();
-      BeeStore.router.navigate(target.getAttribute('data-route'));
+      BeeStore.router.navigate(route);
     });
   }
 
@@ -295,6 +305,7 @@
       '/pos': { title: 'فاتورة جديدة', render: BeeStore.pages.pos.render },
       '/invoices': { title: 'الفواتير', render: BeeStore.pages.invoices.render },
       '/returns': { title: 'المرتجعات والاستبدال', render: BeeStore.pages.returns.render },
+      '/returns/direct': { title: 'مرتجع بدون فاتورة', render: BeeStore.pages.returns.renderDirect },
       '/products': { title: 'المنتجات والمخزون', render: BeeStore.pages.products.render },
       '/stocktake': { title: 'جرد المخزون', render: BeeStore.pages.stocktake.render },
       '/price-check': { title: 'فحص سعر', render: BeeStore.pages.priceCheck.render },

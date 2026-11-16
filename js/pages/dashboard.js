@@ -52,7 +52,9 @@
       const cards = el('div', { class: 'cards-grid' }, [
         _card('مبيعات اليوم', formatMoney(d.today.revenue), d.today.invoiceCount + ' فاتورة', '💰'),
         _card('مبيعات الشهر', formatMoney(d.month.revenue), prev ? 'الشهر الماضي: ' + formatMoney(prev.netSales) + arrow(d.month.revenue, prev.netSales) : '', '📈'),
-        _card('صافي ربح الشهر', formatMoney(d.month.netProfit), (d.month.netProfit >= 0 ? '📊' : '📉') + (prev ? arrow(d.month.netProfit, prev.netProfit) : '')),
+        _card('ربح المبيعات', formatMoney(d.month.salesProfit), 'بعد المصاريف التشغيلية — قبل الفروقات', '🧾'),
+        _card('فروقات مخزون/صندوق', formatMoney(d.month.gains), d.month.gains === 0 ? 'لا توجد فروقات هذا الشهر' : 'تُضاف إلى ربح المبيعات', '⚖️'),
+        _card('صافي ربح الشهر', formatMoney(d.month.netProfit), 'ربح المبيعات + الفروقات', (d.month.netProfit >= 0 ? '📊' : '📉') + (prev ? arrow(d.month.netProfit, prev.netProfit) : '')),
         _card('مخزون (تكلفة)', formatMoney(d.inventory.cost), '', '📦'),
         _card('مخزون (بيع)', formatMoney(d.inventory.retail), '', '🏷️'),
         _card('ذمم الزبائن', formatMoney(d.receivablesTotal), '', '👥'),
@@ -60,6 +62,8 @@
         _card('أصناف منخفضة', String(d.lowStockCount), d.lowStockCount > 0 ? '⚠️ تحتاج مراجعة' : '', '📉'),
       ]);
       container.appendChild(cards);
+      container.appendChild(el('p', { class: 'form-hint' },
+        'الفرق بين «صافي ربح الشهر» و«ربح المبيعات» هو صافي فروقات المخزون والجرد وإعادة التقييم وزيادة/عجز الصندوق وبيع الأصول. لا تُحسب هذه الفروقات ضمن ربح المبيعات.'));
     });
 
     // v3-Lite §6: the phone is the only live copy; show backup freshness on

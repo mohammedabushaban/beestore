@@ -59,6 +59,10 @@
       const monthRevenue = pnl.netSales;
       const monthGrossProfit = pnl.grossProfit;
       const monthExpensesTotal = pnl.operatingExpenses;
+      const monthSalesProfit = pnl.salesProfit != null
+        ? pnl.salesProfit
+        : pnl.grossProfit + (pnl.otherIncome || 0) - (pnl.expensesBeforeGains || 0);
+      const monthGains = pnl.gains || 0;
       const monthNetProfit = pnl.netProfit;
 
       let inventoryCost = 0;
@@ -128,6 +132,8 @@
           revenue: monthRevenue,
           grossProfit: monthGrossProfit,
           expenses: monthExpensesTotal,
+          salesProfit: monthSalesProfit,
+          gains: monthGains,
           netProfit: monthNetProfit,
         },
         balances: accountBalances,

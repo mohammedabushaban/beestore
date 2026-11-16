@@ -492,14 +492,24 @@
       case 'stockMovements': {
         const qty = Number(doc.qtyChange) || 0;
         const unitCost = Number(doc.unitCostMinor) || 0;
+        const trackedValue = doc.valueChangeMinor != null
+          ? Number(doc.valueChangeMinor) || 0
+          : qty * (doc.avgCostAfterMinor != null ? Number(doc.avgCostAfterMinor) : unitCost);
         if (doc.type === 'opening' && monthBucket) {
-          const openingValue = doc.valueChangeMinor != null
-            ? Number(doc.valueChangeMinor) || 0
-            : qty * (doc.avgCostAfterMinor != null ? Number(doc.avgCostAfterMinor) : unitCost);
-          monthBucket.openingInventory += openingValue;
-          if (dayBucket) dayBucket.openingInventory += openingValue;
+          monthBucket.openingInventory += trackedValue;
+          if (dayBucket) dayBucket.openingInventory += trackedValue;
         }
-        if (monthBucket) {
+        // An equity correction is an initial-stock fix entered through the
+        // quantity editor. It still changes inventory value, but its offset is
+        // opening equity (3030), not P&L (5020/5030). Keeping it in
+        // openingInventory makes the document balance sheet match the journal.
+        const equityCorrection = doc.pnlTreatment === 'equity' &&
+          (doc.type === 'adjustment' || doc.type === 'stocktake' ||
+            doc.type === 'revaluation');
+        if (monthBucket && equityCorrection) {
+          monthBucket.openingInventory += trackedValue;
+          if (dayBucket) dayBucket.openingInventory += trackedValue;
+        } else if (monthBucket) {
           if (doc.type === 'adjustment' || doc.type === 'stocktake') {
             if (doc.valueChangeMinor != null) {
               // A3 aligns the derived P&L with 5020: a count gain is a
@@ -656,6 +666,35 @@
   }
 
   /**
+   * Split the signed operating-expense line into its gross expense part and
+   * the surplus/gain part that reduces it. The signed total stays exactly the
+   * same; the split is presentation-only and keeps every reporting route in
+   * agreement.
+   * @param {Object} parts expense/P&L components
+   * @returns {{expensesBeforeGains:number,gains:number,operatingExpenses:number}}
+   */
+  function expenseSplit(parts) {
+    parts = parts || {};
+    const n = (v) => Number(v) || 0;
+    const stockLosses = n(parts.stockLosses);
+    const stockRevaluation = n(parts.stockRevaluation);
+    const cashDifference = n(parts.cashDifference);
+    const base = n(parts.expensesTotal) + n(parts.salaryExpense) +
+      n(parts.employerExpense) + n(parts.endOfServiceExpense) +
+      n(parts.depreciationExpense) + n(parts.assetSaleLoss) + n(parts.cardFees);
+    const expensesBeforeGains = base +
+      Math.max(stockLosses, 0) + Math.max(stockRevaluation, 0) +
+      Math.max(-cashDifference, 0);
+    const gains = n(parts.assetSaleGain) + Math.max(cashDifference, 0) +
+      Math.max(-stockLosses, 0) + Math.max(-stockRevaluation, 0);
+    return {
+      expensesBeforeGains,
+      gains,
+      operatingExpenses: expensesBeforeGains - gains,
+    };
+  }
+
+  /**
    * P&L totals for whole months from the materialized buckets. The result
    * mirrors ReportsService.profitAndLoss for a full-month range.
    */
@@ -690,15 +729,21 @@
     const grossProfit = netSales - cogs;
     // Shortage (negative) increases operating expenses; surplus (positive)
     // reduces them. `cashDifference` keeps its signed form for the report.
-    const operatingExpenses = expensesTotal + salaryExpense + employerExpense +
-      endOfServiceExpense + depreciationExpense + assetSaleLoss - assetSaleGain +
-      stockLosses + stockRevaluation + cardFees - cashDifference;
+    const split = expenseSplit({
+      expensesTotal, salaryExpense, employerExpense, endOfServiceExpense,
+      depreciationExpense, assetSaleLoss, assetSaleGain,
+      stockLosses, stockRevaluation, cardFees, cashDifference,
+    });
+    const operatingExpenses = split.operatingExpenses;
+    const salesProfit = grossProfit + otherIncome - split.expensesBeforeGains;
     return {
       netSales, cogs, grossProfit,
       margin: netSales > 0 ? (grossProfit / netSales * 100).toFixed(1) : '0.0',
       operatingExpenses, salaryExpense, employerExpense, endOfServiceExpense,
       depreciationExpense, assetSaleGain, assetSaleLoss,
       stockLosses, stockRevaluation, cardFees, cashDifference, otherIncome,
+      expensesBeforeGains: split.expensesBeforeGains, gains: split.gains,
+      salesProfit,
       expensesByCategory,
       netProfit: grossProfit + otherIncome - operatingExpenses,
     };
@@ -809,6 +854,7 @@
     apply,
     compute,
     pnlRange,
+    expenseSplit,
     monthKeys,
     accountBalanceAt,
     accountFlowTypes,

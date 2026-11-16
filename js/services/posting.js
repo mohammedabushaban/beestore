@@ -48,6 +48,7 @@
     OPENING_SUPPLIER: 'OPENING_SUPPLIER',
     OPENING_STOCK: 'OPENING_STOCK',
     STOCK_ADJUSTMENT: 'STOCK_ADJUSTMENT',
+    STOCK_EQUITY_RECLASS: 'STOCK_EQUITY_RECLASS',
     REVALUATION: 'REVALUATION',
   };
 
@@ -71,6 +72,7 @@
     CASH_ADJUSTMENT: 'CASH_ADJUSTMENT',
     OPENING: 'OPENING',
     STOCK_ADJUSTMENT: 'STOCK_ADJUSTMENT',
+    STOCK_EQUITY_RECLASS: 'STOCK_EQUITY_RECLASS',
     REVALUATION: 'REVALUATION',
   };
 
@@ -548,6 +550,11 @@
     async stockAdjustment(tx, movement, valueChangeMinor, options) {
       const delta = round(valueChangeMinor);
       if (delta === 0) return null;
+      // A movement explicitly classified as an initial-stock correction is an
+      // equity transaction (owner contribution), not a P&L gain/loss.
+      if (movement && movement.pnlTreatment === 'equity') {
+        return this.stockEquityAdjustment(tx, movement, delta, options);
+      }
       return this.postParts(tx, {
         date: movement.date,
         sourceType: SOURCE.STOCK_ADJUSTMENT,
@@ -559,6 +566,62 @@
         parts: delta > 0
           ? [{ key: 'inventory', debit: delta }, { key: 'inventory_loss', credit: delta }]
           : [{ key: 'inventory_loss', debit: -delta }, { key: 'inventory', credit: -delta }],
+      });
+    }
+
+    /**
+     * Initial-stock correction posted directly to equity:
+     * gain Dr 1200 / Cr 3030, loss Dr 3030 / Cr 1200.
+     * @param {object} tx active transaction
+     * @param {object} movement stock movement flagged pnlTreatment=equity
+     * @param {number} valueChangeMinor signed tracked-value change
+     * @param {object} [options] {replay}
+     * @returns {Promise<object|null>} entry
+     */
+    async stockEquityAdjustment(tx, movement, valueChangeMinor, options) {
+      const delta = round(valueChangeMinor);
+      if (delta === 0) return null;
+      return this.postParts(tx, {
+        date: movement.date,
+        sourceType: SOURCE.STOCK_ADJUSTMENT,
+        sourceId: movement.id,
+        event: EVENTS.STOCK_ADJUSTMENT,
+        description: (movement.type === 'stocktake' ? 'جرد مخزون ' : 'تصحيح مخزون افتتاحي ') +
+          movement.date,
+        allowClosedDay: true,
+        replay: options && options.replay,
+        parts: delta > 0
+          ? [{ key: 'inventory', debit: delta }, { key: 'opening_equity', credit: delta }]
+          : [{ key: 'opening_equity', debit: -delta }, { key: 'inventory', credit: -delta }],
+      });
+    }
+
+    /**
+     * Reclassifies an already-posted adjustment/count from P&L to opening
+     * equity without editing the append-only original entry:
+     * gain Dr 5020 / Cr 3030, loss Dr 3030 / Cr 5020.
+     * @param {object} tx active transaction
+     * @param {object} movement stock movement
+     * @param {number} valueChangeMinor signed tracked-value change
+     * @param {object} [options] {replay}
+     * @returns {Promise<object|null>} reclassification entry
+     */
+    async stockEquityReclass(tx, movement, valueChangeMinor, options) {
+      const delta = round(valueChangeMinor);
+      if (delta === 0) return null;
+      return this.postParts(tx, {
+        date: movement.date,
+        sourceType: SOURCE.STOCK_EQUITY_RECLASS,
+        sourceId: movement.id,
+        event: EVENTS.STOCK_EQUITY_RECLASS,
+        description: 'تصنيف تسوية مخزون كرصيد افتتاحي ' + movement.date,
+        allowClosedDay: true,
+        // This is a controlled repair that may touch a closed month; the
+        // preview/confirm tool is the only caller.
+        replay: true,
+        parts: delta > 0
+          ? [{ key: 'inventory_loss', debit: delta }, { key: 'opening_equity', credit: delta }]
+          : [{ key: 'opening_equity', debit: -delta }, { key: 'inventory_loss', credit: -delta }],
       });
     }
 

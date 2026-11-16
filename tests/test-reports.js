@@ -165,11 +165,20 @@ test('V2 dashboard month figures match P&L', async () => {
     assert.strictEqual(dash.month.revenue, pnl.netSales);
     assert.strictEqual(dash.month.grossProfit, pnl.grossProfit);
     assert.strictEqual(dash.month.expenses, pnl.operatingExpenses);
+    assert.strictEqual(dash.month.salesProfit, pnl.salesProfit);
+    assert.strictEqual(dash.month.gains, pnl.gains);
     assert.strictEqual(dash.month.netProfit, pnl.netProfit);
+    assert.strictEqual(pnl.salesProfit, pnl.grossProfit - pnl.expensesBeforeGains);
+    assert.strictEqual(pnl.netProfit, pnl.salesProfit + pnl.gains);
     // A3: the 10-unit stock gain is a negative 5020 expense (-10,000), so
     // operating expenses = insurance share 10,000 + salary 6,000 - gain 10,000.
     assert.strictEqual(pnl.stockLosses, -10000);
+    assert.strictEqual(pnl.expensesBeforeGains, 16000);
+    assert.strictEqual(pnl.gains, 10000);
     assert.strictEqual(dash.month.expenses, 6000, 'insurance 10000 + salary 6000 - stock gain 10000');
+    // Gross expenses stay positive for the "المصاريف" KPI even when gains
+    // make the signed operating-expenses line negative.
+    assert.strictEqual(pnl.operatingExpenses, pnl.expensesBeforeGains - pnl.gains);
   } finally {
     BeeStore.dates.resetClock();
   }

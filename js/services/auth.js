@@ -150,6 +150,7 @@
     'stock.movements',
     'sales.list', 'sales.get', 'sales.getByNumber', 'sales.searchForReturn',
     'sales.create', 'sales.printData',
+    'posDrafts.list', 'posDrafts.save', 'posDrafts.remove',
     'returns.list', 'returns.get', 'returns.create',
     'customers.list', 'customers.get', 'customers.balance', 'customers.statement',
     'customers.receivePayment', 'customers.overdueInstallments',

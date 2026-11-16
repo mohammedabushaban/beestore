@@ -2,7 +2,7 @@
   'use strict';
   const BeeStore = root.BeeStore || (root.BeeStore = {});
 
-  const CASHIER_ROUTES = new Set(['/', '/pos', '/invoices', '/returns', '/products', '/price-check', '/customers']);
+  const CASHIER_ROUTES = new Set(['/', '/pos', '/invoices', '/returns', '/returns/direct', '/products', '/price-check', '/customers']);
   const AWAY_LOCK_MS = 60 * 1000;
 
   class AppLock {

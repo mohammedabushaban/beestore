@@ -1,0 +1,229 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="UTF-8">
+  <title>BeeStore Quick Invoice-less Return UI Tests</title>
+  <style>
+    body { font-family: monospace; padding: 16px; }
+    .pass { color: #15803d; }
+    .fail { color: #b91c1c; white-space: pre-wrap; }
+    #test-page { margin-top: 12px; }
+  </style>
+</head>
+<body>
+  <h1>BeeStore Quick Invoice-less Return UI Tests</h1>
+  <p>فتح «مرتجع بدون فاتورة» مباشرة من مسار سريع، إعادة الفتح، والحفظ.</p>
+  <div id="results"></div>
+  <div id="test-page"></div>
+
+  <script src="../js/core/namespace.js"></script>
+  <script src="../js/core/config.js"></script>
+  <script src="../js/core/money.js"></script>
+  <script src="../js/core/dates.js"></script>
+  <script src="../js/core/ids.js"></script>
+  <script src="../js/core/validate.js"></script>
+  <script src="../js/core/errors.js"></script>
+  <script src="../js/core/chartSeed.js"></script>
+  <script src="../js/storage/repository.js"></script>
+  <script src="../js/storage/summary.js"></script>
+  <script src="../js/storage/memoryRepository.js"></script>
+  <script src="../js/services/settings.js"></script>
+  <script src="../js/services/audit.js"></script>
+  <script src="../js/services/accounts.js"></script>
+  <script src="../js/services/chartOfAccounts.js"></script>
+  <script src="../js/services/categories.js"></script>
+  <script src="../js/services/products.js"></script>
+  <script src="../js/services/variants.js"></script>
+  <script src="../js/services/stock.js"></script>
+  <script src="../js/services/sales.js"></script>
+  <script src="../js/services/customers.js"></script>
+  <script src="../js/services/returns.js"></script>
+  <script src="../js/services/purchases.js"></script>
+  <script src="../js/services/purchaseReturns.js"></script>
+  <script src="../js/services/suppliers.js"></script>
+  <script src="../js/services/expenses.js"></script>
+  <script src="../js/services/payroll.js"></script>
+  <script src="../js/services/employees.js"></script>
+  <script src="../js/services/transactions.js"></script>
+  <script src="../js/services/periods.js"></script>
+  <script src="../js/services/journal.js"></script>
+  <script src="../js/services/posting.js"></script>
+  <script src="../js/services/dailyClosing.js"></script>
+  <script src="../js/services/reports.js"></script>
+  <script src="../js/services/dashboard.js"></script>
+  <script src="../js/services/backup.js"></script>
+  <script src="../js/services/maintenance.js"></script>
+  <script src="../js/services/scan.js"></script>
+  <script src="../js/api/api.js"></script>
+  <script src="../js/ui/components.js"></script>
+  <script src="../js/ui/dialogs.js"></script>
+  <script src="../js/ui/journalView.js"></script>
+  <script src="../js/ui/scanner.js"></script>
+  <script src="../js/pages/returns.js"></script>
+  <script>
+    const results = document.getElementById('results');
+    const state = { passed: 0, failed: 0, tests: [] };
+    const pageErrors = [];
+
+    function report(ok, name, detail) {
+      state.tests.push({ name, ok, detail: detail || '' });
+      const div = document.createElement('div');
+      div.className = ok ? 'pass' : 'fail';
+      div.textContent = (ok ? '✓ ' : '✗ ') + name + (detail ? ': ' + detail : '');
+      results.appendChild(div);
+      if (ok) state.passed++; else state.failed++;
+      window.__testResults = state;
+    }
+
+    async function test(name, fn) {
+      try {
+        const detail = await fn();
+        report(true, name, detail ? String(detail) : '');
+      } catch (e) {
+        report(false, name, (e && e.message) || String(e));
+      }
+    }
+
+    function assert(cond, msg) {
+      if (!cond) throw new Error(msg || 'Assertion failed');
+    }
+
+    function wait(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+    async function waitFor(fn, label, timeout) {
+      const deadline = Date.now() + (timeout || 6000);
+      let last = null;
+      while (Date.now() < deadline) {
+        try {
+          const value = await fn();
+          if (value) return value;
+        } catch (e) { last = e; }
+        await wait(40);
+      }
+      throw new Error('انتهت المهلة: ' + label + (last ? ' — ' + last.message : ''));
+    }
+
+    function buttonByText(root, text) {
+      return Array.from(root.querySelectorAll('button'))
+        .find(b => (b.textContent || '').trim() === text) || null;
+    }
+
+    function newContainer() {
+      const container = document.createElement('div');
+      document.getElementById('test-page').appendChild(container);
+      return container;
+    }
+
+    let env;
+    let navCalls = [];
+
+    async function boot() {
+      window.addEventListener('error', e => pageErrors.push('error: ' + (e.message || '')));
+      window.addEventListener('unhandledrejection', e => {
+        pageErrors.push('rejection: ' + ((e.reason && e.reason.message) || String(e.reason)));
+      });
+
+      const BeeStore = window.BeeStore;
+      const repo = new BeeStore.MemoryRepository();
+      await repo.open();
+      const api = new BeeStore.Api(repo);
+      BeeStore.repo = repo;
+      BeeStore.api = api;
+
+      localStorage.clear();
+      const today = BeeStore.dates.today();
+      assert((await api.settings.save({
+        systemStartDate: today,
+        blockFutureDates: true,
+      })).ok, 'settings');
+      await BeeStore.settings.ensureDefaults();
+      await BeeStore.chart.ensureSeeded();
+
+      const product = (await api.products.quickAdd({
+        name: 'قميص أزرق',
+        barcode: '6281000000017',
+        costMinor: 500,
+        priceMinor: 1000,
+        openingQuantity: 5,
+        date: today,
+      })).data;
+
+      BeeStore.router = {
+        currentRoute: '/returns/direct',
+        navigate: (path) => { navCalls.push(path); },
+        rerender: () => {},
+      };
+      return { BeeStore, api, product, today };
+    }
+
+    async function openDirect() {
+      const container = newContainer();
+      await env.BeeStore.pages.returns.renderDirect(container);
+      const overlay = await waitFor(() => document.querySelector('.dialog-overlay'), 'حوار المرتجع المباشر');
+      return { container, overlay };
+    }
+
+    (async function run() {
+      try {
+        env = await boot();
+        const { BeeStore, api, product } = env;
+
+        await test('the direct route renders returns and opens the invoice-less dialog', async () => {
+          const { container, overlay } = await openDirect();
+          assert((overlay.textContent || '').indexOf('مرتجع بدون فاتورة') >= 0,
+            'حوار المرتجع بدون فاتورة لم يُفتح');
+          assert((container.textContent || '').indexOf('المرتجعات والاستبدال') >= 0,
+            'صفحة المرتجعات لم تُعرض');
+          assert((overlay.textContent || '').indexOf('السبب اختياري') >= 0,
+            'تنبيه المرتجع بدون فاتورة غير ظاهر');
+          overlay.querySelector('.btn-close').click();
+          await waitFor(() => !document.querySelector('.dialog-overlay'), 'إغلاق الحوار');
+        });
+
+        await test('the quick route re-opens a fresh dialog after closing', async () => {
+          const { overlay } = await openDirect();
+          assert((overlay.textContent || '').indexOf('مرتجع بدون فاتورة') >= 0,
+            'الحوار لم يُفتح مرة أخرى');
+          overlay.querySelector('.btn-close').click();
+          await waitFor(() => !document.querySelector('.dialog-overlay'), 'إغلاق الحوار');
+        });
+
+        await test('saving a direct return with only an item and date persists it and returns to the list', async () => {
+          navCalls = [];
+          const { overlay } = await openDirect();
+          const search = overlay.querySelector('input[placeholder^="باركود أو اسم الصنف"]');
+          assert(search, 'حقل إضافة الصنف غير موجود');
+          search.value = product.variant.barcode;
+          search.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+          await waitFor(() => overlay.querySelector('.return-line'), 'إضافة الصنف');
+
+          const reason = overlay.querySelector('input[placeholder="سبب المرتجع (اختياري)"]');
+          assert(reason, 'حقل السبب غير موجود');
+          assert(reason.value === '', 'السبب يجب أن يكون فارغاً واختيارياً');
+
+          const save = buttonByText(overlay, 'حفظ');
+          assert(save, 'زر الحفظ غير موجود');
+          save.click();
+
+          await waitFor(async () => {
+            const res = await api.returns.list();
+            return res.ok && res.data.length === 1;
+          }, 'حفظ المرتجع');
+          const saved = (await api.returns.list()).data[0];
+          assert(saved.saleId === null, 'المرتجع يجب أن يكون بدون فاتورة');
+          assert(saved.reason === '', 'السبب يجب أن يبقى اختيارياً');
+          assert(saved.date === env.today, 'التاريخ يجب أن يكون اليوم افتراضياً');
+          await waitFor(() => navCalls.indexOf('/returns') >= 0, 'العودة لقائمة المرتجعات');
+          assert(!document.querySelector('.dialog-overlay'), 'الحوار لم يُغلق بعد الحفظ');
+        });
+
+        await test('no page errors during the flow', async () => {
+          assert(pageErrors.length === 0, pageErrors.join('\n'));
+        });
+      } catch (e) {
+        report(false, 'boot', (e && e.message) || String(e));
+      }
+    })();
+  </script>
+</body>
+</html>

@@ -82,15 +82,24 @@
         el('p', { class: 'form-hint' },
           'شراء البضاعة لا يُنقص ربح الشهر — بل يحوّل النقد إلى مخزون. ينقص الربح عند بيع البضاعة (تكلفة البضاعة المباعة).'),
       ]));
-      out.appendChild(el('div', { class: 'cards-grid' }, [
+      const kpiCards = [
         _stat('صافي المبيعات', formatMoney(k.netSales)),
         _stat('مجمل الربح (' + k.margin + '%)', formatMoney(k.grossProfit)),
-        _stat('المصاريف', formatMoney(k.expenses)),
+        _stat('إجمالي المصاريف', formatMoney(k.grossExpenses)),
+      ];
+      if (k.gains > 0) {
+        kpiCards.push(_stat('أرباح/فروقات (تُضاف للربح)', formatMoney(k.gains)));
+      }
+      kpiCards.push(
         _stat('صافي الربح', formatMoney(k.netProfit)),
         _stat('عدد الفواتير', String(k.invoices)),
         _stat('متوسط الفاتورة', formatMoney(k.avgInvoice)),
-        _stat('الوحدات المباعة', String(k.units)),
-      ]));
+        _stat('الوحدات المباعة', String(k.units))
+      );
+      out.appendChild(el('div', { class: 'cards-grid' }, kpiCards));
+      out.appendChild(el('p', { class: 'form-hint' },
+        'صافي الربح = ربح المبيعات (' + formatMoney(k.salesProfit) + ')' +
+        ' + أرباح/فروقات (' + formatMoney(k.gains) + ')'));
 
       // v3-Lite §4.6: days table + closed/unclosed counts + total differences.
       if (daysRes.ok) {
@@ -168,8 +177,11 @@
           el('tbody', {}, [
             pnlRow('صافي المبيعات', d.pnl.current.netSales, d.pnl.previous.netSales, d.pnl.lastYear.netSales, d.pnl.changePct.netSales),
             pnlRow('تكلفة البضاعة', d.pnl.current.cogs, d.pnl.previous.cogs, d.pnl.lastYear.cogs, null),
-            pnlRow('المصاريف التشغيلية', d.pnl.current.operatingExpenses, d.pnl.previous.operatingExpenses, d.pnl.lastYear.operatingExpenses, d.pnl.changePct.expenses),
-            pnlRow('  منها فروقات الصندوق', d.pnl.current.cashDifference, d.pnl.previous.cashDifference, d.pnl.lastYear.cashDifference, null),
+            pnlRow('إجمالي المصاريف', d.pnl.current.expensesBeforeGains, d.pnl.previous.expensesBeforeGains, d.pnl.lastYear.expensesBeforeGains, null),
+            pnlRow('أرباح/فروقات (تُخصم من المصاريف)', d.pnl.current.gains, d.pnl.previous.gains, d.pnl.lastYear.gains, null),
+            pnlRow('صافي المصاريف التشغيلية', d.pnl.current.operatingExpenses, d.pnl.previous.operatingExpenses, d.pnl.lastYear.operatingExpenses, d.pnl.changePct.expenses),
+            pnlRow('  منها فروقات الصندوق (عجز − / زيادة +)', d.pnl.current.cashDifference, d.pnl.previous.cashDifference, d.pnl.lastYear.cashDifference, null),
+            pnlRow('ربح المبيعات', d.pnl.current.salesProfit, d.pnl.previous.salesProfit, d.pnl.lastYear.salesProfit, null),
             pnlRow('صافي الربح', d.pnl.current.netProfit, d.pnl.previous.netProfit, d.pnl.lastYear.netProfit, d.pnl.changePct.netProfit),
           ]),
         ])),
@@ -183,7 +195,7 @@
         el('td', {}, 'الرواتب (تلقائي)'), el('td', {}, formatMoney(d.expenses.salary)), el('td', {}, '—'),
       ]));
       catRows.push(el('tr', { class: 'total-row' }, [
-        el('td', {}, 'خسائر مخزون (تلقائي)'), el('td', {}, formatMoney(d.expenses.stockLosses)), el('td', {}, '—'),
+        el('td', {}, 'فروقات مخزون (خسارة/ربح)'), el('td', {}, formatMoney(d.expenses.stockLosses)), el('td', {}, '—'),
       ]));
       out.appendChild(el('div', { class: 'card' }, [
         el('h4', {}, 'المصاريف حسب التصنيف (الحالي | السابق)'),
@@ -245,6 +257,14 @@
     if (n < 0) return 'عجز ' + formatMoney(-n);
     if (n > 0) return 'زيادة ' + formatMoney(n);
     return formatMoney(0);
+  }
+
+  // Expenses are shown in parentheses, but a negative net expense is income
+  // (a surplus/gain), so parentheses would read as a double negative.
+  function _expenseText(v) {
+    const n = Number(v) || 0;
+    if (n < 0) return 'دخل ' + formatMoney(-n);
+    return '(' + formatMoney(n) + ')';
   }
 
   // v2 §9.3 Profit ⇄ Cash reconciliation.
@@ -396,10 +416,13 @@
             el('tr', {}, [el('td', {}, 'تكلفة البضاعة المباعة'), el('td', {}, '(' + formatMoney(d.cogs) + ')')]),
             el('tr', { class: 'total-row' }, [el('td', {}, 'مجمل الربح'), el('td', {}, formatMoney(d.grossProfit))]),
             el('tr', {}, [el('td', {}, 'هامش الربح'), el('td', {}, d.margin + '%')]),
-            el('tr', {}, [el('td', {}, 'المصاريف التشغيلية'), el('td', {}, '(' + formatMoney(d.operatingExpenses) + ')')]),
-            el('tr', {}, [el('td', {}, '  - الرواتب'), el('td', {}, '(' + formatMoney(d.salaryExpense) + ')')]),
-            el('tr', {}, [el('td', {}, '  - خسائر المخزون'), el('td', {}, '(' + formatMoney(d.stockLosses) + ')')]),
+            el('tr', {}, [el('td', {}, 'إجمالي المصاريف (قبل الفروقات)'), el('td', {}, formatMoney(d.expensesBeforeGains))]),
+            el('tr', {}, [el('td', {}, 'أرباح/فروقات (تُضاف)'), el('td', {}, formatMoney(d.gains))]),
+            el('tr', {}, [el('td', {}, 'المصاريف التشغيلية (صافي)'), el('td', {}, _expenseText(d.operatingExpenses))]),
+            el('tr', {}, [el('td', {}, '  - الرواتب'), el('td', {}, _expenseText(d.salaryExpense))]),
+            el('tr', {}, [el('td', {}, '  - خسائر المخزون'), el('td', {}, _expenseText(d.stockLosses))]),
             el('tr', {}, [el('td', {}, '  - فروقات الصندوق (عجز/زيادة)'), el('td', {}, _cashDiffText(d.cashDifference))]),
+            el('tr', { class: 'total-row' }, [el('td', {}, 'ربح المبيعات'), el('td', {}, formatMoney(d.salesProfit))]),
             el('tr', { class: 'total-row' }, [el('td', {}, 'صافي الربح'), el('td', {}, formatMoney(d.netProfit))]),
           ]),
         ]),

@@ -109,9 +109,6 @@
         const unlinkedCount = data.lines.filter(line =>
           !sale || line.saleLineIndex === undefined || line.saleLineIndex === null ||
           line.saleLineIndex === '').length;
-        if (unlinkedCount > 0 && !String(data.reason || '').trim()) {
-          throw BeeStore.errors.err('INVALID', 'سبب المرتجع مطلوب للمرتجع بدون فاتورة');
-        }
         if (!sale && data.refundMode === 'exchange') {
           throw BeeStore.errors.err('INVALID', 'الاستبدال يتطلب ربط المرتجع بفاتورة');
         }

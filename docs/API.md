@@ -63,6 +63,10 @@ All methods return `{ ok: true, data: ... }` or `{ ok: false, error: { code, mes
 | `sales.create(data)` | `POST /api/sales` | Create sale (`clientKey` dedupes double-submits) |
 | `sales.void(id, reason)` | `POST /api/sales/:id/void` | Void sale |
 | `sales.printData(id)` | `GET /api/sales/:id/print` | Get print data |
+| `posDrafts.list()` | `GET /api/pos/drafts` | Held POS invoices for the active profile (device-local, not accounting documents) |
+| `posDrafts.save(draft)` | `POST /api/pos/drafts` | Park/update an in-progress invoice (`id` updates in place, max 20) |
+| `posDrafts.remove(id)` | `DELETE /api/pos/drafts/:id` | Discard one held invoice |
+| `posDrafts.clear()` | `DELETE /api/pos/drafts` | Discard all held invoices for the active profile |
 | `returns.list(filters)` | `GET /api/returns?from=&to=` | List returns (period-scoped by UI) |
 | `returns.get(id)` | `GET /api/returns/:id` | Get return |
 | `returns.create(data)` | `POST /api/returns` | Create return |
@@ -176,7 +180,7 @@ All methods return `{ ok: true, data: ... }` or `{ ok: false, error: { code, mes
 
 ## Local profiles and permissions (v3-Lite L5)
 
-`api.js` wraps every namespace and enforces an explicit **cashier allow-list**. The list covers sales/payment creation, product/variant/price reads, returns within `cashierMaxReturnMinor`, own-day summary, price check, and the minimum reads needed by those screens. Everything else is **owner-only**: reports, expenses, payroll, accounts, settings, backups, closings/reopen, voids, stock adjustments, product/price edits, audit, maintenance, the accountant package, and settlement creation/voiding. Cashiers may call the read-only `settlements.quote`/`overview` needed by the shared screen.
+`api.js` wraps every namespace and enforces an explicit **cashier allow-list**. The list covers sales/payment creation, held POS invoices (`posDrafts.list/save/remove`), product/variant/price reads, returns within `cashierMaxReturnMinor`, own-day summary, price check, and the minimum reads needed by those screens. Everything else is **owner-only**: reports, expenses, payroll, accounts, settings, backups, closings/reopen, voids, stock adjustments, product/price edits, audit, maintenance, the accountant package, and settlement creation/voiding. Cashiers may call the read-only `settlements.quote`/`overview` needed by the shared screen.
 
 - Cashier responses are stripped of `cost`, `unitCostMinor`, `profit`, `margin`, `cogs`, and related keys at every depth.
 - `settings.profiles` and all PIN hash fields never leave the facade; owner settings expose only `pinSet`.

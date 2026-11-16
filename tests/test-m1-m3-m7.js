@@ -340,29 +340,19 @@ test('M3: other-income excess posts to 4100, appears in P&L and is owner-only', 
 
 /* ------------------------------------------------------------------ M7 ---- */
 
-test('M7: invoice-less return needs a reason, restocks at current average cost and is auditable', async () => {
+test('M7: invoice-less return works without a reason, restocks at current average cost and is auditable', async () => {
   const { api } = await freshApi();
   const cash = await drawerWithCapital(api, 10000);
   const { variant } = await quickItem(api);
-
-  const missing = await api.returns.create({
-    saleId: null,
-    date: '2026-11-05',
-    lines: [{ variantId: variant.id, qty: 1 }],
-    refundMode: 'cash_refund',
-    refundPaymentMethod: 'cash',
-  });
-  assert.strictEqual(missing.ok, false);
-  assert.strictEqual(missing.error.code, 'INVALID');
 
   const ret = ok(await api.returns.create({
     saleId: null,
     date: '2026-11-05',
     lines: [{ variantId: variant.id, qty: 2, unitPriceMinor: 1000, restock: true }],
-    reason: 'زبون أصر على الإرجاع',
     refundMode: 'cash_refund',
     refundPaymentMethod: 'cash',
-  }), 'unlinked return');
+  }), 'unlinked return without a reason');
+  assert.strictEqual(ret.reason, '', 'reason is optional');
 
   assert.strictEqual(ret.saleId, null);
   assert.strictEqual(ret.mode, 'unlinked');

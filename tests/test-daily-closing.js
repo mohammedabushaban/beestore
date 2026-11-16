@@ -394,3 +394,45 @@ test('L4 external totals only warn and never post to the ledger', async () => {
     BeeStore.dates.resetClock();
   }
 });
+
+// §4.3: a cash surplus is income. It reduces the signed operating-expense
+// line (which may go negative) but must not make the gross expense KPI
+// negative; the split keeps both meanings separate.
+test('L4 cash surplus: gross expenses stay non-negative, gains explain the profit', async () => {
+  const api = await freshApi('2026-11-10');
+  try {
+    const base = await seedBase(api, '2026-11-01');
+    const day1 = await api.dailyClosings.close({
+      date: '2026-11-01', countedCashMinor: 20000,
+      takenOutMinor: 0, retainedFloatMinor: 20000,
+    });
+    assert.strictEqual(day1.ok, true, day1.ok ? '' : day1.error.message);
+    const day2 = await api.dailyClosings.close({
+      date: '2026-11-02', countedCashMinor: 22500,
+      takenOutMinor: 0, retainedFloatMinor: 22500,
+    });
+    assert.strictEqual(day2.ok, true, day2.ok ? '' : day2.error.message);
+    assert.strictEqual(day2.data.differenceMinor, 2500);
+
+    const pnl = (await api.reports.profitAndLoss('2026-11-01', '2026-11-30')).data;
+    const direct = (await api.reports.profitAndLoss('2026-11-01', '2026-11-30', { legacy: true })).data;
+    assert.strictEqual(pnl.cashDifference, 2500);
+    assert.strictEqual(pnl.gains, 2500);
+    assert.strictEqual(pnl.expensesBeforeGains, 0);
+    assert.strictEqual(pnl.operatingExpenses, -2500);
+    assert.strictEqual(pnl.netProfit, 2500);
+    assert.strictEqual(pnl.salesProfit, pnl.netProfit - pnl.gains,
+      'sales profit excludes the cash surplus');
+    assert.strictEqual(pnl.netProfit, pnl.salesProfit + pnl.gains);
+    assert.deepStrictEqual(pnl, direct, 'summary and document split agree');
+
+    const review = (await api.reports.monthReview('2026-11')).data;
+    assert.strictEqual(review.kpis.expenses, -2500, 'signed line stays backward-compatible');
+    assert.strictEqual(review.kpis.grossExpenses, 0, 'displayed expenses are non-negative');
+    assert.strictEqual(review.kpis.gains, 2500);
+    assert.strictEqual(review.kpis.salesProfit, pnl.salesProfit);
+    assert.strictEqual(review.kpis.netProfit, 2500);
+  } finally {
+    BeeStore.dates.resetClock();
+  }
+});

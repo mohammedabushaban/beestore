@@ -29,6 +29,11 @@
   // v2 §12.1.3: one key per invoice intent — double clicks/Enter echo safely.
   let pendingKey = null;
   let saving = false;
+  // Multiple invoices: the active invoice can be parked and resumed. Drafts
+  // live in localStorage via BeeStore.posDrafts, scoped to the profile.
+  let activeDraftId = null;
+  let heldDrafts = [];
+  let switching = false;
   const refs = {};
 
   function _newPendingKey() {
@@ -47,12 +52,18 @@
     discount = { type: 'amount', value: 0 };
     lastSaleId = null;
     saving = false;
+    activeDraftId = null;
+    heldDrafts = [];
+    switching = false;
     _newPendingKey();
     settings = await BeeStore.settings.get();
     for (const k of Object.keys(refs)) delete refs[k];
 
     container.innerHTML = '';
     container.appendChild(el('h2', { class: 'page-title' }, 'فاتورة جديدة'));
+
+    const heldHost = el('div', { id: 'pos-held', class: 'pos-held' });
+    container.appendChild(heldHost);
 
     const mainRow = el('div', { class: 'pos-layout' }, [
       _buildLeftPanel(),
@@ -61,6 +72,7 @@
     container.appendChild(mainRow);
 
     _setupKeyboardShortcuts();
+    await _refreshHeldDrafts();
     setTimeout(() => {
       const barcodeInput = document.getElementById('pos-barcode');
       if (barcodeInput) barcodeInput.focus();
@@ -168,17 +180,19 @@
     refs.payerNameInput = payerNameInput;
     payerNameInput.addEventListener('input', () => { payerName = payerNameInput.value; });
     const customerPhoneById = {};
-    BeeStore.api.customers.list().then(res => {
+    refs.customerPhoneById = customerPhoneById;
+    refs.customersReady = BeeStore.api.customers.list().then(res => {
       if (res.ok) {
         for (const c of res.data) {
           customerSelect.appendChild(el('option', { value: c.id }, c.name));
           if (c.phone) customerPhoneById[c.id] = c.phone;
         }
       }
-    });
+    }).catch(() => {});
     customerSelect.addEventListener('change', () => {
       customerId = customerSelect.value || null;
-      customerName = customerSelect.selectedOptions[0] ? customerSelect.selectedOptions[0].text : '';
+      customerName = customerId && customerSelect.selectedOptions[0]
+        ? customerSelect.selectedOptions[0].text : '';
       const cphone = customerId ? (customerPhoneById[customerId] || '') : '';
       if (cphone && !contactPhoneInput.value) { contactPhoneInput.value = cphone; contactPhone = cphone; }
       _updateTotals();
@@ -207,6 +221,12 @@
       'aria-label': 'حفظ الفاتورة (Ctrl+Enter)'
     }, 'حفظ الفاتورة (Ctrl+Enter)');
     refs.saveBtn = saveBtn;
+    const holdBtn = el('button', {
+      class: 'btn btn-secondary pos-hold-btn',
+      type: 'button',
+      onclick: () => _holdCurrentInvoice(),
+      'aria-label': 'تعليق الفاتورة وفتح فاتورة أخرى (F8)'
+    }, 'تعليق (F8)');
     const clearBtn = el('button', { 
       class: 'btn btn-secondary pos-clear-btn', 
       onclick: () => _clearCart(),
@@ -259,7 +279,7 @@
       ]),
       totalsDiv,
       overpaymentDiv,
-      el('div', { class: 'pos-actions', role: 'group', 'aria-label': 'إجراءات الفاتورة' }, [saveBtn, clearBtn, printBtn, shareBtn]),
+      el('div', { class: 'pos-actions', role: 'group', 'aria-label': 'إجراءات الفاتورة' }, [saveBtn, holdBtn, clearBtn, printBtn, shareBtn]),
     ]);
   }
 
@@ -288,6 +308,9 @@
       } else if (e.key === 'Enter' && e.ctrlKey) {
         e.preventDefault();
         _saveInvoice();
+      } else if (e.key === 'F8') {
+        e.preventDefault();
+        _holdCurrentInvoice();
       } else if (e.key === 'Escape') {
         const overlay = document.querySelector('.dialog-overlay');
         if (overlay) overlay.remove();
@@ -636,10 +659,247 @@
     _updateTotals();
   }
 
+  /** Snapshot of the active invoice for parking. */
+  function _currentDraftState() {
+    _recalcPayments();
+    const t = _computeTotals();
+    return {
+      clientKey: pendingKey,
+      date: (refs.dateInput && refs.dateInput.value) || BeeStore.dates.today(),
+      customerId,
+      customerName: customerId ? customerName : '',
+      contactPhone: ((refs.contactPhoneInput && refs.contactPhoneInput.value) || contactPhone || '').trim(),
+      payerName: ((refs.payerNameInput && refs.payerNameInput.value) || payerName || '').trim(),
+      discount: { type: discount.type, value: discount.value },
+      overpaymentMode,
+      payments: payments.map(p => ({ method: p.method, amountMinor: p.amountMinor })),
+      cart: cart.map(item => ({ ...item })),
+      totalMinor: t.total,
+    };
+  }
+
+  /**
+   * Saves the active invoice into the held list and clears the form. Used by
+   * the «تعليق» button/shortcut and automatically when another held invoice
+   * is resumed, so no cart is ever lost.
+   * @returns {Promise<boolean>} true when the draft was stored
+   */
+  async function _parkCurrentInvoice() {
+    const state = _currentDraftState();
+    const res = await BeeStore.api.posDrafts.save({
+      ...state,
+      id: activeDraftId || undefined,
+    });
+    if (!res.ok) {
+      toast(res.error.message, 'error');
+      return false;
+    }
+    _resetForm();
+    return true;
+  }
+
+  async function _holdCurrentInvoice() {
+    if (cart.length === 0) {
+      toast('أضف منتجات أولاً لتعليق الفاتورة', 'error');
+      return;
+    }
+    if (saving || switching) return;
+    switching = true;
+    try {
+      if (!(await _parkCurrentInvoice())) return;
+      await _refreshHeldDrafts();
+      toast('تم تعليق الفاتورة — يمكنك فتح فاتورة لزبون آخر');
+      const barcodeInput = document.getElementById('pos-barcode');
+      if (barcodeInput) barcodeInput.focus();
+    } finally {
+      switching = false;
+    }
+  }
+
+  async function _refreshHeldDrafts() {
+    const res = await BeeStore.api.posDrafts.list();
+    heldDrafts = res.ok && Array.isArray(res.data) ? res.data : [];
+    _renderHeldBar();
+  }
+
+  function _heldLabel(draft) {
+    return draft.customerId && draft.customerName ? draft.customerName : 'زبون نقدي';
+  }
+
+  function _renderHeldBar() {
+    const host = document.getElementById('pos-held');
+    if (!host) return;
+    host.innerHTML = '';
+    // The active invoice stays in storage as a safety snapshot but is hidden
+    // from the strip while it is open on screen.
+    const visible = heldDrafts.filter(draft =>
+      String(draft.id) !== String(activeDraftId || ''));
+    if (visible.length === 0) return;
+    const chips = visible.map(draft => el('div', { class: 'pos-held-item' }, [
+      el('button', {
+        class: 'pos-held-main',
+        type: 'button',
+        onclick: () => _resumeDraft(draft.id),
+        'aria-label': 'استئناف فاتورة ' + _heldLabel(draft),
+      }, [
+        el('span', { class: 'pos-held-title' }, _heldLabel(draft)),
+        el('span', { class: 'pos-held-meta' },
+          (draft.itemCount || 0) + ' قطعة • ' + formatMoney(draft.totalMinor || 0)),
+        el('span', { class: 'pos-held-meta' }, draft.date || ''),
+      ]),
+      el('button', {
+        class: 'pos-held-remove',
+        type: 'button',
+        title: 'حذف الفاتورة المعلّقة',
+        'aria-label': 'حذف فاتورة ' + _heldLabel(draft),
+        onclick: () => _removeHeldDraft(draft),
+      }, '×'),
+    ]));
+    host.appendChild(el('div', { class: 'card pos-held-card' }, [
+      el('div', { class: 'pos-held-head' }, [
+        el('h3', {}, 'فواتير معلّقة (' + visible.length + ')'),
+        el('span', { class: 'form-hint' },
+          'اضغط لاستئناف فاتورة — الفاتورة الحالية تُعلّق تلقائياً'),
+      ]),
+      el('div', { class: 'pos-held-list' }, chips),
+    ]));
+  }
+
+  async function _resumeDraft(id) {
+    if (saving || switching) return;
+    switching = true;
+    try {
+      const res = await BeeStore.api.posDrafts.list();
+      if (!res.ok) { toast(res.error.message, 'error'); return; }
+      const draft = (res.data || []).find(d => String(d.id) === String(id));
+      if (!draft) {
+        toast('الفاتورة المعلّقة غير موجودة', 'error');
+        await _refreshHeldDrafts();
+        return;
+      }
+      let parked = false;
+      if (cart.length > 0) {
+        if (!(await _parkCurrentInvoice())) return;
+        parked = true;
+      }
+      try {
+        await _applyDraftState(draft);
+      } catch (e) {
+        toast('تعذر فتح الفاتورة المعلّقة — ما زالت محفوظة', 'error');
+        await _refreshHeldDrafts();
+        return;
+      }
+      activeDraftId = draft.id;
+      pendingKey = draft.clientKey || _newPendingKey();
+      await _refreshHeldDrafts();
+      toast('تم استئناف الفاتورة — ' + _heldLabel(draft) +
+        (parked ? ' (وحُفظت الفاتورة السابقة في المعلّقة)' : ''));
+      const barcodeInput = document.getElementById('pos-barcode');
+      if (barcodeInput) barcodeInput.focus();
+    } finally {
+      switching = false;
+    }
+  }
+
+  function _removeHeldDraft(draft) {
+    confirmDialog('حذف فاتورة معلّقة',
+      'هل تريد حذف فاتورة «' + _heldLabel(draft) + '» بقيمة ' +
+      formatMoney(draft.totalMinor || 0) + '؟ لا يمكن التراجع.',
+      async () => {
+        const res = await BeeStore.api.posDrafts.remove(draft.id);
+        if (!res.ok) { toast(res.error.message, 'error'); return; }
+        await _refreshHeldDrafts();
+        toast('تم حذف الفاتورة المعلّقة');
+      });
+  }
+
+  async function _applyDraftState(draft) {
+    cart = (draft.cart || []).map(item => ({ ...item }));
+    customerId = draft.customerId || null;
+    customerName = customerId ? (draft.customerName || '') : '';
+    contactPhone = draft.contactPhone || '';
+    payerName = draft.payerName || '';
+    discount = {
+      type: draft.discount && draft.discount.type === 'percent' ? 'percent' : 'amount',
+      value: Number(draft.discount && draft.discount.value) || 0,
+    };
+    overpaymentMode = draft.overpaymentMode || 'change';
+
+    if (refs.customersReady) {
+      try { await refs.customersReady; } catch (e) { /* keep going */ }
+    }
+    if (refs.customerSelect) {
+      if (customerId) {
+        const option = Array.from(refs.customerSelect.options)
+          .find(o => o.value === customerId);
+        if (option) {
+          refs.customerSelect.value = customerId;
+          customerName = option.text;
+        } else {
+          customerId = null;
+          customerName = '';
+          toast('الزبون السابق لم يعد موجوداً — فُتحت الفاتورة كبيع نقدي', 'error');
+        }
+      } else {
+        refs.customerSelect.value = '';
+      }
+    }
+    if (refs.contactPhoneInput) refs.contactPhoneInput.value = contactPhone;
+    if (refs.payerNameInput) refs.payerNameInput.value = payerName;
+    if (refs.dateInput) {
+      refs.dateInput.value = draft.date || BeeStore.dates.today();
+      if (refs.dateNotice) refs.dateNotice.style.display = 'none';
+    }
+    if (refs.discountType) refs.discountType.value = discount.type;
+    if (refs.discountValue) refs.discountValue.value = String(discount.value || 0);
+    if (refs.paymentsDiv) {
+      refs.paymentsDiv.innerHTML = '';
+      for (const payment of (draft.payments || [])) {
+        const row = _addPayment(refs.paymentsDiv, { silent: true });
+        const methodSelect = row.querySelector('select');
+        if (Array.from(methodSelect.options).some(o => o.value === payment.method)) {
+          methodSelect.value = payment.method;
+        }
+        const amountInput = row.querySelector('input');
+        amountInput.value = ((Number(payment.amountMinor) || 0) / 100).toFixed(2);
+        // Keep the cashier's amount; the auto row must not overwrite it.
+        amountInput.setAttribute('data-manual', '1');
+      }
+      _recalcPayments();
+    }
+    await _refreshDraftStock(cart);
+    _renderCart();
+  }
+
+  /**
+   * Refreshes stock quantities for a resumed draft. Prices stay as the
+   * cashier left them; only availability hints change. Saving re-validates
+   * stock atomically in the sales service.
+   */
+  async function _refreshDraftStock(items) {
+    const missing = [];
+    await Promise.all(items.map(async (item) => {
+      try {
+        const res = await BeeStore.api.variants.get(item.variantId);
+        if (res.ok && res.data) item.stockQty = Number(res.data.quantity) || 0;
+        else missing.push(item.productName || item.variantId);
+      } catch (e) {
+        missing.push(item.productName || item.variantId);
+      }
+    }));
+    if (missing.length > 0) {
+      toast('بعض أصناف الفاتورة لم تعد موجودة: ' + missing.join('، '), 'error');
+    }
+    const over = items.filter(item => item.qty > (Number(item.stockQty) || 0));
+    if (over.length > 0 && !(settings && settings.allowNegativeStock)) {
+      toast('الكمية المتاحة تغيّرت لبعض الأصناف — راجع الفاتورة قبل الحفظ', 'error');
+    }
+  }
+
   async function _saveInvoice() {
     if (cart.length === 0) { toast('أضف منتجات أولاً', 'error'); return; }
     // v2 §12.1.3: ignore repeated clicks/Enter while the save is in flight.
-    if (saving) return;
+    if (saving || switching) return;
     saving = true;
     if (refs.saveBtn) refs.saveBtn.disabled = true;
     try {
@@ -673,12 +933,21 @@
     const res = await BeeStore.api.sales.create(data);
     if (res.ok) {
       lastSaleId = res.data.id;
+      // A resumed draft is now a real invoice: drop its local snapshot.
+      const savedDraftId = activeDraftId;
+      if (savedDraftId) {
+        const removed = await BeeStore.api.posDrafts.remove(savedDraftId);
+        if (!removed.ok) {
+          toast('تم حفظ الفاتورة، لكن تعذر حذف نسختها المعلّقة', 'error');
+        }
+      }
       toast(res.data.duplicate ? 'الفاتورة محفوظة مسبقاً (تم تجاهل التكرار)' : 'تم حفظ الفاتورة بنجاح');
       const printBtn = document.getElementById('pos-print-btn');
       if (printBtn) printBtn.style.display = 'inline-block';
       const shareBtn = document.getElementById('pos-share-btn');
       if (shareBtn) shareBtn.style.display = 'inline-block';
       _resetForm();
+      await _refreshHeldDrafts();
     } else {
       toast(res.error.message, 'error');
     }
@@ -697,6 +966,7 @@
     customerName = '';
     contactPhone = '';
     payerName = '';
+    activeDraftId = null;
     _newPendingKey();
     if (refs.dateInput) {
       if (BeeStore.period) BeeStore.period.applyDefaultDate(refs.dateInput, refs.dateNotice);
@@ -715,9 +985,19 @@
 
   function _clearCart() {
     if (cart.length === 0) { toast('الفاتورة فارغة', 'error'); return; }
-    confirmDialog('مسح الفاتورة', 'هل تريد مسح جميع العناصر؟', () => {
-      _resetForm();
-    });
+    const draftId = activeDraftId;
+    confirmDialog('مسح الفاتورة',
+      draftId
+        ? 'هل تريد مسح جميع العناصر وحذف نسخة الفاتورة المعلّقة؟'
+        : 'هل تريد مسح جميع العناصر؟',
+      async () => {
+        if (draftId) {
+          const res = await BeeStore.api.posDrafts.remove(draftId);
+          if (!res.ok) toast(res.error.message, 'error');
+        }
+        _resetForm();
+        await _refreshHeldDrafts();
+      });
   }
 
   function _printLastInvoice() {

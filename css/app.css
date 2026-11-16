@@ -945,7 +945,55 @@ textarea:focus {
 .pos-actions { display: flex; gap: 9px; margin-top: 16px; flex-wrap: wrap; }
 .pos-search-card .form-group { flex: 1; min-width: 140px; }
 .pos-save-btn { flex: 1; }
-.pos-clear-btn, .pos-print-btn { flex: 0 0 auto; }
+.pos-clear-btn, .pos-print-btn, .pos-hold-btn { flex: 0 0 auto; }
+
+/* Multiple held invoices (F8): a compact strip above the POS layout. */
+.pos-held:empty { display: none; }
+.pos-held-card { padding: 14px 16px; }
+.pos-held-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 10px;
+}
+.pos-held-head h3 { margin: 0; font-size: 1rem; }
+.pos-held-list { display: flex; gap: 8px; flex-wrap: wrap; }
+.pos-held-item {
+  display: flex;
+  align-items: stretch;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+  background: var(--surface-muted);
+}
+.pos-held-main {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  align-items: flex-start;
+  border: 0;
+  background: transparent;
+  padding: 8px 12px;
+  cursor: pointer;
+  text-align: start;
+  font: inherit;
+  color: var(--text);
+}
+.pos-held-main:hover, .pos-held-main:focus-visible { background: var(--amber-50); }
+.pos-held-title { font-weight: 700; font-size: 0.9rem; }
+.pos-held-meta { font-size: 0.75rem; color: var(--text-light); }
+.pos-held-remove {
+  border: 0;
+  border-inline-start: 1px solid var(--border);
+  background: transparent;
+  color: var(--danger);
+  cursor: pointer;
+  padding: 0 11px;
+  font-size: 1.1rem;
+}
+.pos-held-remove:hover { background: var(--danger-soft); }
 
 .total-row {
   display: flex;

@@ -120,6 +120,9 @@
       if (reads.has(method)) return false;
       // Safety operations must remain usable while the clock is unconfirmed.
       if (ns === 'backup' || ns === 'security') return false;
+      // Parking/resuming an invoice is local working state; a clock warning
+      // must not throw away the cashier's cart.
+      if (ns === 'posDrafts') return false;
       // The accountant package is a read-only export; a clock warning must
       // not stop the owner from taking a package before fixing the date.
       if (ns === 'accountingPackage') return false;
@@ -348,6 +351,15 @@
       printData: async (id) => ok(await BeeStore.sales.printData(id)),
     };
 
+    // Device-local held invoices for the POS. Not accounting documents: no
+    // repository, journal or backup involvement.
+    posDrafts = {
+      list: async () => ok(BeeStore.posDrafts.list()),
+      save: async (draft) => ok(BeeStore.posDrafts.save(draft)),
+      remove: async (id) => ok(BeeStore.posDrafts.remove(id)),
+      clear: async () => ok(BeeStore.posDrafts.clear()),
+    };
+
     returns = {
       list: async (filters) => ok(await BeeStore.returns.list(filters)),
       get: async (id) => ok(await BeeStore.returns.get(id)),
@@ -542,6 +554,10 @@
 
     maintenance = {
       recalculateStock: async () => ok(await BeeStore.maintenance.recalculateStock()),
+      previewStockEquityReclassification: async (options) =>
+        ok(await BeeStore.maintenance.previewStockEquityReclassification(options)),
+      reclassifyStockEquity: async (options) =>
+        ok(await BeeStore.maintenance.reclassifyStockEquity(options)),
       integrityCheck: async () => ok(await BeeStore.maintenance.integrityCheck()),
       resetAll: async () => ok(await BeeStore.maintenance.resetAll()),
       isDatabaseEmpty: async () => ok(await BeeStore.maintenance.isDatabaseEmpty()),

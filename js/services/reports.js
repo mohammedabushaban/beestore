@@ -99,6 +99,10 @@
       let stockLosses = 0;
       let stockRevaluation = 0;
       for (const m of stockMovements) {
+        // Equity corrections are initial-stock fixes, not P&L gains/losses.
+        // The journal route moves them from 5020/5030 to 3030, so the
+        // document route must exclude them for parity.
+        if (m.pnlTreatment === 'equity') continue;
         if (m.type === 'adjustment' || m.type === 'stocktake') {
           if (m.valueChangeMinor != null) {
             // A3 aligns the derived P&L with 5020: a shortage is an expense
@@ -151,11 +155,15 @@
       if (cardFees) expensesByCategory['عمولات البطاقات والمحافظ'] = cardFees;
       // v3-Lite §4.3: shortages increase operating expenses, surpluses reduce
       // them. The signed line is returned for the Day/Period reports.
-      const operatingExpenses = singleTotal + salaryExpense + employerExpense +
-        endOfServiceExpense + depreciationExpense + assetSaleLoss - assetSaleGain +
-        stockLosses + stockRevaluation + cardFees - cashDifference;
+      const split = BeeStore.summary.expenseSplit({
+        expensesTotal: singleTotal, salaryExpense, employerExpense,
+        endOfServiceExpense, depreciationExpense, assetSaleLoss, assetSaleGain,
+        stockLosses, stockRevaluation, cardFees, cashDifference,
+      });
+      const operatingExpenses = split.operatingExpenses;
       // v4 R2.2: rounding/gratuity excess is income, not sales revenue. It is
       // additive and never part of the manual cash-difference line.
+      const salesProfit = grossProfit + otherIncome - split.expensesBeforeGains;
       const netProfit = grossProfit + otherIncome - operatingExpenses;
 
       return {
@@ -165,6 +173,8 @@
         depreciationExpense, assetSaleGain, assetSaleLoss,
         stockLosses, stockRevaluation, cardFees,
         cashDifference, otherIncome, expensesByCategory,
+        expensesBeforeGains: split.expensesBeforeGains, gains: split.gains,
+        salesProfit,
         netProfit,
       };
     }
@@ -517,7 +527,11 @@
         month, from, to, closed,
         kpis: {
           netSales: pnl.netSales, grossProfit: pnl.grossProfit, margin: pnl.margin,
-          expenses: pnl.operatingExpenses, netProfit: pnl.netProfit,
+          expenses: pnl.operatingExpenses,
+          grossExpenses: pnl.expensesBeforeGains,
+          gains: pnl.gains,
+          salesProfit: pnl.salesProfit,
+          netProfit: pnl.netProfit,
           invoices: sales.length,
           avgInvoice: sales.length ? Math.round(pnl.netSales / sales.length) : 0,
           units,
@@ -709,10 +723,18 @@
         openInventory = BeeStore.summary.openingInventoryThrough(summary, month);
       } else {
         const openMoves = await this.repo.listRange('stockMovements', '0000-01-01', asOf,
-          m => m.type === 'opening');
+          m => m.type === 'opening' || m.pnlTreatment === 'equity');
         for (const m of openMoves) {
-          openInventory += (Number(m.qtyChange) || 0) *
-            (m.avgCostAfterMinor != null ? m.avgCostAfterMinor : (m.unitCostMinor || 0));
+          const qty = Number(m.qtyChange) || 0;
+          const unit = m.avgCostAfterMinor != null
+            ? Number(m.avgCostAfterMinor) : (Number(m.unitCostMinor) || 0);
+          if (m.type === 'opening') {
+            openInventory += qty * unit;
+          } else {
+            // Equity correction: its offset is opening equity, not P&L.
+            openInventory += m.valueChangeMinor != null
+              ? Number(m.valueChangeMinor) || 0 : qty * unit;
+          }
         }
       }
       const openingEquity = (openingCash + openReceivables + openInventory) - openPayables;
@@ -826,7 +848,8 @@
      * @returns {object} same shape as the document profitAndLoss
      */
     _journalPnlFromContext(ctx) {
-      const netSales = -(this._ctxSystemBalance(ctx, 'sales_revenue', '4010') +
+      // `0 - x` (not unary minus) keeps an empty month at +0, never -0.
+      const netSales = 0 - (this._ctxSystemBalance(ctx, 'sales_revenue', '4010') +
         this._ctxSystemBalance(ctx, 'sales_returns', '4020'));
       const cogs = this._ctxSystemBalance(ctx, 'cogs', '5010');
       const salaryExpense = this._ctxSystemBalance(ctx, 'salaries', '6100');
@@ -877,18 +900,23 @@
       }
       if (cardFees) expensesByCategory['عمولات البطاقات والمحافظ'] = cardFees;
 
-      const grossProfit = netSales - cogs;
+      const grossProfit = (netSales - cogs) || 0;
       const margin = netSales > 0 ? (grossProfit / netSales * 100).toFixed(1) : '0.0';
-      const operatingExpenses = otherExpenses + salaryExpense + employerExpense +
-        endOfServiceExpense + depreciationExpense + assetSaleLoss - assetSaleGain +
-        stockLosses + stockRevaluation + cardFees - cashDifference;
+      const split = BeeStore.summary.expenseSplit({
+        expensesTotal: otherExpenses, salaryExpense, employerExpense,
+        endOfServiceExpense, depreciationExpense, assetSaleLoss, assetSaleGain,
+        stockLosses, stockRevaluation, cardFees, cashDifference,
+      });
+      const operatingExpenses = split.operatingExpenses;
       return {
         netSales, cogs, grossProfit, margin,
         operatingExpenses, salaryExpense, employerExpense, endOfServiceExpense,
         depreciationExpense, assetSaleGain, assetSaleLoss,
         stockLosses, stockRevaluation, cardFees,
         cashDifference, otherIncome, expensesByCategory,
-        netProfit: grossProfit + otherIncome - operatingExpenses,
+        expensesBeforeGains: split.expensesBeforeGains, gains: split.gains,
+        salesProfit: (grossProfit + otherIncome - split.expensesBeforeGains) || 0,
+        netProfit: (grossProfit + otherIncome - operatingExpenses) || 0,
         source: 'journal',
       };
     }
@@ -1062,7 +1090,7 @@
         'salaryExpense', 'employerExpense', 'endOfServiceExpense',
         'depreciationExpense', 'assetSaleGain', 'assetSaleLoss',
         'stockLosses', 'stockRevaluation', 'cardFees', 'cashDifference',
-        'otherIncome', 'netProfit'];
+        'otherIncome', 'salesProfit', 'netProfit'];
       const differences = {};
       const failures = [];
       for (const key of keys) {

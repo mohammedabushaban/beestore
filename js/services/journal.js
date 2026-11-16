@@ -65,6 +65,7 @@
     CASH_ADJUSTMENT: 'تسوية الصندوق',
     OPENING: 'رصيد افتتاحي',
     STOCK_ADJUSTMENT: 'تسوية مخزون',
+    STOCK_EQUITY_RECLASS: 'تصنيف تسوية مخزون كرصيد افتتاحي',
     REVALUATION: 'إعادة تقييم تكلفة',
     MANUAL: 'قيد يدوي',
   };

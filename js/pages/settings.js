@@ -1,7 +1,7 @@
 (function (root) {
   'use strict';
   const BeeStore = root.BeeStore || (root.BeeStore = {});
-  const { el, toast, confirmDialog } = BeeStore.ui;
+  const { el, toast, confirmDialog, formatMoney } = BeeStore.ui;
   const { input, select, formField, textarea, checkbox } = BeeStore.dialogs;
 
   async function render(container) {
@@ -692,6 +692,23 @@
       el('div', { id: 'integrity-result' }),
     ]));
 
+    const equityBox = el('div', { id: 'stock-equity-reclass' });
+    const equityCard = el('div', { class: 'card' }, [
+      el('h3', {}, 'تصنيف تصحيحات المخزون الافتتاحي'),
+      el('p', { class: 'form-hint' },
+        'حركات «تعديل الكمية» بسبب «تصحيح» التي تمثل رصيداً افتتاحياً تُنقل من خسائر/فروقات المخزون (5020) إلى حقوق الملكية الافتتاحية (3030). ' +
+        'يُضاف قيد تصنيف جديد فقط؛ لا يُعدّل أو يُحذف أي قيد قديم.'),
+      el('div', { class: 'dialog-actions' }, [
+        el('button', {
+          class: 'btn btn-secondary',
+          type: 'button',
+          onclick: () => _previewStockEquity(equityBox),
+        }, 'معاينة التصحيحات'),
+      ]),
+      equityBox,
+    ]);
+    container.appendChild(equityCard);
+
     // v2 §12.3: error log viewer (technical details only, no business data).
     const errList = el('div', { id: 'errorlog-list' }, [el('p', {}, 'جاري التحميل...')]);
     container.appendChild(el('div', { class: 'card' }, [
@@ -717,6 +734,67 @@
       ]),
     ]));
     _loadErrorLog(errList);
+  }
+
+  async function _previewStockEquity(host) {
+    host.innerHTML = '<p class="form-hint">جاري فحص حركات التصحيح...</p>';
+    const res = await BeeStore.api.maintenance.previewStockEquityReclassification();
+    host.innerHTML = '';
+    if (!res.ok) {
+      host.appendChild(el('p', { class: 'alert alert-danger' }, res.error.message));
+      return;
+    }
+    const d = res.data;
+    if (d.count === 0) {
+      host.appendChild(el('p', { class: 'alert alert-success' },
+        d.alreadyCount > 0
+          ? '✓ لا توجد حركات تصحيح متبقية. سبق تصنيف ' + d.alreadyCount +
+            ' حركة (صافي ' + formatMoney(d.alreadyMinor) + ').'
+          : 'لا توجد حركات «تصحيح» غير مصنّفة.'));
+      return;
+    }
+    const rows = d.candidates.map(c => el('tr', {}, [
+      el('td', {}, c.date),
+      el('td', {}, [c.itemCode, c.productName, c.size, c.color].filter(Boolean).join(' ')),
+      el('td', {}, String(c.qtyChange)),
+      el('td', {}, formatMoney(c.valueChangeMinor)),
+      el('td', {}, c.journalState === 'posted' ? 'مرحّل'
+        : (c.journalState === 'reclassified' ? 'مصنّف' : 'غير مرحّل')),
+    ]));
+    host.appendChild(el('p', { class: 'form-hint' },
+      'سيتم تصنيف ' + d.count + ' حركة بصافي ' + formatMoney(d.totalMinor) +
+      ' من خسائر/فروقات المخزون إلى حقوق الملكية الافتتاحية.'));
+    host.appendChild(el('div', { class: 'table-wrapper' },
+      el('table', { class: 'data-table' }, [
+        el('thead', {}, el('tr', {}, [
+          el('th', {}, 'التاريخ'), el('th', {}, 'الصنف'), el('th', {}, 'الكمية'),
+          el('th', {}, 'قيمة التغيير'), el('th', {}, 'القيد'),
+        ])),
+        el('tbody', {}, rows),
+      ])));
+    host.appendChild(el('div', { class: 'dialog-actions' }, [
+      el('button', {
+        class: 'btn btn-danger',
+        type: 'button',
+        onclick: () => _applyStockEquity(host),
+      }, 'تأكيد التصنيف'),
+    ]));
+  }
+
+  function _applyStockEquity(host) {
+    confirmDialog('تصنيف تصحيحات المخزون الافتتاحي',
+      'سيتم إضافة قيد تصنيف من حساب فروقات المخزون (5020) إلى حقوق الملكية الافتتاحية (3030) لكل حركة، ووسم الحركة كتصحيح افتتاحي. ' +
+      'لن تُعدّل أو تُحذف أي قيود قديمة. هل تريد المتابعة؟',
+      async () => {
+        const res = await BeeStore.api.maintenance.reclassifyStockEquity();
+        if (!res.ok) {
+          toast(res.error.message, 'error');
+          return;
+        }
+        toast('تم تصنيف ' + res.data.count + ' حركة (صافي ' +
+          formatMoney(res.data.totalMinor) + ')', 'success');
+        await _previewStockEquity(host);
+      });
   }
 
   async function _loadErrorLog(host) {

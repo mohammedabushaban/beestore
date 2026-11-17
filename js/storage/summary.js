@@ -331,6 +331,17 @@
         break;
       case 'customerPayments': {
         const amount = Number(doc.amountMinor) || 0;
+        if (doc.method === 'write_off') {
+          // v4 M4: a written-off receivable moves no money; it is a bad-debt
+          // expense (journal 6410) that lowers the customer's balance.
+          addCustomer(out, monthBucket, dayBucket, doc.customerId, -amount);
+          if (monthBucket) {
+            monthBucket.pnl.expensesTotal += amount;
+            monthBucket.pnl.expensesByCategory['ديون معدومة'] =
+              (monthBucket.pnl.expensesByCategory['ديون معدومة'] || 0) + amount;
+          }
+          break;
+        }
         if (doc.methodKind !== 'clearing') {
           account('customer_payment', doc.accountId, amount);
         }

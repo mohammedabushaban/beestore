@@ -69,6 +69,7 @@
     REVALUATION: 'إعادة تقييم تكلفة',
     MANUAL: 'قيد يدوي',
     YEAR_CLOSE: 'إقفال سنة مالية',
+    CREDIT_APPLICATION: 'تطبيق رصيد زبون',
   };
 
   function sourceLabel(type) {

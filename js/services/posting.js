@@ -792,6 +792,23 @@
       options = options || {};
       const amount = round(payment.amountMinor);
       if (amount === 0) return null;
+      if (payment.method === 'write_off') {
+        // v4 M4: an uncollectible receivable written off — Dr 6410 bad debts
+        // / Cr 1100. No money moves.
+        return this.postParts(tx, {
+          date: payment.date,
+          sourceType: SOURCE.CUSTOMER_PAYMENT,
+          sourceId: payment.id,
+          event: EVENTS.CUSTOMER_PAYMENT,
+          description: 'إعدام دين زبون' + (payment.note ? ' — ' + payment.note : ''),
+          allowClosedDay: true,
+          replay: options.replay,
+          parts: [
+            { key: 'bad_debts', debit: amount, partyType: 'customer', partyId: payment.customerId },
+            { key: 'ar', credit: amount, partyType: 'customer', partyId: payment.customerId },
+          ],
+        });
+      }
       const applied = options.appliedMinor !== undefined && options.appliedMinor !== null
         ? Math.max(0, Math.min(amount, round(options.appliedMinor)))
         : amount;
@@ -822,6 +839,33 @@
         description: 'تحصيل من زبون ' + (payment.payerName || payment.customerId),
         replay: options.replay,
         parts,
+      });
+    }
+
+    /**
+     * Applies a customer's credit (2030) to one open invoice: Dr 2030 /
+     * Cr 1100 for the same customer. Net position is unchanged; the invoice
+     * becomes (partly) paid.
+     * @param {object} tx active transaction
+     * @param {object} sale the invoice
+     * @param {number} amountMinor credit applied
+     * @param {string} date YYYY-MM-DD
+     * @returns {Promise<object|null>} entry
+     */
+    async creditApplication(tx, sale, amountMinor, date) {
+      const amount = round(amountMinor);
+      if (amount <= 0) return null;
+      return this.postParts(tx, {
+        date,
+        sourceType: 'CREDIT_APPLICATION',
+        sourceId: sale.id,
+        event: 'CREDIT_APPLICATION:' + BeeStore.ids.randomId('ca'),
+        description: 'تطبيق رصيد الزبون على الفاتورة ' + sale.number,
+        allowClosedDay: true,
+        parts: [
+          { key: 'customer_credits', debit: amount, partyType: 'customer', partyId: sale.customerId },
+          { key: 'ar', credit: amount, partyType: 'customer', partyId: sale.customerId },
+        ],
       });
     }
 

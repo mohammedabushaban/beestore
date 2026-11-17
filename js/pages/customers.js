@@ -85,6 +85,34 @@
       if (cRes.ok) closing = cRes.data;
     }
 
+    // Owner-only receivable tools (v4 M4): apply a held credit to open
+    // invoices, or write off an uncollectible invoice balance.
+    const isOwner = !(BeeStore.auth && BeeStore.auth.isCashier && BeeStore.auth.isCashier());
+    let creditMinor = 0;
+    if (isOwner && BeeStore.api.customers.availableCredit) {
+      const cr = await BeeStore.api.customers.availableCredit(customerId);
+      if (cr.ok) creditMinor = cr.data;
+    }
+    const hasOpen = sales.some(s => s.dueMinor > 0);
+    const refresh = () => { overlay.remove(); _viewStatement(customerId); };
+    const creditBox = isOwner && creditMinor > 0 ? el('div', { class: 'alert alert-info' }, [
+      el('span', {}, 'للزبون رصيد دائن ' + formatMoney(creditMinor) +
+        (hasOpen ? ' ويمكن خصمه من فواتيره المفتوحة.' : '.')),
+      hasOpen ? el('button', {
+        class: 'btn btn-sm btn-primary', style: 'margin-inline-start:8px',
+        onclick: async () => {
+          const res = await BeeStore.api.customers.applyCredit(customerId);
+          if (!res.ok) { toast(res.error.message, 'error'); return; }
+          toast('طُبّق ' + formatMoney(res.data.appliedMinor) + ' على ' + res.data.invoices.length + ' فاتورة');
+          refresh();
+        },
+      }, 'تطبيق الرصيد على الفواتير') : null,
+    ]) : null;
+    const writeOffButton = (sale) => (isOwner && sale.dueMinor > 0 ? el('button', {
+      class: 'btn btn-sm btn-danger',
+      onclick: () => _writeOff(customerId, sale, refresh),
+    }, 'إعدام الدين') : '');
+
     const overlay = el('div', { class: 'dialog-overlay' });
     const content = el('div', { class: 'dialog dialog-lg' }, [
       el('div', { class: 'dialog-header' }, [
@@ -94,18 +122,21 @@
       el('div', { class: 'dialog-body' }, [
         opening !== null ? el('p', {}, 'الرصيد الافتتاحي: ' + formatMoney(opening)) : null,
         el('p', { class: 'text-lg' }, 'الرصيد: ' + formatMoney(closing !== null ? closing : balance)),
+        creditBox,
         el('h4', {}, 'الفواتير'),
         el('div', { class: 'table-wrapper' },
           el('table', { class: 'data-table' }, [
             el('thead', {}, el('tr', {}, [
               el('th', {}, 'الرقم'), el('th', {}, 'التاريخ'),
               el('th', {}, 'الإجمالي'), el('th', {}, 'المتبقي'),
+              isOwner ? el('th', {}, '') : null,
             ])),
             el('tbody', {}, periodSales.map(s => el('tr', {}, [
               el('td', {}, s.number),
               el('td', { class: 'num' }, formatDocDate(s)),
               el('td', {}, formatMoney(s.totalMinor)),
               el('td', {}, formatMoney(s.dueMinor)),
+              isOwner ? el('td', {}, writeOffButton(s)) : null,
             ]))),
           ])
         ),
@@ -119,7 +150,9 @@
             el('tbody', {}, periodPayments.map(p => el('tr', {}, [
               el('td', { class: 'num' }, formatDocDate(p)),
               el('td', {}, formatMoney(p.amountMinor)),
-              el('td', {}, BeeStore.settings.methodLabel(settings, p.method)),
+              el('td', {}, p.method === 'write_off'
+                ? 'إعدام دين' + (p.note ? ' — ' + p.note : '')
+                : BeeStore.settings.methodLabel(settings, p.method)),
               el('td', {}, p.payerName || '-'),
               el('td', {}, p.payerPhone || '-'),
               el('td', {}, BeeStore.journalView.button(p, { title: 'قيد الدفعة' })),
@@ -131,6 +164,36 @@
     ]);
     overlay.appendChild(content);
     document.body.appendChild(overlay);
+  }
+
+  function _writeOff(customerId, sale, done) {
+    const amountInput = input('number', (sale.dueMinor / 100).toFixed(2), { min: 0, step: 0.01 });
+    const dateInput = input('date', BeeStore.dates.today());
+    const reasonInput = input('text', '', { placeholder: 'مثال: الزبون غادر ولا يمكن التحصيل' });
+    const { overlay } = BeeStore.dialogs.openDialog('إعدام دين — فاتورة ' + sale.number, [
+      el('p', { class: 'alert alert-warning' },
+        'يُسجَّل المبلغ مصروف «ديون معدومة» (6410) ويُخفَّض دين الزبون. لا تتحرك أي نقود. ' +
+        'إن دفع الزبون لاحقاً سجّل الدفعة كإيراد آخر بعد استشارة المحاسب.'),
+      formField('المبلغ (المتبقي ' + formatMoney(sale.dueMinor) + ')', amountInput, true),
+      formField('التاريخ', dateInput, true),
+      formField('السبب', reasonInput, true),
+      el('button', {
+        class: 'btn btn-danger',
+        onclick: async () => {
+          const amount = BeeStore.money.fromMajor(amountInput.value);
+          if (amount <= 0) { toast('أدخل مبلغاً صحيحاً', 'error'); return; }
+          if (!reasonInput.value.trim()) { toast('سبب الإعدام مطلوب', 'error'); return; }
+          const res = await BeeStore.api.customers.writeOff({
+            customerId, saleId: sale.id, amountMinor: amount,
+            date: dateInput.value || BeeStore.dates.today(), reason: reasonInput.value.trim(),
+          });
+          if (!res.ok) { toast(res.error.message, 'error'); return; }
+          toast('تم إعدام ' + formatMoney(amount));
+          overlay.remove();
+          if (done) done();
+        },
+      }, 'تأكيد الإعدام'),
+    ]);
   }
 
   async function _receivePayment(customerId, customerName) {

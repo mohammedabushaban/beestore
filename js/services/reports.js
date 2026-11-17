@@ -148,6 +148,15 @@
         }
       }
 
+      // v4 M4: written-off receivables are a bad-debt expense (6410).
+      const writeOffs = await this.repo.listRange('customerPayments', from, to,
+        p => p.method === 'write_off');
+      for (const w of writeOffs) {
+        const amount = Number(w.amountMinor) || 0;
+        singleTotal += amount;
+        expensesByCategory['ديون معدومة'] = (expensesByCategory['ديون معدومة'] || 0) + amount;
+      }
+
       let cashDifference = 0;
       for (const a of cashAdjustments) cashDifference += Number(a.amountMinor) || 0;
       let cardFees = 0;
@@ -528,7 +537,11 @@
       for (const s of sales) newCredit += s.dueMinor;
       const collections = await this.repo.listRange('customerPayments', from, to);
       let collected = 0;
-      for (const p of collections) collected += p.amountMinor;
+      let writtenOff = 0;
+      for (const p of collections) {
+        if (p.method === 'write_off') writtenOff += p.amountMinor;
+        else collected += p.amountMinor;
+      }
       const overdue = await BeeStore.customers.getOverdueInstallments();
 
       // Payroll rows for the month.
@@ -560,7 +573,7 @@
         expenses: { byCategory: pnl.expensesByCategory, previous: prev.expensesByCategory, salary: pnl.salaryExpense, stockLosses: pnl.stockLosses },
         cashflow: { ...cashflow, openTotal: cfOpen, closeTotal: cfClose },
         balances, inventory: { ...inv, closingValue: snapClose.assets.inventoryValue },
-        customers: { newCredit, collected, overdue },
+        customers: { newCredit, collected, writtenOff, overdue },
         payroll,
       };
     }
@@ -697,16 +710,15 @@
         unpaidExpenses = await BeeStore.expenses.unpaidAsOf(asOf);
       }
 
+      // Only historical taxed invoices carry tax (new ones never do).
       let taxPayable = 0;
-      if (settings.taxEnabled) {
-        if (useSummary) {
-          taxPayable = BeeStore.summary.taxThrough(summary, month);
-        } else {
-          const sales = await this.repo.listRange('sales', '0000-01-01', asOf, s => s.status !== 'void');
-          for (const s of sales) taxPayable += s.taxMinor || 0;
-          const returns = await this.repo.listRange('salesReturns', '0000-01-01', asOf);
-          for (const r of returns) taxPayable -= Number(r.taxMinor) || 0;
-        }
+      if (useSummary) {
+        taxPayable = BeeStore.summary.taxThrough(summary, month);
+      } else {
+        const sales = await this.repo.listRange('sales', '0000-01-01', asOf, s => s.status !== 'void');
+        for (const s of sales) taxPayable += s.taxMinor || 0;
+        const returns = await this.repo.listRange('salesReturns', '0000-01-01', asOf);
+        for (const r of returns) taxPayable -= Number(r.taxMinor) || 0;
       }
 
       let capitalIn = 0, withdrawals = 0;

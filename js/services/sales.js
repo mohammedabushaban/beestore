@@ -172,21 +172,11 @@
           if (discountMinor > subtotalMinor) discountMinor = subtotalMinor;
         }
 
-        let taxMinor = 0;
-        if (settings.taxEnabled && settings.taxRate > 0) {
-          const taxable = subtotalMinor - discountMinor;
-          if (settings.taxIncludedInPrices) {
-            taxMinor = taxable - Math.round(taxable * 100 / (100 + settings.taxRate));
-          } else {
-            taxMinor = Math.round(taxable * settings.taxRate / 100);
-          }
-        }
-
-        // Tax-inclusive prices already contain the tax: the customer pays the
-        // taxable amount and revenue is that amount net of tax. Only
-        // tax-exclusive prices add the tax on top.
-        const taxIncluded = taxMinor > 0 && !!settings.taxIncludedInPrices;
-        const totalMinor = subtotalMinor - discountMinor + (taxIncluded ? 0 : taxMinor);
+        // No sales tax: the invoice total is the lines net of discounts.
+        // taxMinor stays on the record (always 0) for schema compatibility
+        // with historical taxed invoices.
+        const taxMinor = 0;
+        const totalMinor = subtotalMinor - discountMinor;
 
         if (totalMinor <= 0) {
           throw BeeStore.errors.err('INVALID', 'لا يمكن حفظ فاتورة بمبلغ صفر - تأكد من سعر الصُنف أو قيمة الخصم');
@@ -301,7 +291,6 @@
           discount: data.discount || null,
           discountMinor,
           taxMinor,
-          taxIncluded,
           totalMinor,
           payments,
           paidMinor,
@@ -509,6 +498,12 @@
             tx, 'SALE', s.id,
             { description: 'إلغاء فاتورة ' + s.number, reason: reason || '' },
             { allowClosedDay: true });
+          // Credit applied to this invoice goes back to the customer's 2030.
+          const creditReversals = await BeeStore.journal.reverseActiveSourceTx(
+            tx, 'CREDIT_APPLICATION', s.id,
+            { description: 'إلغاء تطبيق رصيد على فاتورة ملغاة ' + s.number },
+            { allowClosedDay: true });
+          if (creditReversals.length > 0) BeeStore.posting.linkAll([s], creditReversals);
           if (reversals.length > 0) {
             BeeStore.posting.linkAll([s].concat(voidMovements), reversals);
             // Re-persist after linking: IndexedDB structured-clones at put

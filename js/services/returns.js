@@ -97,9 +97,9 @@
       const tax = share(shares ? shares.taxMinor : 0, saleLine.returnedTaxMinor);
       const netMinor = BeeStore.money.mul(saleLine.unitPriceMinor, requested) -
         lineDisc.now - invDisc.now;
-      // Inclusive tax is already inside the price; exclusive tax (and every
-      // legacy taxed sale, which always charged tax on top) is added back.
-      const refundMinor = netMinor + (sale && sale.taxIncluded ? 0 : tax.now);
+      // Tax is no longer supported, but historical taxed invoices charged it
+      // on top of the price: their returns give back that tax as well.
+      const refundMinor = netMinor + tax.now;
       return {
         discountMinor: lineDisc.now,
         invoiceDiscountMinor: invDisc.now,

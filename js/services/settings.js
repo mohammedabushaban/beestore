@@ -2,6 +2,8 @@
   'use strict';
   const BeeStore = root.BeeStore || (root.BeeStore = {});
 
+  const REMOVED_TAX_KEYS = ['taxEnabled', 'taxRate', 'taxIncludedInPrices'];
+
   const DEFAULT_SETTINGS = {
     storeName: 'Bee Store',
     storeNameAr: 'بي ستور',
@@ -10,9 +12,6 @@
     logo: null,
     currencyCode: 'ILS',
     currencySymbol: '₪',
-    taxEnabled: false,
-    taxRate: 0,
-    taxIncludedInPrices: true,
     // v5 §7.2: optional payroll components. All are off by default; rates are
     // basis points of the employee's base salary. The accountant confirms the
     // legal rates before enabling any of them.
@@ -153,6 +152,11 @@
       return this.repo.transaction(async (tx) => {
         const existing = await tx.get('meta', 'settings');
         const updated = { ...DEFAULT_SETTINGS, ...existing, ...settings, id: 'settings' };
+        // Sales tax is not supported (the shop is not VAT-registered). Old
+        // settings or backups may still carry the switches: drop them so no
+        // code path can start charging tax again. Historical taxed invoices
+        // keep their stored taxMinor and are still reported correctly.
+        for (const key of REMOVED_TAX_KEYS) delete updated[key];
         if (Array.isArray(updated.paymentMethods)) {
           updated.paymentMethods = updated.paymentMethods.map(normaliseMethod);
         }

@@ -74,6 +74,9 @@
         inventoryRetail += BeeStore.money.mul(v.priceMinor, v.quantity);
       }
 
+      // Negative stock means goods were sold that the system never received:
+      // cost is estimated and inventory is understated until corrected.
+      const negativeStockCount = variants.filter(v => v.active !== false && (Number(v.quantity) || 0) < 0).length;
       const lowStockThreshold = settings.defaultLowStockThreshold || 3;
       const lowStockCount = variants.filter(v => {
         const t = v.lowStockThreshold || lowStockThreshold;
@@ -139,6 +142,7 @@
         balances: accountBalances,
         inventory: { cost: inventoryCost, retail: inventoryRetail },
         lowStockCount,
+        negativeStockCount,
         receivablesTotal,
         payablesTotal,
         overdueInstallments: overdueInstallments.length,

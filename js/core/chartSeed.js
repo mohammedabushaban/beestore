@@ -8,8 +8,8 @@
 
   const ACCOUNT_TYPES = ['asset', 'liability', 'equity', 'revenue', 'expense', 'contra'];
 
-  // v5 §2. Account 2300 (tax payable) is only seeded when the shop has legacy
-  // tax-enabled data; VAT itself is out of scope until registration. Fixed
+  // v5 §2. Sales tax is not supported. Account 2300 (tax payable) exists only
+  // when the shop has historical taxed invoices from older versions. Fixed
   // asset accounts are conditional on the module flag.
   const TAX_ACCOUNT = {
     code: '2300', nameAr: 'ضريبة القيمة المضافة المستحقة',
@@ -151,9 +151,7 @@
     const fixedEnabled = input.fixedAssetsEnabled !== undefined
       ? !!input.fixedAssetsEnabled
       : !!(settingsIn && settingsIn.fixedAssetsEnabled);
-    const taxPayable = input.taxPayable !== undefined
-      ? !!input.taxPayable
-      : !!(settingsIn && settingsIn.taxEnabled);
+    const taxPayable = !!input.taxPayable;
 
     const chart = (input.chart || []).map(a => ({ ...a }));
     const additions = [];
@@ -388,8 +386,7 @@
       categories: C.expenseCategories,
       settings,
       fixedAssetsEnabled: settings ? !!settings.fixedAssetsEnabled : false,
-      taxPayable: !!(settings && settings.taxEnabled) ||
-        (C.sales || []).some(s => Number(s.taxMinor) > 0) ||
+      taxPayable: (C.sales || []).some(s => Number(s.taxMinor) > 0) ||
         C.chartOfAccounts.some(a => a && (a.systemKey === 'tax_payable' ||
           String(a.code) === TAX_ACCOUNT.code)),
       now: new Date().toISOString(),

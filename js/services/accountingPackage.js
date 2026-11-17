@@ -481,7 +481,7 @@
         'تعريفات / Definitions',
         '------------------------------------------------------------',
         'صافي المبيعات = إجمالي الفواتير بعد استبعاد الضريبة، ناقص مرتجعات البيع.',
-        'Net sales = invoice totals excluding tax, minus sales returns.',
+        'Net sales = invoice totals minus sales returns (sales tax is not charged).',
         'تكلفة البضاعة المباعة (COGS) = تكلفة الأصناف المباعة بالمتوسط المرجح.',
         'مجمل الربح = صافي المبيعات − تكلفة البضاعة المباعة.',
         'المصاريف التشغيلية = المصاريف + الرواتب + فروقات المخزون − فروقات الصندوق.',
@@ -651,16 +651,20 @@
       const returnsTax = returns.reduce((sum, r) => sum + (Number(r.taxMinor) || 0), 0);
       const returnsNetOfTax = returnsTotal - returnsTax;
       const journalNetOfTax = journalTotals.total - journalTotals.tax;
+      // Sales tax is not supported; the tax column only appears for months
+      // that still hold historical taxed invoices or returns.
+      const hasLegacyTax = journalTotals.tax !== 0 || returnsTax !== 0;
+      const dropTax = (row) => (hasLegacyTax ? row : row.filter((_, i) => i !== 6));
       const salesJournalTable = table('Sales Journal', 'csv/02-sales-journal.csv',
-        ['رقم الفاتورة / Invoice', 'التاريخ / Date', 'الزبون / Customer',
-          'طريقة الدفع / Payment', moneyHeader('قبل الضريبة / Before tax'),
+        dropTax(['رقم الفاتورة / Invoice', 'التاريخ / Date', 'الزبون / Customer',
+          'طريقة الدفع / Payment', moneyHeader(hasLegacyTax ? 'قبل الضريبة / Before tax' : 'المجموع / Subtotal'),
           moneyHeader('الخصم / Discount'), moneyHeader('الضريبة / Tax'),
           moneyHeader('الإجمالي / Total'), moneyHeader('المدفوع / Paid'),
-          moneyHeader('المتبقي / Due'), 'الحالة / Status', 'أنشأها / Profile'],
-        salesJournalRows,
+          moneyHeader('المتبقي / Due'), 'الحالة / Status', 'أنشأها / Profile']),
+        salesJournalRows.map(dropTax),
         {
-          widths: [14, 11, 22, 15, 13, 12, 11, 13, 12, 12, 12, 10],
-          moneyColumns: [4, 5, 6, 7, 8, 9],
+          widths: dropTax([14, 11, 22, 15, 13, 12, 11, 13, 12, 12, 12, 10]),
+          moneyColumns: hasLegacyTax ? [4, 5, 6, 7, 8, 9] : [4, 5, 6, 7, 8],
           footer: [
             ['الإجمالي / Total', '', '', '', major(journalTotals.subtotal),
               major(journalTotals.discount), major(journalTotals.tax),
@@ -668,7 +672,7 @@
             ['مرتجعات الشهر / Returns', '', '', '', '', '', '', major(returnsTotal), '', '', '', ''],
             ['صافي المبيعات بعد المرتجعات / Net sales', '', '', '', '', '', '',
               major(journalNetOfTax - returnsNetOfTax), '', '', '', ''],
-          ],
+          ].map(dropTax),
         });
 
       // -----------------------------------------------------------------
@@ -1024,7 +1028,7 @@
         ['ذمم الموردين / Payables', major(snap.liabilities.payables)],
         ['أرصدة دائنة للزبائن / Customer credits', major(snap.liabilities.customerCredits)],
         ['رواتب مستحقة / Accrued salaries', major(snap.liabilities.accruedSalaries)],
-        ['ضريبة مستحقة / Tax payable', major(snap.liabilities.taxPayable)],
+        ...(snap.liabilities.taxPayable ? [['ضريبة مستحقة (فواتير قديمة) / Legacy tax payable', major(snap.liabilities.taxPayable)]] : []),
         ['إجمالي الالتزامات / Total liabilities', major(snap.liabilities.total)],
         [],
         ['حقوق الملكية / Equity'],
@@ -1058,7 +1062,7 @@
         ['التغير في ذمم الموردين / Payables change', major(d.payables)],
         ['التغير في الرواتب المستحقة / Accrued salaries change', major(d.accrued)],
         ['التغير في سلف الموظفين / Advances change', major(d.advances)],
-        ['التغير في الضريبة / Tax change', major(d.tax)],
+        ...(d.tax ? [['التغير في الضريبة (فواتير قديمة) / Legacy tax change', major(d.tax)]] : []),
         ['التغير في أرصدة الزبائن الدائنة / Customer credits change', major(d.customerCredits)],
         ['النقد من العمليات / Cash from operations', major(rec.cashFromOperations)],
         ['رأس مال مضاف / Capital in', major(rec.capitalIn)],
@@ -1503,9 +1507,10 @@
       addCheck('sales_journal_matches_net_sales',
         'مجموع يومية المبيعات ناقص المرتجعات يساوي صافي المبيعات',
         expectedNetSales, journalNetOfTax - returnsNetOfTax);
-      addCheck('sales_journal_tax_identity',
-        'إجمالي الفواتير = صافي قبل الضريبة + الضريبة',
-        journalTotals.total, journalNetOfTax + journalTotals.tax);
+      // Arithmetic of the sales journal itself (was a tautology before).
+      addCheck('sales_journal_arithmetic',
+        'إجمالي الفواتير = المجموع − الخصم (+ ضريبة الفواتير القديمة)',
+        journalTotals.total, journalTotals.subtotal - journalTotals.discount + journalTotals.tax);
 
       addCheck('cash_book_closing_matches_cash_balance',
         'رصيد الصندوق الختامي في كشف النقدية يساوي رصيد الحساب',

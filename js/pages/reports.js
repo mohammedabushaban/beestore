@@ -24,6 +24,7 @@
       el('button', { class: 'tab', onclick: function () { _showTab('trial', content); _setActiveTab(this); } }, 'ميزان المراجعة'),
       el('button', { class: 'tab', onclick: function () { _showTab('ledger', content); _setActiveTab(this); } }, 'دفتر الأستاذ'),
       el('button', { class: 'tab', onclick: function () { _showTab('journal', content); _setActiveTab(this); } }, 'دفتر اليومية'),
+      el('button', { class: 'tab', onclick: function () { _showTab('controls', content); _setActiveTab(this); } }, 'ضوابط ومراجعة'),
     ]);
     container.appendChild(tabs);
     container.appendChild(content);
@@ -50,6 +51,7 @@
     else if (tab === 'trial') _renderTrialBalance(container);
     else if (tab === 'ledger') _renderLedger(container);
     else if (tab === 'journal') _renderJournal(container);
+    else if (tab === 'controls') _renderControls(container);
   }
 
   function _monthInput() {
@@ -57,6 +59,93 @@
   }
 
   // v2 §9.1 Month Review — the owner's main monthly report.
+  // Controls & review: anomaly/fraud checks for a period, then the one-off
+  // review of data recorded before the 2026-11-17 accounting fixes.
+  async function _renderControls(container) {
+    const toInput = input('date', BeeStore.dates.today());
+    const fromInput = input('date', BeeStore.dates.addDays(BeeStore.dates.today(), -30));
+    container.appendChild(_dateRow(fromInput, toInput, load));
+    const out = el('div', {});
+    const history = el('div', {});
+    container.appendChild(out);
+    container.appendChild(history);
+    const table = (headers, rows) => el('div', { class: 'table-wrapper' },
+      el('table', { class: 'data-table' }, [
+        el('thead', {}, el('tr', {}, headers.map(h => el('th', {}, h)))),
+        el('tbody', {}, rows.map(r => el('tr', {}, r.map(c => el('td', {}, c))))),
+      ]));
+    const section = (title, count, body, emptyText) => el('div', { class: 'card' }, [
+      el('h3', {}, title + ' (' + count + ')'),
+      count ? body() : el('p', { class: 'empty-state' }, emptyText || '✓ لا شيء'),
+    ]);
+    const profileAr = (p) => (p === 'cashier' ? 'الكاشير' : 'المالك');
+    await load();
+    await loadHistory();
+
+
+    async function load() {
+      const res = await BeeStore.api.auditReview.anomalies({
+        from: fromInput.value || undefined, to: toInput.value || undefined,
+      });
+      if (!res.ok) { toast(res.error.message, 'error'); return; }
+      const a = res.data;
+      out.innerHTML = '';
+      out.appendChild(el('p', { class: 'form-hint' },
+        'تنبيهات للمراجعة، وليست بالضرورة أخطاء: فواتير متطابقة خلال ' + a.duplicateMinutes +
+        ' دقائق، خصم ' + a.discountPercent + '% فأكثر، بيع بأقل من التكلفة، والإلغاءات والمرتجعات حسب المستخدم.'));
+      out.appendChild(section('فواتير مكررة محتملة', a.duplicates.length, () => table(
+        ['التاريخ', 'الأولى', 'الثانية', 'الفارق (دقيقة)', 'المبلغ', 'المستخدم'],
+        a.duplicates.map(d => [d.date, d.first, d.second, String(d.minutesApart), formatMoney(d.totalMinor), profileAr(d.profile)]))));
+      out.appendChild(section('خصومات كبيرة', a.largeDiscounts.length, () => table(
+        ['الفاتورة', 'التاريخ', 'سعر القائمة', 'المبلغ', 'الخصم %', 'المستخدم'],
+        a.largeDiscounts.map(d => [d.number, d.date, formatMoney(d.listMinor), formatMoney(d.totalMinor), d.discountPercent + '%', profileAr(d.profile)]))));
+      out.appendChild(section('بيع بأقل من التكلفة', a.belowCost.length, () => table(
+        ['الفاتورة', 'التاريخ', 'الصنف', 'الكمية', 'الإيراد', 'التكلفة', 'الخسارة'],
+        a.belowCost.map(d => [d.number, d.date, d.item, String(d.qty), formatMoney(d.revenueMinor), formatMoney(d.costMinor), formatMoney(d.lossMinor)]))));
+      out.appendChild(section('الإلغاءات والمرتجعات حسب المستخدم', a.byProfile.length, () => table(
+        ['المستخدم', 'إلغاءات', 'قيمة الإلغاءات', 'مرتجعات', 'قيمة المرتجعات', 'منها بدون فاتورة', 'قيمتها'],
+        a.byProfile.map(r => [profileAr(r.profile), String(r.voids), formatMoney(r.voidMinor), String(r.returns),
+          formatMoney(r.returnMinor), String(r.unlinkedReturns), formatMoney(r.unlinkedMinor)]))));
+      out.appendChild(section('عجز الصندوق في الإقفالات', a.shortages.length, () => table(
+        ['اليوم', 'العجز'], a.shortages.map(d => [d.date, formatMoney(d.shortageMinor)]))));
+      out.appendChild(section('أصناف بمخزون سالب', a.negativeStock.length, () => table(
+        ['الصنف', 'الكمية'], a.negativeStock.map(d => [d.item, String(d.quantity)]))));
+    }
+
+    async function loadHistory() {
+      const res = await BeeStore.api.auditReview.historicalErrors();
+      if (!res.ok) { toast(res.error.message, 'error'); return; }
+      const h = res.data;
+      history.innerHTML = '';
+      history.appendChild(el('h3', {}, 'مراجعة البيانات المسجلة قبل إصلاحات التدقيق'));
+      if (h.totals.findings === 0) {
+        history.appendChild(el('p', { class: 'alert alert-success' },
+          '✓ لا توجد مستندات قديمة تأثرت بالأخطاء التي أُصلحت.'));
+        return;
+      }
+      history.appendChild(section('مرتجعات ردّت سعراً قبل خصم الفاتورة — زيادة ' +
+        formatMoney(h.totals.overRefundMinor), h.discountReturns.length, () => el('div', {}, [
+        el('p', { class: 'form-hint' }, h.guidance.discountReturns),
+        table(['المرتجع', 'التاريخ', 'الفاتورة', 'الزبون', 'المبلغ المردود', 'الزيادة'],
+          h.discountReturns.map(r => [r.returnNumber, r.date, r.saleNumber, r.customerName || 'نقدي',
+            formatMoney(r.refundMinor), formatMoney(r.overRefundMinor)])),
+      ])));
+      history.appendChild(section('باقٍ سُجّل على بطاقة/تحويل بدل الصندوق — ' +
+        formatMoney(h.totals.misattributedChangeMinor), h.mixedChange.length, () => el('div', {}, [
+        el('p', { class: 'form-hint' }, h.guidance.mixedChange),
+        table(['الفاتورة', 'اليوم', 'الطريقة', 'الباقي', 'عجز إقفال ذلك اليوم'],
+          h.mixedChange.map(r => [r.saleNumber, r.date, r.method, formatMoney(r.changeMinor),
+            r.dayClosed ? formatMoney(r.dayShortageMinor) : 'اليوم غير مُقفل'])),
+      ])));
+      history.appendChild(section('ضريبة فواتير قديمة لم تُعكس في المرتجع — ' +
+        formatMoney(h.totals.taxNotReversedMinor), h.legacyTax.length, () => el('div', {}, [
+        el('p', { class: 'form-hint' }, h.guidance.legacyTax),
+        table(['المرتجع', 'التاريخ', 'الفاتورة', 'الضريبة'],
+          h.legacyTax.map(r => [r.returnNumber, r.date, r.saleNumber, formatMoney(r.taxNotReversedMinor)])),
+      ])));
+    }
+  }
+
   async function _renderMonth(container) {
     const mInput = _monthInput();
     const loadBtn = el('button', { class: 'btn btn-primary', onclick: load }, 'عرض');

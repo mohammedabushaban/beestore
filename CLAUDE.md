@@ -38,10 +38,15 @@ None. v5 §13 build order A1–A6 is complete; remaining work is the v4 mileston
   nets customers, `MemoryRepository` is linear (50k invoices ≈ 65 s).
   `tests/test-a6-integrity.js` holds the property and performance tests
   (`BEESTORE_PERF=50000` for the full-size run).
-- Node suite: 43 test files / 299 tests pass
+- Sales tax removed (2026-11-17): new invoices never carry tax; tax keys are
+  stripped from settings; legacy taxed invoices still report/return correctly.
+- v4 M4 write-off done: `customers.writeOff` (customer payment with method
+  `write_off`, Dr 6410/Cr 1100) and `customers.applyCredit` (Dr 2030/Cr 1100).
+  Reports tab «ضوابط ومراجعة» = `auditReview.anomalies` + `historicalErrors`.
+- Node suite: 43 test files / 303 tests pass
   (`node --test --test-concurrency=1 tests/*.js`).
 - Browser suites: `tests/smoke.html`, `idb-lazy.html`, `ui-*.html` (including
-  `ui-purchases.html` 4/4); offline
+  `ui-purchases.html` 4/4, `ui-audit-tools.html` 5/5); offline
   verifier `tests/verify-offline.py` (needs `chromedriver --port=9515` and
   `/tmp/opencode/` for its screenshot). `ui-settlements`/`ui-unpaid-expenses`
   need a clean origin IndexedDB (they time out on the lock screen otherwise).
@@ -49,7 +54,7 @@ None. v5 §13 build order A1–A6 is complete; remaining work is the v4 mileston
   regenerate `sw.js`.
 
 ## Not yet done
-- **v4 milestones**: M4 credit-sales presentation + write-off, M5 invoices
+- **v4 milestones**: M4 credit-sales presentation (write-off done), M5 invoices
   table, M6 date-time (rest, see above), M8 statements + item card, M9 purchases, M10 recurring
   expenses + daily allocation, M11 migration/regression sweep, M12 (replaced
   by v5 journal).

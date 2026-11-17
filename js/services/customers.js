@@ -154,10 +154,15 @@
     }
 
     async receivePayment(data) {
+      const writeOff = data && data.method === 'write_off';
+      if (writeOff && BeeStore.auth && BeeStore.auth.isCashier && BeeStore.auth.isCashier()) {
+        throw BeeStore.errors.err('PERMISSION', 'إعدام الديون يتطلب صلاحية المالك');
+      }
       return this.repo.transaction(async (tx) => {
         const paymentDate = data.date || BeeStore.dates.today();
         await BeeStore.periods.assertOpen(tx, paymentDate);
-        await BeeStore.periods.assertDayOpen(tx, paymentDate);
+        // A write-off moves no money, so a closed cash day does not block it.
+        if (!writeOff) await BeeStore.periods.assertDayOpen(tx, paymentDate);
         const customer = await tx.get('customers', data.customerId);
         if (!customer) throw BeeStore.errors.err('NOT_FOUND', 'الزبون غير موجود');
         const settings = await tx.get('meta', 'settings') || {};
@@ -169,8 +174,9 @@
           date: data.date || BeeStore.dates.today(),
           amountMinor: BeeStore.money.roundMinor(data.amountMinor),
           method: data.method,
-          methodKind: BeeStore.settings.methodKind(settings, data.method),
-          accountId: data.accountId || BeeStore.settings.resolvePaymentAccount(settings, data.method),
+          methodKind: writeOff ? 'write_off' : BeeStore.settings.methodKind(settings, data.method),
+          accountId: writeOff ? null
+            : (data.accountId || BeeStore.settings.resolvePaymentAccount(settings, data.method)),
           payerName: (data.payerName || '').trim(),
           payerPhone: (data.payerPhone || '').trim(),
           note: data.note || '',
@@ -213,6 +219,19 @@
           }
         }
         const maxApply = Math.max(0, Math.min(payment.amountMinor, balanceBefore));
+        if (writeOff) {
+          if (!(payment.amountMinor > 0)) {
+            throw BeeStore.errors.err('VALIDATION', 'مبلغ الإعدام يجب أن يكون أكبر من صفر');
+          }
+          const ceiling = data.saleId
+            ? Math.min(maxApply, Math.max(0, ((await tx.get('sales', data.saleId)) || {}).dueMinor || 0))
+            : maxApply;
+          if (payment.amountMinor > ceiling) {
+            throw BeeStore.errors.err('VALIDATION',
+              'لا يمكن إعدام أكثر من الدين المستحق (' + BeeStore.money.format(ceiling) + ')');
+          }
+          payment.note = payment.note || data.reason || '';
+        }
 
         let appliedMinor = 0;
         if (!data.saleId) {
@@ -276,6 +295,105 @@
         }
 
         return payment;
+      });
+    }
+
+    /**
+     * v4 M4: writes off an uncollectible receivable (owner decision). Stored
+     * as a customer "payment" with method `write_off` and no money account,
+     * so invoice allocation, statements and replay behave like a collection;
+     * the journal posts Dr 6410 bad debts / Cr 1100.
+     * @param {object} data {customerId, saleId?, amountMinor?, date?, reason}
+     * @returns {Promise<object>} the write-off record
+     */
+    async writeOff(data) {
+      data = data || {};
+      if (!data.customerId) throw BeeStore.errors.err('VALIDATION', 'اختر الزبون');
+      let amount = BeeStore.money.roundMinor(data.amountMinor);
+      if (!amount && data.saleId) {
+        const sale = await this.repo.get('sales', data.saleId);
+        amount = sale ? BeeStore.money.roundMinor(sale.dueMinor) : 0;
+      }
+      if (!String(data.reason || '').trim()) {
+        throw BeeStore.errors.err('VALIDATION', 'سبب إعدام الدين مطلوب');
+      }
+      const rec = await this.receivePayment({
+        customerId: data.customerId, saleId: data.saleId || null,
+        date: data.date, amountMinor: amount, method: 'write_off',
+        reason: String(data.reason).trim(), note: String(data.reason).trim(),
+      });
+      if (BeeStore.audit && BeeStore.audit.record) {
+        BeeStore.audit.record('write_off', 'customer', data.customerId,
+          'إعدام دين ' + amount + ' — ' + String(data.reason).trim());
+      }
+      return rec;
+    }
+
+    /**
+     * Credit (2030) a customer still holds, from the journal.
+     * @param {object} reader repo or transaction
+     * @param {string} customerId customer id
+     * @returns {Promise<number>} available credit in minor units (>= 0)
+     */
+    async availableCredit(reader, customerId) {
+      const chart = await reader.list('chartOfAccounts');
+      const credits = chart.find(a => a.systemKey === 'customer_credits');
+      if (!credits) return 0;
+      let balance = 0;
+      for (const e of await reader.list('journalEntries')) {
+        for (const l of (e.lines || [])) {
+          if (l.accountId === credits.id && l.partyType === 'customer' && l.partyId === customerId) {
+            balance += (Number(l.creditMinor) || 0) - (Number(l.debitMinor) || 0);
+          }
+        }
+      }
+      return Math.max(0, balance);
+    }
+
+    /**
+     * Applies the customer's credit balance (2030) to open invoices, oldest
+     * first: each invoice's due drops and the journal moves the amount from
+     * 2030 to 1100 (Dr 2030 / Cr 1100). The customer's net balance does not
+     * change.
+     * @param {string} customerId customer id
+     * @param {string} [date] YYYY-MM-DD (default today)
+     * @returns {Promise<object>} {appliedMinor, invoices:[{saleId,number,amountMinor}]}
+     */
+    async applyCredit(customerId, date) {
+      date = date || BeeStore.dates.today();
+      return this.repo.transaction(async (tx) => {
+        await BeeStore.periods.assertOpen(tx, date);
+        const customer = await tx.get('customers', customerId);
+        if (!customer) throw BeeStore.errors.err('NOT_FOUND', 'الزبون غير موجود');
+        let credit = await this.availableCredit(tx, customerId);
+        if (credit <= 0) throw BeeStore.errors.err('VALIDATION', 'لا يوجد رصيد دائن للزبون');
+        const open = (await tx.query('sales', 'customerId', customerId))
+          .filter(s => s.status !== 'void' && s.dueMinor > 0 && s.date <= date)
+          .sort((a, b) => String(a.date).localeCompare(String(b.date)));
+        if (open.length === 0) throw BeeStore.errors.err('VALIDATION', 'لا توجد فواتير مفتوحة لهذا الزبون');
+        const applied = [];
+        let total = 0;
+        for (const sale of open) {
+          if (credit <= 0) break;
+          const amount = Math.min(credit, sale.dueMinor);
+          sale.dueMinor -= amount;
+          sale.paidMinor += amount;
+          sale.creditAppliedMinor = (Number(sale.creditAppliedMinor) || 0) + amount;
+          this._applyInstallmentPayment(sale, amount);
+          sale.status = sale.dueMinor <= 0 ? 'paid' : 'partial';
+          sale.updatedAt = BeeStore.dates.now();
+          if (BeeStore.posting) {
+            const entry = await BeeStore.posting.creditApplication(tx, sale, amount, date);
+            if (entry) BeeStore.posting.link(sale, entry);
+          }
+          tx.put('sales', sale);
+          applied.push({ saleId: sale.id, number: sale.number, amountMinor: amount });
+          credit -= amount;
+          total += amount;
+        }
+        tx.put('auditLog', BeeStore.audit.build('credit_apply', 'customer', customerId,
+          'تطبيق رصيد دائن ' + total + ' على ' + applied.length + ' فاتورة'));
+        return { appliedMinor: total, invoices: applied };
       });
     }
 

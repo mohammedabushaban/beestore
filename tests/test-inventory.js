@@ -11,7 +11,7 @@ require('../js/storage/repository.js');
 const MemoryRepository = require('../js/storage/memoryRepository.js');
 require('../js/storage/migrations.js');
 ['settings', 'auth', 'accounts', 'expenses', 'periods', 'chartOfAccounts',
- 'journal', 'posting', 'categories', 'products', 'variants', 'stock', 'sales',
+ 'journal', 'posting', 'journalIntegrity', 'categories', 'products', 'variants', 'stock', 'sales',
  'customers', 'returns', 'purchases', 'purchaseReturns', 'suppliers',
  'payroll', 'employees', 'transactions', 'reports', 'dashboard', 'backup',
  'maintenance'].forEach(f => require('../js/services/' + f + '.js'));

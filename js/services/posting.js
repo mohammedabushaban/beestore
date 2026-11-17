@@ -1427,7 +1427,8 @@
     /**
      * v5 §8 disposal: reverse future scheduled depreciation, then Dr Cash
      * proceeds + Dr 1590 accumulated + Dr 6350 loss (or Cr 4110 gain),
-     * Cr 1500 cost. The book value uses the schedule through the disposal date.
+     * Cr 1500 cost. The book value uses the depreciation booked through the
+     * disposal date (the schedule only when nothing was booked, e.g. replay).
      * @param {object} tx active transaction
      * @param {object} asset fixedAssets record
      * @param {object} [options] {replay}
@@ -1437,11 +1438,27 @@
       const cost = round(asset.costMinor);
       if (cost <= 0) return null;
       await this.reverseFixedAssetFutureDepreciation(tx, asset, options);
-      const plan = this.fixedAssetDepreciationPlan(asset);
+      // Derecognise the accumulated depreciation actually booked for this
+      // asset (live entries through the disposal date), not the theoretical
+      // schedule: if the two ever differ, 1590 would otherwise be left with a
+      // residual or pushed past zero.
       let accumulated = 0;
-      for (const item of plan) {
-        if (asset.disposalDate && item.date <= asset.disposalDate) {
-          accumulated += item.amountMinor;
+      const booked = (await this._sourceActive(tx, SOURCE.FIXED_ASSET, asset.id))
+        .filter(e => e.event === EVENTS.FIXED_ASSET_DEPRECIATION &&
+          (!asset.disposalDate || e.date <= asset.disposalDate));
+      if (booked.length > 0) {
+        const byKey = await this.chartMap(tx);
+        const accumulatedAccount = byKey.get('accumulated_depreciation');
+        for (const entry of booked) {
+          for (const line of (entry.lines || [])) {
+            if (accumulatedAccount && line.accountId === accumulatedAccount.id) {
+              accumulated += (Number(line.creditMinor) || 0) - (Number(line.debitMinor) || 0);
+            }
+          }
+        }
+      } else {
+        for (const item of this.fixedAssetDepreciationPlan(asset)) {
+          if (asset.disposalDate && item.date <= asset.disposalDate) accumulated += item.amountMinor;
         }
       }
       const book = cost - accumulated;

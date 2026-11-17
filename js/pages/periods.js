@@ -27,8 +27,76 @@
     container.appendChild(listDiv);
     container.appendChild(detailDiv);
 
+    const yearsDiv = el('div', { id: 'fiscal-years' });
+    container.appendChild(yearsDiv);
+
     await _renderList(listDiv, state, detailDiv);
     await _renderDetail(detailDiv, state);
+    await _renderYears(yearsDiv);
+  }
+
+  // Fiscal year-end closing: P&L accounts → 3040 retained earnings.
+  async function _renderYears(yearsDiv) {
+    yearsDiv.innerHTML = '';
+    if (!BeeStore.api.yearEnd) return;
+    const res = await BeeStore.api.yearEnd.status();
+    if (!res.ok || res.data.length === 0) return;
+    const closedYears = res.data.filter(y => y.closed).map(y => y.year);
+    const latestClosed = closedYears.length ? closedYears[closedYears.length - 1] : null;
+    const rows = res.data.map((y) => el('tr', {}, [
+      el('td', {}, y.year),
+      el('td', {}, y.closed
+        ? el('span', { class: 'badge badge-muted' }, '🔒 مقفلة (' + y.entryNumber + ')')
+        : el('span', { class: 'badge badge-success' }, 'مفتوحة')),
+      el('td', {}, y.closed
+        ? (y.year === latestClosed ? el('button', {
+          class: 'btn btn-sm btn-secondary', onclick: () => _reopenYear(y.year, yearsDiv),
+        }, 'إعادة فتح') : '—')
+        : el('button', {
+          class: 'btn btn-sm btn-primary', onclick: () => _closeYear(y.year, yearsDiv),
+        }, 'معاينة وإقفال')),
+    ]));
+    yearsDiv.appendChild(el('div', { class: 'card' }, [
+      el('h3', {}, 'إقفال السنة المالية'),
+      el('p', { class: 'form-hint' },
+        'يُرحَّل صافي ربح السنة إلى حساب الأرباح المبقاة (3040) بقيد إقفال بتاريخ 31 ديسمبر، ' +
+        'ويصبح رصيد كل حسابات الإيرادات والمصروفات صفراً. يتطلب انتهاء السنة وإقفال كل شهورها.'),
+      el('div', { class: 'table-wrapper' }, el('table', { class: 'data-table' }, [
+        el('thead', {}, el('tr', {}, [el('th', {}, 'السنة'), el('th', {}, 'الحالة'), el('th', {}, '')])),
+        el('tbody', {}, rows),
+      ])),
+    ]));
+  }
+
+  async function _closeYear(year, yearsDiv) {
+    const res = await BeeStore.api.yearEnd.preview(year);
+    if (!res.ok) { toast(res.error.message, 'error'); return; }
+    const p = res.data;
+    if (!p.canClose) {
+      toast('لا يمكن إقفال ' + year + ': ' + p.blockers.join('؛ '), 'error');
+      return;
+    }
+    confirmDialog('إقفال السنة المالية ' + year,
+      'الإيرادات: ' + formatMoney(p.revenueMinor) +
+      ' — المصروفات: ' + formatMoney(p.expenseMinor) +
+      ' — ' + (p.netProfitMinor >= 0 ? 'صافي الربح' : 'صافي الخسارة') + ': ' +
+      formatMoney(Math.abs(p.netProfitMinor)) +
+      '. سيُرحَّل إلى الأرباح المبقاة (3040). متابعة؟', async () => {
+        const done = await BeeStore.api.yearEnd.close(year);
+        if (!done.ok) { toast(done.error.message, 'error'); return; }
+        toast('تم إقفال السنة ' + year + ' بالقيد ' + done.data.number, 'success');
+        await _renderYears(yearsDiv);
+      });
+  }
+
+  async function _reopenYear(year, yearsDiv) {
+    confirmDialog('إعادة فتح السنة ' + year,
+      'سيُضاف قيد عكسي لقيد الإقفال وتعود أرصدة الإيرادات والمصروفات. متابعة؟', async () => {
+        const done = await BeeStore.api.yearEnd.reopen(year);
+        if (!done.ok) { toast(done.error.message, 'error'); return; }
+        toast('أُعيد فتح السنة ' + year, 'success');
+        await _renderYears(yearsDiv);
+      });
   }
 
   async function _renderList(listDiv, state, detailDiv) {

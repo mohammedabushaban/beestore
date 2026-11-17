@@ -826,7 +826,12 @@
       const byId = new Map(chart.map(a => [a.id, a]));
       const balances = new Map();
       const party = new Map();
+      // Year-end closing entries move P&L balances into 3040. Reports measure
+      // performance and equity from the underlying postings, so they are kept
+      // aside and only used to present retained earnings separately.
+      const closingEntries = entries.filter(e => e.sourceType === 'YEAR_CLOSE');
       for (const entry of entries) {
+        if (entry.sourceType === 'YEAR_CLOSE') continue;
         for (const line of (entry.lines || [])) {
           const amount = (Number(line.debitMinor) || 0) - (Number(line.creditMinor) || 0);
           if (!amount) continue;
@@ -837,7 +842,10 @@
           }
         }
       }
-      return { entries, chart, byId, balances, party };
+      return {
+        entries: entries.filter(e => e.sourceType !== 'YEAR_CLOSE'),
+        closingEntries, chart, byId, balances, party,
+      };
     }
 
     _ctxAccountBalance(ctx, accountId) {
@@ -965,14 +973,35 @@
       for (const account of ctx.chart) {
         if (!this._isMoneyChartAccount(account)) continue;
         const balance = this._ctxAccountBalance(ctx, account.id);
-        if (account.clearing) clearingOutstanding += balance;
-        cashByAccount[account.legacyAccountId || account.id] = balance;
+        if (account.clearing) {
+          // Same key as the document snapshot: one line for money still in
+          // card/wallet clearing, whatever the number of clearing accounts.
+          clearingOutstanding += balance;
+          if (balance) cashByAccount.clearing = (cashByAccount.clearing || 0) + balance;
+        } else {
+          cashByAccount[account.legacyAccountId || account.id] = balance;
+        }
         cashBalance += balance;
       }
 
       const inventoryValue = this._ctxSystemBalance(ctx, 'inventory', '1200');
-      const receivables = this._ctxSystemBalance(ctx, 'ar', '1100');
-      const customerCredits = -this._ctxSystemBalance(ctx, 'customer_credits', '2030');
+      // Present each customer's net position (AR 1100 + credits 2030), like
+      // the customer statement: a customer who owes 100 and holds a 30 credit
+      // is a 70 receivable, not a 100 asset and a 30 liability (set-off
+      // within the same counterparty). Lines without a party stay as booked.
+      const arTotal = this._ctxSystemBalance(ctx, 'ar', '1100');
+      const creditsTotal = this._ctxSystemBalance(ctx, 'customer_credits', '2030');
+      let receivables = 0;
+      let customerCredits = 0;
+      let taggedNet = 0;
+      for (const net of this._journalCustomerBalances(ctx).values()) {
+        taggedNet += net;
+        if (net >= 0) receivables += net;
+        else customerCredits += -net;
+      }
+      const untagged = arTotal + creditsTotal - taggedNet;
+      if (untagged >= 0) receivables += untagged;
+      else customerCredits += -untagged;
       const payables = -this._ctxSystemBalance(ctx, 'ap', '2010');
       const prepaid = this._ctxSystemBalance(ctx, 'prepaid', '1300');
       const accruedExpensesTotal = -this._ctxSystemBalance(ctx, 'accrued_expenses', '2020');
@@ -1012,6 +1041,17 @@
         accruedWithholdings + accruedEmployer + endOfService + taxPayable +
         unpaidExpenses + unpaidFixedAssets;
       const equityTotal = openingEquity + capitalIn - withdrawals + cumulativeProfit;
+      // Retained earnings of closed fiscal years (3040, from closing entries
+      // up to asOf) and the result of the years still open.
+      let retainedEarnings = 0;
+      for (const entry of ctx.closingEntries || []) {
+        for (const line of (entry.lines || [])) {
+          const account = ctx.byId.get(line.accountId);
+          if (!account || account.systemKey !== 'retained_earnings') continue;
+          retainedEarnings += (Number(line.creditMinor) || 0) - (Number(line.debitMinor) || 0);
+        }
+      }
+      const currentProfit = cumulativeProfit - retainedEarnings;
       return {
         asOf,
         assets: {
@@ -1027,7 +1067,8 @@
         },
         equity: {
           openingEquity, capitalIn, withdrawals,
-          retained: cumulativeProfit, cumulativeProfit, total: equityTotal,
+          retained: cumulativeProfit, cumulativeProfit,
+          retainedEarnings, currentProfit, total: equityTotal,
         },
         balanced: assets === liabilities + equityTotal,
         source: 'journal',

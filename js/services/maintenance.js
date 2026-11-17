@@ -329,7 +329,10 @@
         if (expectTotal !== s.totalMinor) {
           err('sale-math', 'فاتورة ' + s.number + ': المجموع لا يساوي البنود − الخصم + الضريبة', 'sale', s.id);
         }
-        const recordedPaid = (s.payments || []).reduce((a, p) => a + (BeeStore.money.roundMinor(p.amountMinor || 0) || 0), 0);
+        // v4 R2.2: only the part of each receipt applied to the invoice counts;
+        // change handed back and overpayment kept as credit/income do not.
+        const recordedPaid = (s.payments || []).reduce((a, p) => a + (BeeStore.money.roundMinor(
+          p.appliedMinor != null ? p.appliedMinor : (p.amountMinor || 0)) || 0), 0);
         // paidMinor may legitimately exceed the sale-time payments once later
         // collections (customerPayments) are applied; flag only real drift:
         // negative, above total, or below what documents already recorded.
@@ -362,6 +365,14 @@
       // 3. Purchases / returns / payroll coherence + refs.
       const purchases = await this.repo.list('purchases');
       const purNumbers = new Set();
+      // Payable-reducing returns lower the invoice's remaining due (v5 §4
+      // row 7); cash refunds leave it untouched.
+      const payableReductions = {};
+      for (const r of await this.repo.list('purchaseReturns')) {
+        if (r.voided || r.mode === 'cash_refund' || !r.purchaseId) continue;
+        payableReductions[r.purchaseId] = (payableReductions[r.purchaseId] || 0) +
+          (Number(r.totalMinor) || 0);
+      }
       for (const p of purchases) {
         if (purNumbers.has(p.number)) err('unique', 'رقم مشتريات مكرر: ' + p.number, 'purchase', p.id);
         purNumbers.add(p.number);
@@ -370,7 +381,7 @@
         if (sub - (p.discountMinor || 0) !== p.totalMinor) {
           err('purchase-math', 'مشتريات ' + p.number + ': الإجمالي غير متسق', 'purchase', p.id);
         }
-        if ((p.dueMinor || 0) !== p.totalMinor - (p.paidMinor || 0)) {
+        if ((p.dueMinor || 0) !== p.totalMinor - (p.paidMinor || 0) - (payableReductions[p.id] || 0)) {
           err('purchase-math', 'مشتريات ' + p.number + ': المتبقي غير متسق', 'purchase', p.id);
         }
         if (p.supplierId && !supplierIds.has(p.supplierId)) err('refs', 'مشتريات ' + p.number + ': مورد مفقود', 'purchase', p.id);
@@ -773,8 +784,20 @@
         }
       }
 
+      // 17. v5 §9 journal integrity (A6): invariants, control accounts =
+      // sub-ledgers, document ↔ journal, orphan entries, negative balances,
+      // closed fiscal years.
+      let journal = null;
+      if (BeeStore.journalIntegrity && BeeStore.JournalIntegrityService) {
+        const service = new BeeStore.JournalIntegrityService(this.repo);
+        journal = await service.check();
+        for (const e of journal.errors) err(e.check, e.message, e.entityType, e.entityId);
+        for (const w of journal.warnings) warn(w.check, w.message, w.entityType, w.entityId);
+      }
+
       return {
-        errors, warnings, checks: 16,
+        errors, warnings, checks: 17,
+        journal: journal ? { checked: journal.checked, skipped: journal.skipped } : null,
         backup,
         storage,
         clock,

@@ -45,12 +45,14 @@
     _ensureIndex(collection, field) {
       if (!this.indexes[collection]) this.indexes[collection] = {};
       if (!this.indexes[collection][field]) {
+        // key → Map(id → doc), so a commit can move one document between
+        // buckets in O(1) instead of rebuilding the whole index.
         const idx = new Map();
         for (const [id, doc] of this.data[collection]) {
           const key = doc[field];
           if (key !== undefined && key !== null) {
-            if (!idx.has(key)) idx.set(key, []);
-            idx.get(key).push(doc);
+            if (!idx.has(key)) idx.set(key, new Map());
+            idx.get(key).set(id, doc);
           }
         }
         this.indexes[collection][field] = idx;
@@ -61,6 +63,32 @@
     _rebuildIndex(collection, field) {
       this.indexes[collection][field] = null;
       return this._ensureIndex(collection, field);
+    }
+
+    _unindex(collection, doc) {
+      const fields = this.indexes[collection] || {};
+      for (const field of Object.keys(fields)) {
+        const idx = fields[field];
+        if (!idx) continue;
+        const key = doc[field];
+        if (key === undefined || key === null) continue;
+        const bucket = idx.get(key);
+        if (!bucket) continue;
+        bucket.delete(doc.id);
+        if (bucket.size === 0) idx.delete(key);
+      }
+    }
+
+    _index(collection, doc) {
+      const fields = this.indexes[collection] || {};
+      for (const field of Object.keys(fields)) {
+        const idx = fields[field];
+        if (!idx) continue;
+        const key = doc[field];
+        if (key === undefined || key === null) continue;
+        if (!idx.has(key)) idx.set(key, new Map());
+        idx.get(key).set(doc.id, doc);
+      }
     }
 
     async open() {
@@ -144,11 +172,12 @@
           if (lte !== undefined && key > lte) match = false;
           if (gt !== undefined && key <= gt) match = false;
           if (lt !== undefined && key >= lt) match = false;
-          if (match) results.push(...docs);
+          if (match) results.push(...docs.values());
         }
         return results;
       }
-      return idx.get(valueOrRange) || [];
+      const bucket = idx.get(valueOrRange);
+      return bucket ? Array.from(bucket.values()) : [];
     }
 
     async transaction(fn) {
@@ -184,46 +213,35 @@
 
     _commit(staged) {
       this._summaryCache = null;
+      // Indexes are maintained per document (v2 §12.1.11): a full rebuild per
+      // commit made every write O(n) and a 50k-invoice run quadratic.
       for (const p of staged.puts) {
-        this.data[p.collection].set(p.doc.id, JSON.parse(JSON.stringify(p.doc)));
+        const previous = this.data[p.collection].get(p.doc.id);
+        if (previous) this._unindex(p.collection, previous);
+        const doc = JSON.parse(JSON.stringify(p.doc));
+        this.data[p.collection].set(doc.id, doc);
+        this._index(p.collection, doc);
       }
       for (const r of staged.removes) {
+        const previous = this.data[r.collection].get(r.id);
+        if (previous) this._unindex(r.collection, previous);
         this.data[r.collection].delete(r.id);
-      }
-      // Perf (v2 §12.1.11): rebuild each touched index ONCE per commit.
-      // (Rebuilding per doc per field was O(n²) — minutes at 50k docs.)
-      const touched = new Map();
-      const touch = (collection, field) => {
-        let s = touched.get(collection);
-        if (!s) { s = new Set(); touched.set(collection, s); }
-        s.add(field);
-      };
-      for (const p of staged.puts) {
-        for (const field of Object.keys(p.doc)) touch(p.collection, field);
-      }
-      for (const r of staged.removes) {
-        for (const field of Object.keys(this.indexes[r.collection] || {})) touch(r.collection, field);
-      }
-      for (const [collection, fields] of touched) {
-        for (const field of fields) this._rebuildIndex(collection, field);
       }
     }
 
+    // Documents only change in _commit, which runs after the transaction
+    // body succeeded. Before that, the only in-place mutation is the meta
+    // record (counters), so that is all a rollback has to restore.
     _snapshot() {
-      const snap = {};
-      for (const c of COLLECTIONS) {
-        snap[c] = new Map();
-        for (const [k, v] of this.data[c]) snap[c].set(k, JSON.parse(JSON.stringify(v)));
-      }
+      const snap = { meta: new Map() };
+      for (const [k, v] of this.data.meta) snap.meta.set(k, JSON.parse(JSON.stringify(v)));
       return snap;
     }
 
     _restore(snap) {
       this._summaryCache = null;
-      for (const c of COLLECTIONS) {
-        this.data[c] = new Map(snap[c]);
-        this.indexes[c] = {};
-      }
+      this.data.meta = new Map(snap.meta);
+      this.indexes.meta = {};
     }
 
     _createTx() {
@@ -264,20 +282,40 @@
           return docs;
         },
         async query(collection, indexName, valueOrRange) {
-          const all = await tx.list(collection);
-          const idx = self._ensureIndex(collection, indexName);
-          if (valueOrRange && typeof valueOrRange === 'object' && !(valueOrRange instanceof Date)) {
-            const { gte, lte, gt, lt } = valueOrRange;
-            return all.filter(d => {
-              const key = d[indexName];
-              if (gte !== undefined && key < gte) return false;
-              if (lte !== undefined && key > lte) return false;
-              if (gt !== undefined && key <= gt) return false;
-              if (lt !== undefined && key >= lt) return false;
-              return true;
-            });
+          if (!(valueOrRange && typeof valueOrRange === 'object' && !(valueOrRange instanceof Date))) {
+            // Exact match: committed rows from the index, overlaid with this
+            // transaction's staged puts and removes.
+            const idx = self._ensureIndex(collection, indexName);
+            const bucket = idx.get(valueOrRange);
+            const stagedDocs = new Map();
+            const removed = new Set();
+            for (const p of staged.puts) {
+              if (p.collection === collection) stagedDocs.set(p.doc.id, p.doc);
+            }
+            for (const r of staged.removes) {
+              if (r.collection === collection) removed.add(r.id);
+            }
+            const out = [];
+            if (bucket) {
+              for (const [id, doc] of bucket) {
+                if (!removed.has(id) && !stagedDocs.has(id)) out.push(doc);
+              }
+            }
+            for (const doc of stagedDocs.values()) {
+              if (!removed.has(doc.id) && doc[indexName] === valueOrRange) out.push(doc);
+            }
+            return out;
           }
-          return all.filter(d => d[indexName] === valueOrRange);
+          const all = await tx.list(collection);
+          const { gte, lte, gt, lt } = valueOrRange;
+          return all.filter(d => {
+            const key = d[indexName];
+            if (gte !== undefined && key < gte) return false;
+            if (lte !== undefined && key > lte) return false;
+            if (gt !== undefined && key <= gt) return false;
+            if (lt !== undefined && key >= lt) return false;
+            return true;
+          });
         },
         put(collection, doc) {
           if (BeeStore.isAppendOnly && BeeStore.isAppendOnly(collection)) {

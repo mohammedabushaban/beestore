@@ -637,30 +637,55 @@
       if (!res.ok) { toast(res.error.message, 'error'); return; }
       const d = res.data;
       resultDiv.innerHTML = '';
+      // Every component of each total is listed (zero lines hidden), so the
+      // printed lines always add up to the totals (IAS 1 current/non-current).
+      const row = (label, v, always) => (v || always)
+        ? el('p', {}, label + ': ' + formatMoney(v || 0)) : null;
+      const a = d.assets, l = d.liabilities, q = d.equity;
+      const unpaid = (l.unpaidExpenses || 0) + (l.unpaidFixedAssets || 0);
+      const payroll = (l.accruedSalaries != null ? l.accruedSalaries : (l.accrued || 0)) +
+        (l.accruedWithholdings || 0) + (l.accruedEmployer || 0);
+      const closedYears = q.retainedEarnings != null && q.retainedEarnings !== 0;
       resultDiv.appendChild(el('div', { class: 'card' }, [
-        el('h3', {}, 'الميزانية المبسطة كما في ' + dateInput.value),
+        el('h3', {}, 'الميزانية كما في ' + dateInput.value),
         el('p', {}, d.balanced ? '✓ الميزانية متوازنة' : '⚠ الميزانية غير متوازنة'),
         el('div', { class: 'balances-grid' }, [
           el('div', { class: 'balance-section' }, [
-            el('h4', {}, 'الأصول'),
-            el('p', {}, 'النقدية: ' + formatMoney(d.assets.cashBalance)),
-            el('p', {}, 'المخزون: ' + formatMoney(d.assets.inventoryValue)),
-            el('p', {}, 'ذمم الزبائن: ' + formatMoney(d.assets.receivables)),
-            el('p', {}, 'سلف الموظفين: ' + formatMoney(d.assets.advancesOutstanding)),
-            el('p', { class: 'total-final' }, 'إجمالي الأصول: ' + formatMoney(d.assets.total)),
+            el('h4', {}, 'الأصول المتداولة'),
+            row('النقدية والبنوك', a.cashBalance - (a.clearingOutstanding || 0), true),
+            row('مبالغ بطاقات/محافظ قيد التسوية', a.clearingOutstanding),
+            row('المخزون', a.inventoryValue, true),
+            row('ذمم الزبائن', a.receivables, true),
+            row('مصاريف مدفوعة مقدماً', a.prepaid),
+            row('سلف الموظفين', a.advancesOutstanding),
+            (a.fixedAssetsCost || a.fixedAssetsNet) ? el('h4', {}, 'الأصول غير المتداولة') : null,
+            row('الأصول الثابتة (التكلفة)', a.fixedAssetsCost),
+            row('− مجمع الإهلاك', a.accumulatedDepreciation ? -a.accumulatedDepreciation : 0),
+            row('صافي الأصول الثابتة', a.fixedAssetsNet),
+            el('p', { class: 'total-final' }, 'إجمالي الأصول: ' + formatMoney(a.total)),
           ]),
           el('div', { class: 'balance-section' }, [
-            el('h4', {}, 'الخصوم'),
-            el('p', {}, 'ذمم الموردين: ' + formatMoney(d.liabilities.payables)),
-            el('p', {}, 'أرصدة الزبائن: ' + formatMoney(d.liabilities.customerCredits)),
-            el('p', { class: 'total-final' }, 'إجمالي الخصوم: ' + formatMoney(d.liabilities.total)),
+            el('h4', {}, 'الخصوم المتداولة'),
+            row('ذمم الموردين', l.payables, true),
+            row('أرصدة الزبائن الدائنة', l.customerCredits),
+            row('مصاريف مستحقة غير مدفوعة', unpaid),
+            row('رواتب ومستحقات رواتب', payroll),
+            row('ضريبة مستحقة', l.taxPayable),
+            l.endOfService ? el('h4', {}, 'الخصوم غير المتداولة') : null,
+            row('مخصص نهاية الخدمة', l.endOfService),
+            el('p', { class: 'total-final' }, 'إجمالي الخصوم: ' + formatMoney(l.total)),
           ]),
           el('div', { class: 'balance-section' }, [
             el('h4', {}, 'حقوق الملكية'),
-            el('p', {}, 'رأس المال: ' + formatMoney(d.equity.capitalIn)),
-            el('p', {}, 'السحوبات: ' + formatMoney(d.equity.withdrawals)),
-            el('p', {}, 'الأرباح المحتجزة: ' + formatMoney(d.equity.retained)),
-            el('p', { class: 'total-final' }, 'إجمالي حقوق الملكية: ' + formatMoney(d.equity.total)),
+            row('حقوق الملكية الافتتاحية', q.openingEquity),
+            row('رأس المال المضاف', q.capitalIn),
+            row('− المسحوبات', q.withdrawals ? -q.withdrawals : 0),
+            closedYears ? row('أرباح مبقاة (سنوات مقفلة)', q.retainedEarnings, true) : null,
+            closedYears
+              ? row('أرباح السنة الحالية', q.currentProfit, true)
+              : row('الأرباح المحتجزة', q.retained, true),
+            el('p', { class: 'total-final' }, 'إجمالي حقوق الملكية: ' + formatMoney(q.total)),
+            el('p', { class: 'total-final' }, 'الخصوم + حقوق الملكية: ' + formatMoney(l.total + q.total)),
           ]),
         ]),
       ]));
@@ -829,7 +854,8 @@
         }, [
           el('td', { class: 'num' }, e.number),
           el('td', { class: 'num' }, BeeStore.dates.formatDocDateTime(e)),
-          el('td', {}, sourceLabel(e.sourceType) + (e.reversalOf ? ' (عكسي)' : '')),
+          el('td', {}, sourceLabel(e.sourceType) + (e.reversalOf ? ' (عكسي)' : '') +
+            (e.isScheduled ? ' (مجدول)' : '')),
           el('td', {}, e.description || ''),
           el('td', { class: 'num' }, formatMoney(total)),
         ]);

@@ -372,6 +372,15 @@
           throw BeeStore.errors.err('CONFLICT',
             'يمكن إعادة فتح آخر شهر مُقفل فقط (' + latest + ') — أعد الفتح بالترتيب');
         }
+        // A month inside a closed fiscal year stays locked: reopening it would
+        // let postings change a year whose result already sits in 3040.
+        if (BeeStore.yearEnd && BeeStore.YearEndService) {
+          const yearSvc = new BeeStore.YearEndService(this.repo);
+          if (await yearSvc.isYearClosed(tx, month.slice(0, 4))) {
+            throw BeeStore.errors.err('CONFLICT',
+              'السنة ' + month.slice(0, 4) + ' مقفلة — أعد فتح السنة المالية أولاً');
+          }
+        }
         const rec = all.find(c => c.month === month);
         rec.reopenHistory = rec.reopenHistory || [];
         rec.reopenHistory.push({

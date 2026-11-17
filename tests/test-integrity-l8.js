@@ -91,7 +91,7 @@ test('L8: closed day recomputes exactly, drawer balance and freshness are report
     const res = (await api.maintenance.integrityCheck()).data;
 
     assert.deepStrictEqual(l8Errors(res), [], JSON.stringify(res.errors));
-    assert.strictEqual(res.checks, 16);
+    assert.strictEqual(res.checks, 17);
 
     // 1000.00 + 100.00 − 5.00 shortage = 1095.00 counted; − 20.00 = 1075.00.
     assert.strictEqual(base.close.expectedCashMinor, 110000);

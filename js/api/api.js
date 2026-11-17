@@ -17,7 +17,7 @@
         'settings', 'auth', 'clockGuard', 'accounts', 'categories', 'products', 'variants', 'stock',
         'sales', 'returns', 'customers', 'suppliers', 'purchases', 'purchaseReturns',
         'expenses', 'employees', 'payroll', 'fixedAssets', 'transactions', 'periods',
-        'chart', 'journal', 'posting', 'settlements',
+        'chart', 'journal', 'posting', 'journalIntegrity', 'yearEnd', 'settlements',
         'dailyClosing', 'reports', 'dashboard', 'backup', 'maintenance', 'audit',
         'accountingPackage',
       ];
@@ -291,6 +291,13 @@
       deactivate: async (id) => ok(await BeeStore.chart.deactivate(id)),
     };
 
+    yearEnd = {
+      status: async () => ok(await BeeStore.yearEnd.status()),
+      preview: async (year) => ok(await BeeStore.yearEnd.preview(year)),
+      close: async (year, note) => ok(await BeeStore.yearEnd.close(year, note)),
+      reopen: async (year, note) => ok(await BeeStore.yearEnd.reopen(year, note)),
+    };
+
     journal = {
       list: async (filters) => ok(await BeeStore.journal.list(filters)),
       get: async (id) => ok(await BeeStore.journal.get(id)),
@@ -560,6 +567,7 @@
       reclassifyStockEquity: async (options) =>
         ok(await BeeStore.maintenance.reclassifyStockEquity(options)),
       integrityCheck: async () => ok(await BeeStore.maintenance.integrityCheck()),
+      journalIntegrity: async (options) => ok(await BeeStore.journalIntegrity.check(options)),
       resetAll: async () => ok(await BeeStore.maintenance.resetAll()),
       isDatabaseEmpty: async () => ok(await BeeStore.maintenance.isDatabaseEmpty()),
     };

@@ -287,7 +287,7 @@
       });
     }
 
-    /** Inventory value as of date. Uses tracked valueAfterMinor when present.
+    /** Inventory value as of date: Σ tracked value changes dated on/before it.
      * @param {string} date YYYY-MM-DD as-of date
      * @returns {Promise<{date:string,totalCost:number,lines:Array}>} valuation
      */
@@ -303,14 +303,33 @@
       const everMoved = await this.repo.lastManyByIndex(
         'stockMovements', 'variantDate', 'variantId',
         missing, 'date', '9999-12-31');
+      // Movements can be back-dated inside an open month, so the running
+      // balance stored on the latest-dated movement may include later-dated
+      // ones. Sum the signed changes dated on/before `date` instead — the same
+      // rule the journal (1200) uses. Only a variant with a legacy movement
+      // that has no tracked value falls back to the stored snapshot.
+      const sums = {};
+      for (const mv of await this.repo.listRange('stockMovements', '0000-01-01', date)) {
+        if (!mv.variantId) continue;
+        const acc = sums[mv.variantId] || (sums[mv.variantId] = { qty: 0, value: 0, exact: true });
+        acc.qty += Number(mv.qtyChange) || 0;
+        if (mv.valueChangeMinor == null) acc.exact = false;
+        else acc.value += Math.round(Number(mv.valueChangeMinor) || 0);
+      }
       let totalCost = 0;
       const lines = [];
       for (const variant of variants) {
         const m = last[variant.id];
+        const exact = sums[variant.id] && sums[variant.id].exact ? sums[variant.id] : null;
         let qty;
         let value;
         let avg;
-        if (m) {
+        if (m && exact) {
+          qty = exact.qty;
+          value = exact.value;
+          avg = this.averageCost(qty, value,
+            m.avgCostAfterMinor != null ? m.avgCostAfterMinor : m.unitCostMinor);
+        } else if (m) {
           qty = m.balanceAfter != null ? Number(m.balanceAfter) || 0 : 0;
           if (m.valueAfterMinor != null) {
             value = Number(m.valueAfterMinor) || 0;

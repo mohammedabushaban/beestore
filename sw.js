@@ -14,7 +14,7 @@
 
 const CACHE_PREFIX = 'beestore-v3-lite-';
 // >>> BEGIN GENERATED PRECACHE (run: node scripts/build-sw-list.js)
-const CACHE_VERSION = 'beestore-v3-lite-5fbf0c4e860f';
+const CACHE_VERSION = 'beestore-v3-lite-9ff8012bfae3';
 const PRECACHE = [
   './bee.jpg',
   './css/app.css',

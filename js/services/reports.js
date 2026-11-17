@@ -313,10 +313,16 @@
     }
 
     async inventoryValuation() {
-      const variants = await this.repo.list('variants');
+      const [variants, products] = await Promise.all([
+        this.repo.list('variants'),
+        this.repo.list('products'),
+      ]);
+      const productMap = new Map();
+      for (const p of products) productMap.set(p.id, p);
       let totalCost = 0;
       let totalRetail = 0;
       const rows = variants.map(v => {
+        const product = productMap.get(v.productId);
         const qty = Number(v.quantity) || 0;
         const valueMinor = v.valueMinor != null
           ? Math.round(Number(v.valueMinor) || 0)
@@ -326,7 +332,13 @@
           : (Number(v.costMinor) || 0);
         totalCost += valueMinor;
         totalRetail += BeeStore.money.mul(v.priceMinor, qty);
-        return { ...v, valueMinor, avgCostMinor };
+        return {
+          ...v,
+          productName: product ? product.name : '',
+          productItemCode: product ? (product.itemCode || '') : '',
+          valueMinor,
+          avgCostMinor,
+        };
       });
       return {
         totalCost, totalRetail, potentialProfit: totalRetail - totalCost,

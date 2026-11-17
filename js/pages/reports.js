@@ -515,13 +515,18 @@
       ]),
     ]));
 
-    const rows = d.variants.map(v => [
-      v.size + ' / ' + v.color,
-      String(v.quantity),
-      formatMoney(v.avgCostMinor != null ? v.avgCostMinor : v.costMinor),
-      formatMoney(v.priceMinor),
-      formatMoney(v.valueMinor != null ? v.valueMinor : v.quantity * v.costMinor),
-    ]);
+    const rows = d.variants.map(v => {
+      const variantLabel = [v.size, v.color].filter(Boolean).join(' / ');
+      const name = v.productName || v.productItemCode || v.itemCode || v.barcode ||
+        'صنف غير معروف';
+      return [
+        variantLabel ? name + ' — ' + variantLabel : name,
+        String(v.quantity),
+        formatMoney(v.avgCostMinor != null ? v.avgCostMinor : v.costMinor),
+        formatMoney(v.priceMinor),
+        formatMoney(v.valueMinor != null ? v.valueMinor : v.quantity * v.costMinor),
+      ];
+    });
 
     container.appendChild(el('div', { class: 'card' }, [
       el('h3', {}, 'تفاصيل الأصناف'),

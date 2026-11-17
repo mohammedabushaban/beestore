@@ -183,3 +183,29 @@ test('V2 dashboard month figures match P&L', async () => {
     BeeStore.dates.resetClock();
   }
 });
+
+// Reports → تقييم المخزون: each row must carry the product name, not only
+// size/colour, so the page can show what the variant actually is.
+test('inventory valuation exposes product names for every variant row', async () => {
+  const api = await freshApi();
+  const prd = (await api.products.create({
+    name: 'قميص قطن', itemCode: 'SH-1',
+    defaultCostMinor: 1000, defaultPriceMinor: 2000,
+  })).data;
+  const v = (await api.variants.create({
+    productId: prd.id, size: 'M', color: 'أحمر',
+    quantity: 45, costMinor: 1000, priceMinor: 2000,
+    date: '2026-11-01',
+  })).data;
+
+  const val = (await api.reports.inventoryValuation()).data;
+  assert.strictEqual(val.variants.length, 1);
+  const row = val.variants[0];
+  assert.strictEqual(row.id, v.id);
+  assert.strictEqual(row.productName, 'قميص قطن');
+  assert.strictEqual(row.productItemCode, 'SH-1');
+  assert.strictEqual(row.valueMinor, 45000);
+  assert.strictEqual(val.totalCost, 45000);
+  assert.strictEqual(val.totalRetail, 90000);
+  assert.strictEqual(val.potentialProfit, 45000);
+});

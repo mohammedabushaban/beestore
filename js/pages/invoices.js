@@ -94,6 +94,60 @@
     return p.date === sale.date ? { ...p, time: sale.time, createdAt: sale.createdAt } : p;
   }
 
+  // An exchange is posted as a separate sale linked from the return. Build a
+  // per-variant summary so the original invoice can show the replacement
+  // quantity without pretending the original document changed.
+  function _exchangeInfo(exchanges) {
+    const byVariant = {};
+    const byReturnId = {};
+    for (const entry of exchanges || []) {
+      const sale = entry && entry.sale;
+      if (!sale) continue;
+      byReturnId[entry.returnId] = sale;
+      for (const line of sale.lines || []) {
+        const key = line.variantId;
+        if (!byVariant[key]) {
+          byVariant[key] = { qty: 0, returnedQty: 0, invoices: [] };
+        }
+        byVariant[key].qty += Number(line.qty) || 0;
+        byVariant[key].returnedQty += Number(line.returnedQty) || 0;
+        if (byVariant[key].invoices.indexOf(sale.number) < 0) {
+          byVariant[key].invoices.push(sale.number);
+        }
+      }
+    }
+    return { byVariant, byReturnId };
+  }
+
+  function _exchangeStatus(sale) {
+    if (sale.status === 'void') return 'ملغي';
+    if (sale.returnStatus === 'full') return 'مرتجع كامل';
+    if (sale.returnStatus === 'partial') return 'مرتجع جزئي';
+    return 'نشط';
+  }
+
+  // Keep the original quantity visible, then explain the return/exchange
+  // movements and show the resulting net quantity for the line.
+  function _quantityCell(line, exchange) {
+    const qty = Number(line.qty) || 0;
+    const returned = Number(line.returnedQty) || 0;
+    const added = exchange ? Number(exchange.qty) || 0 : 0;
+    const addedReturned = exchange ? Number(exchange.returnedQty) || 0 : 0;
+    if (!returned && !added && !addedReturned) return String(qty);
+    const parts = [String(qty)];
+    if (returned) parts.push('− ' + returned + ' مرتجع');
+    if (added) {
+      parts.push('+ ' + added + ' استبدال' +
+        (exchange.invoices.length ? ' (' + exchange.invoices.join('، ') + ')' : ''));
+    }
+    if (addedReturned) parts.push('− ' + addedReturned + ' مرتجع استبدال');
+    const net = qty - returned + added - addedReturned;
+    return el('div', {}, [
+      el('div', {}, parts.join(' ')),
+      el('div', { class: 'form-hint', style: 'font-weight:600' }, 'الصافي: ' + net),
+    ]);
+  }
+
   function _overpaymentBadge(sale) {
     const over = _overpayment(sale);
     if (!over) return null;
@@ -188,9 +242,35 @@
   async function _viewInvoice(id) {
     const res = await BeeStore.api.sales.printData(id);
     if (!res.ok) { toast(res.error.message, 'error'); return; }
-    const { sale, customer, settings, payments, returns } = res.data;
+    const { sale, customer, settings, payments, returns, exchanges } = res.data;
     const overlay = el('div', { class: 'dialog-overlay' });
     const refundedMinor = (returns || []).reduce((sum, r) => sum + (r.refundMinor || 0), 0);
+    const exchangeInfo = _exchangeInfo(exchanges);
+    const openExchange = (saleId) => {
+      overlay.remove();
+      _viewInvoice(saleId);
+    };
+    const exchangeRows = [];
+    for (const ex of exchanges || []) {
+      for (const line of (ex.sale.lines || [])) {
+        exchangeRows.push(el('tr', {}, [
+          el('td', {}, ex.sale.number),
+          el('td', { class: 'num' }, formatDocDate(ex.sale)),
+          el('td', {}, line.productName),
+          el('td', {}, line.size || '-'),
+          el('td', {}, line.color || '-'),
+          el('td', {}, line.returnedQty
+            ? line.qty + ' (مرتجع ' + line.returnedQty + ')' : String(line.qty)),
+          el('td', {}, formatMoney(line.unitPriceMinor)),
+          el('td', {}, formatMoney(line.lineTotalMinor)),
+          el('td', {}, _exchangeStatus(ex.sale)),
+          el('td', {}, el('button', {
+            class: 'btn btn-sm btn-secondary',
+            onclick: () => openExchange(ex.sale.id),
+          }, 'عرض')),
+        ]));
+      }
+    }
     const content = el('div', { class: 'dialog dialog-lg' }, [
       el('div', { class: 'dialog-header' }, [
         el('h3', {}, 'فاتورة ' + sale.number),
@@ -202,6 +282,7 @@
         customer ? el('p', {}, 'الزبون: ' + customer.name) : null,
         (sale.contactPhone || (customer && customer.phone)) ? el('p', {}, 'الجوال: ' + (sale.contactPhone || customer.phone)) : null,
         sale.payerName ? el('p', {}, 'المحوِّل: ' + sale.payerName) : null,
+        sale.notes ? el('p', {}, 'ملاحظة: ' + sale.notes) : null,
         el('table', { class: 'data-table' }, [
           el('thead', {}, el('tr', {}, [
             el('th', {}, 'المنتج'), el('th', {}, 'المقاس'), el('th', {}, 'اللون'),
@@ -211,7 +292,7 @@
             el('td', {}, line.productName),
             el('td', {}, line.size),
             el('td', {}, line.color),
-            el('td', {}, line.returnedQty ? line.qty + ' (مرتجع ' + line.returnedQty + ')' : String(line.qty)),
+            el('td', {}, _quantityCell(line, exchangeInfo.byVariant[line.variantId])),
             el('td', {}, formatMoney(line.unitPriceMinor)),
             el('td', {}, formatMoney(line.lineTotalMinor)),
           ]))),
@@ -242,15 +323,36 @@
           el('h4', {}, 'المرتجعات'),
           el('table', { class: 'data-table' }, [
             el('thead', {}, el('tr', {}, [
-              el('th', {}, 'الرقم'), el('th', {}, 'التاريخ'), el('th', {}, 'المبلغ'), el('th', {}, 'الطريقة'), el('th', {}, 'السبب'),
+              el('th', {}, 'الرقم'), el('th', {}, 'التاريخ'), el('th', {}, 'المبلغ'),
+              el('th', {}, 'الطريقة'), el('th', {}, 'فاتورة الاستبدال'), el('th', {}, 'السبب'),
             ])),
-            el('tbody', {}, returns.map(r => el('tr', {}, [
-              el('td', {}, r.number),
-              el('td', { class: 'num' }, formatDocDate(r)),
-              el('td', {}, formatMoney(r.refundMinor)),
-              el('td', {}, r.refundMode === 'cash_refund' ? 'استرداد نقدي' : r.refundMode === 'customer_credit' ? 'رصيد زبون' : 'استبدال'),
-              el('td', {}, r.reason || '-'),
-            ]))),
+            el('tbody', {}, returns.map(r => {
+              const exchangeSale = exchangeInfo.byReturnId[r.id];
+              return el('tr', {}, [
+                el('td', {}, r.number),
+                el('td', { class: 'num' }, formatDocDate(r)),
+                el('td', {}, formatMoney(r.refundMinor)),
+                el('td', {}, r.refundMode === 'cash_refund' ? 'استرداد نقدي' : r.refundMode === 'customer_credit' ? 'رصيد زبون' : 'استبدال'),
+                el('td', {}, exchangeSale ? el('button', {
+                  class: 'btn btn-sm btn-secondary',
+                  onclick: () => openExchange(exchangeSale.id),
+                }, exchangeSale.number) : '-'),
+                el('td', {}, r.reason || '-'),
+              ]);
+            })),
+          ]),
+        ]) : null,
+        (exchanges && exchanges.length) ? el('div', { class: 'card' }, [
+          el('h4', {}, 'الاستبدال'),
+          el('p', { class: 'form-hint' },
+            'الفاتورة الأصلية لا تتغير. كل استبدال يُسجَّل بفاتورة مستقلة، وقد تكون مرتجعة لاحقاً؛ لذلك يظهر صافي الكمية أعلى.'),
+          el('table', { class: 'data-table' }, [
+            el('thead', {}, el('tr', {}, [
+              el('th', {}, 'فاتورة الاستبدال'), el('th', {}, 'التاريخ'), el('th', {}, 'المنتج'),
+              el('th', {}, 'المقاس'), el('th', {}, 'اللون'), el('th', {}, 'الكمية'),
+              el('th', {}, 'السعر'), el('th', {}, 'الإجمالي'), el('th', {}, 'الحالة'), el('th', {}, ''),
+            ])),
+            el('tbody', {}, exchangeRows),
           ]),
         ]) : null,
         (payments && payments.length) ? el('div', { class: 'card' }, [

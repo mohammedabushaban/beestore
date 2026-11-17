@@ -62,7 +62,7 @@ All methods return `{ ok: true, data: ... }` or `{ ok: false, error: { code, mes
 | `sales.getByNumber(number)` | `GET /api/sales/number/:number` | Get by invoice number |
 | `sales.create(data)` | `POST /api/sales` | Create sale (`clientKey` dedupes double-submits) |
 | `sales.void(id, reason)` | `POST /api/sales/:id/void` | Void sale |
-| `sales.printData(id)` | `GET /api/sales/:id/print` | Get print data |
+| `sales.printData(id)` | `GET /api/sales/:id/print` | Get print/view data (`sale`, `settings`, `customer`, `payments`, `returns`, and separate `exchanges`) |
 | `posDrafts.list()` | `GET /api/pos/drafts` | Held POS invoices for the active profile (device-local, not accounting documents) |
 | `posDrafts.save(draft)` | `POST /api/pos/drafts` | Park/update an in-progress invoice (`id` updates in place, max 20) |
 | `posDrafts.remove(id)` | `DELETE /api/pos/drafts/:id` | Discard one held invoice |

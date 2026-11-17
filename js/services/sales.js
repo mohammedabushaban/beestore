@@ -534,7 +534,22 @@
       payments.sort((a, b) => String(a.date).localeCompare(String(b.date)));
       const returns = await this.repo.list('salesReturns', r => r.saleId === id);
       returns.sort((a, b) => String(a.date).localeCompare(String(b.date)));
-      return { sale, settings, customer, payments, returns };
+      // An exchange is a separate sale linked from the return. The original
+      // invoice stays immutable, so expose the exchange invoices here for the
+      // view/print screens to show why a replacement is not an extra line.
+      const exchanges = [];
+      for (const ret of returns) {
+        if (!ret.exchangeSaleId) continue;
+        const exchangeSale = await this.repo.get('sales', ret.exchangeSaleId);
+        if (exchangeSale) {
+          exchanges.push({
+            returnId: ret.id,
+            returnNumber: ret.number,
+            sale: exchangeSale,
+          });
+        }
+      }
+      return { sale, settings, customer, payments, returns, exchanges };
     }
   }
 

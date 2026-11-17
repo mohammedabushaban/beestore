@@ -179,6 +179,51 @@ test('L6 shared receipt text includes store, lines, totals and payments', async 
   assert.ok(text.includes('0599'));
 });
 
+// L6: printed/shared invoices must disclose returns and the separate
+// exchange invoice, otherwise the replacement quantity looks missing.
+test('L6 invoice print and share expose returns and exchange invoices', async () => {
+  global.document = global.document || { addEventListener() {} };
+  require('../js/ui/components.js');
+  require('../js/ui/print.js');
+  const sale = {
+    number: 'INV-000003', date: '2026-11-14', time: '12:43',
+    lines: [{
+      productName: 'بجامة مواليد نفخ', size: '', color: '', qty: 1,
+      unitPriceMinor: 3500, lineTotalMinor: 3500,
+    }],
+    subtotalMinor: 3500, discountMinor: 0, taxMinor: 0,
+    totalMinor: 3500, paidMinor: 3500, dueMinor: 0,
+  };
+  const returns = [{
+    number: 'RET-000001', date: '2026-11-14', time: '17:03',
+    refundMinor: 3500, refundMode: 'exchange', reason: '',
+    exchangeSaleId: 'sal_exchange',
+  }];
+  const exchanges = [{
+    returnId: 'ret_1', returnNumber: 'RET-000001',
+    sale: {
+      number: 'INV-000016', date: '2026-11-14', time: '17:03',
+      totalMinor: 3500, returnStatus: 'full',
+      lines: [{
+        productName: 'بجامة مواليد نفخ', size: '', color: '',
+        qty: 1, returnedQty: 1, unitPriceMinor: 3500, lineTotalMinor: 3500,
+      }],
+    },
+  }];
+  const html = BeeStore.print.buildInvoiceHtml(
+    sale, { storeNameAr: 'بي ستور' }, null, 'A4', null, returns, exchanges);
+  assert.ok(html.includes('المرتجعات'), 'printed invoice lists returns');
+  assert.ok(html.includes('الاستبدال'), 'printed invoice lists the exchange');
+  assert.ok(html.includes('INV-000016'), 'exchange invoice number is printed');
+  assert.ok(html.includes('مرتجع كامل'), 'exchange return status is printed');
+
+  const text = BeeStore.print.buildInvoiceText(
+    sale, { storeNameAr: 'بي ستور' }, null, null, returns, exchanges);
+  assert.ok(text.includes('المرتجعات'));
+  assert.ok(text.includes('الاستبدال'));
+  assert.ok(text.includes('INV-000016'));
+});
+
 // B6: barcode uniqueness enforced on variant update.
 test('B6 variant update rejects duplicate barcode', async () => {
   const api = await freshApi();

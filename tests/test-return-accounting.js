@@ -66,6 +66,45 @@ test('printData exposes the sale returns so the invoice can show refunds', async
   }
 });
 
+// An exchange is a separate sale. The invoice view must receive it so the
+// replacement quantity can be shown without mutating the original invoice.
+test('printData exposes exchange invoices linked from the sale returns', async () => {
+  BeeStore.dates.setClock(() => '2026-11-20');
+  try {
+    const api = await freshApi();
+    const { sale } = await seedSale(api, '2026-11-05');
+    const variantId = sale.lines[0].variantId;
+    const ret = (await api.returns.create({
+      saleId: sale.id, date: '2026-11-20',
+      lines: [{ saleLineIndex: 0, qty: 1 }],
+      refundMode: 'exchange',
+      exchangeLines: [{ variantId, qty: 1, unitPriceMinor: 2000 }],
+    })).data;
+
+    const data = (await api.sales.printData(sale.id)).data;
+    assert.ok(Array.isArray(data.exchanges), 'exchanges should be an array');
+    assert.strictEqual(data.exchanges.length, 1);
+    assert.strictEqual(data.exchanges[0].returnId, ret.id);
+    assert.strictEqual(data.exchanges[0].returnNumber, ret.number);
+    assert.strictEqual(data.exchanges[0].sale.id, ret.exchangeSaleId);
+    assert.strictEqual(data.exchanges[0].sale.lines.length, 1);
+    assert.strictEqual(data.exchanges[0].sale.lines[0].variantId, variantId);
+    assert.strictEqual(data.exchanges[0].sale.lines[0].qty, 1);
+    assert.strictEqual(data.exchanges[0].sale.totalMinor, 2000);
+    assert.strictEqual(data.exchanges[0].sale.notes, 'استبدال من ' + ret.number);
+
+    // The original invoice is immutable: its line keeps qty 2 and records the
+    // returned unit; only the separate exchange invoice adds the replacement.
+    const original = (await api.sales.get(sale.id)).data;
+    assert.strictEqual(original.lines[0].qty, 2);
+    assert.strictEqual(original.lines[0].returnedQty, 1);
+    assert.strictEqual(original.totalMinor, 4000);
+    assert.strictEqual((await api.variants.get(variantId)).data.quantity, 8);
+  } finally {
+    BeeStore.dates.resetClock();
+  }
+});
+
 // §12.1: sale return status is persisted and reflected on the sale.
 test('a sale return marks the invoice returnStatus partial then full', async () => {
   BeeStore.dates.setClock(() => '2026-11-20');

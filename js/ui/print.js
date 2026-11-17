@@ -6,7 +6,7 @@
    * v3-Lite §10: plain-text receipt for Web Share / clipboard / .txt download.
    * Pure (Node-testable): no DOM, no navigator.
    */
-  function buildInvoiceText(sale, settings, customer, payments) {
+  function buildInvoiceText(sale, settings, customer, payments, returns, exchanges) {
     const s = settings || {};
     const money = (v) => BeeStore.money.format(v || 0);
     const lines = [];
@@ -51,6 +51,28 @@
         lines.push('- ' + method + ': ' + money(p.amountMinor) + ' (' + BeeStore.dates.formatDocDateTime(p.time || p.createdAt || p.date !== sale.date ? p : { ...p, time: sale.time }) + ')');
       }
     }
+    if (returns && returns.length) {
+      lines.push('');
+      lines.push('المرتجعات:');
+      for (const r of returns) {
+        const mode = r.refundMode === 'cash_refund' ? 'استرداد نقدي'
+          : r.refundMode === 'customer_credit' ? 'رصيد زبون' : 'استبدال';
+        lines.push('- ' + r.number + ': ' + money(r.refundMinor) + ' (' + mode + ')');
+      }
+    }
+    if (exchanges && exchanges.length) {
+      lines.push('');
+      lines.push('الاستبدال (فاتورة مستقلة):');
+      for (const ex of exchanges) {
+        const exchangeSale = ex.sale;
+        if (!exchangeSale) continue;
+        for (const line of (exchangeSale.lines || [])) {
+          const name = [line.productName, line.size, line.color].filter(Boolean).join(' - ');
+          lines.push('- ' + exchangeSale.number + ': ' + name + ' × ' + line.qty +
+            ' = ' + money(line.lineTotalMinor));
+        }
+      }
+    }
     if (s.invoiceFooter) {
       lines.push('');
       lines.push(s.invoiceFooter);
@@ -87,8 +109,8 @@
       BeeStore.ui.toast(res.error.message, 'error');
       return { ok: false, code: res.error.code };
     }
-    const { sale, settings, customer, payments } = res.data;
-    const text = buildInvoiceText(sale, settings, customer, payments);
+    const { sale, settings, customer, payments, returns, exchanges } = res.data;
+    const text = buildInvoiceText(sale, settings, customer, payments, returns, exchanges);
     const title = 'فاتورة ' + sale.number;
     try {
       if (navigator.share) {
@@ -117,14 +139,14 @@
   function printInvoice(saleId) {
     BeeStore.api.sales.printData(saleId).then(res => {
       if (!res.ok) { BeeStore.ui.toast(res.error.message, 'error'); return; }
-      const { sale, settings, customer, payments } = res.data;
+      const { sale, settings, customer, payments, returns, exchanges } = res.data;
       const paperSize = settings.invoicePaperSize || 'A4';
-      const html = buildInvoiceHtml(sale, settings, customer, paperSize, payments);
+      const html = buildInvoiceHtml(sale, settings, customer, paperSize, payments, returns, exchanges);
       openPrintWindow(html, paperSize);
     });
   }
 
-  function buildInvoiceHtml(sale, settings, customer, paperSize, payments) {
+  function buildInvoiceHtml(sale, settings, customer, paperSize, payments, returns, exchanges) {
     const esc = BeeStore.ui.escapeHtml;
     const is80mm = paperSize === '80mm';
     const width = is80mm ? '80mm' : '210mm';
@@ -200,6 +222,45 @@
     }
     html += '<div><span>المتبقي:</span><span>' + BeeStore.money.format(sale.dueMinor) + '</span></div>';
     html += '</div>';
+
+    if (returns && returns.length) {
+      html += '<div class="installment-table">';
+      html += '<h4>المرتجعات</h4>';
+      html += '<table><thead><tr><th>الرقم</th><th>التاريخ</th><th>المبلغ</th><th>الطريقة</th><th>السبب</th></tr></thead><tbody>';
+      for (const r of returns) {
+        const mode = r.refundMode === 'cash_refund' ? 'استرداد نقدي'
+          : r.refundMode === 'customer_credit' ? 'رصيد زبون' : 'استبدال';
+        html += '<tr><td>' + esc(r.number) + '</td><td>' +
+          esc(BeeStore.dates.formatDocDateTime(r)) + '</td><td>' +
+          BeeStore.money.format(r.refundMinor) + '</td><td>' + esc(mode) +
+          '</td><td>' + esc(r.reason || '-') + '</td></tr>';
+      }
+      html += '</tbody></table></div>';
+    }
+
+    if (exchanges && exchanges.length) {
+      html += '<div class="installment-table">';
+      html += '<h4>الاستبدال</h4>';
+      html += '<p class="store-info">الفاتورة الأصلية لا تتغير؛ الاستبدال مسجل بفاتورة مستقلة.</p>';
+      html += '<table><thead><tr><th>فاتورة الاستبدال</th><th>التاريخ</th><th>المنتج</th><th>المقاس</th><th>اللون</th><th>الكمية</th><th>السعر</th><th>الإجمالي</th><th>الحالة</th></tr></thead><tbody>';
+      for (const ex of exchanges) {
+        const exchangeSale = ex.sale;
+        if (!exchangeSale) continue;
+        const status = exchangeSale.status === 'void' ? 'ملغي'
+          : exchangeSale.returnStatus === 'full' ? 'مرتجع كامل'
+            : exchangeSale.returnStatus === 'partial' ? 'مرتجع جزئي' : 'نشط';
+        for (const line of (exchangeSale.lines || [])) {
+          html += '<tr><td>' + esc(exchangeSale.number) + '</td><td>' +
+            esc(BeeStore.dates.formatDocDateTime(exchangeSale)) + '</td><td>' +
+            esc(line.productName) + '</td><td>' + esc(line.size || '-') + '</td><td>' +
+            esc(line.color || '-') + '</td><td>' +
+            esc(String(line.qty) + (line.returnedQty ? ' (مرتجع ' + line.returnedQty + ')' : '')) +
+            '</td><td>' + BeeStore.money.format(line.unitPriceMinor) + '</td><td>' +
+            BeeStore.money.format(line.lineTotalMinor) + '</td><td>' + esc(status) + '</td></tr>';
+        }
+      }
+      html += '</tbody></table></div>';
+    }
 
     if (payments && payments.length) {
       html += '<div class="installment-table">';

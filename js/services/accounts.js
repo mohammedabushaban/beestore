@@ -204,7 +204,11 @@
           if (p.methodKind !== 'clearing' && p.accountId === accountId) {
             if (range && p.date < range.from) continue;
             if (range && p.date > range.to) continue;
-            movements.push({ date: p.date, amountMinor: p.amountMinor, type: 'sale_payment', refId: s.id, refNumber: s.number, description: 'تحصيل فاتورة ' + s.number });
+            // v4 R2.2: the account keeps the receipt net of change handed
+            // back (the same rule as balances and the daily closing).
+            const net = (Number(p.amountMinor) || 0) - (Number(p.changeMinor) || 0);
+            if (net === 0) continue;
+            movements.push({ date: p.date, amountMinor: net, type: 'sale_payment', refId: s.id, refNumber: s.number, description: 'تحصيل فاتورة ' + s.number + (p.changeMinor ? ' (بعد الباقي)' : '') });
           }
         }
       }

@@ -130,6 +130,11 @@
       container.appendChild(el('div', { class: 'alert alert-warning' },
         '⚠️ لديك ' + d.overdueInstallments + ' قسط متأخر'));
     }
+    if (d.negativeStockCount > 0) {
+      container.appendChild(el('div', { class: 'alert alert-danger' },
+        '⛔ ' + d.negativeStockCount + ' صنف مخزونه سالب — سجّل المشتريات الناقصة أو اعمل جرداً. ' +
+        'التفاصيل في التقارير ← ضوابط ومراجعة.'));
+    }
 
     await safeWidget(container, async () => {
       const recentSection = el('div', { class: 'card' }, [

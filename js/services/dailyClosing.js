@@ -208,7 +208,7 @@
       };
       const sales = (await load('sales')).filter(s => s.status !== 'void');
       const returns = await load('salesReturns');
-      const collections = await load('customerPayments');
+      const collections = (await load('customerPayments')).filter(p => p.method !== 'write_off');
       const supplierPayments = await load('supplierPayments');
       const expenses = (await load('expenses')).filter(e => !e.voided);
       const expensePayments = (await load('expensePayments')).filter(p => !p.voided);
@@ -720,7 +720,8 @@
         row.expensesMinor += Number(e.amountMinor) || 0;
         if (e.accountId === acc.drawer) row.cashOutMinor += Number(e.amountMinor) || 0;
       }
-      const collections = await this.repo.listRange('customerPayments', from, to);
+      const collections = await this.repo.listRange('customerPayments', from, to,
+        p => p.method !== 'write_off');
       for (const p of collections) {
         const row = ensure(p.date);
         row.activity = true;

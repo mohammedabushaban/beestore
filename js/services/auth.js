@@ -170,6 +170,7 @@
     'outstandingAdvances', 'inspect', 'list', 'trialBalance', 'verify',
     'byCode', 'bySystemKey', 'forSource', 'quote', 'overview',
     'generalLedger', 'forDocument', 'journalIntegrity',
+    'historicalErrors', 'anomalies', 'availableCredit',
   ]);
 
   class AuthService {

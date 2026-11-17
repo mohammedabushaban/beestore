@@ -36,7 +36,7 @@ async function unlockOwner(api) {
 }
 
 /**
- * A month with tax, a cash sale, a credit sale, a cash return, a customer
+ * A month with a cash sale paid with change, a credit sale, a cash return, a customer
  * collection, an unpaid purchase, a cash expense whose description starts
  * with "=" (CSV formula-injection check), a draft salary and two closed days
  * with deliberate shortages.
@@ -51,9 +51,6 @@ async function seed(api) {
     systemStartDate: '2026-11-01',
     cashDrawerAccountId: cash.id,
     defaultBankAccountId: bank.id,
-    taxEnabled: true,
-    taxRate: 10,
-    taxIncludedInPrices: false,
     paymentMethods: [
       { id: 'cash', name: 'نقداً', accountId: cash.id },
       { id: 'card', name: 'بطاقة', accountId: bank.id },
@@ -72,13 +69,13 @@ async function seed(api) {
   })).data;
   const supplier = (await api.suppliers.create({ name: 'مورد النسيج' })).data;
 
-  // Cash sale: 2 × 50.00 + 10% tax = 110.00.
+  // Cash sale: 2 × 50.00 = 100.00, paid 110.00 with 10.00 change.
   const cashSale = (await api.sales.create({
     date: '2026-11-05',
     lines: [{ variantId: variant.id, qty: 2, unitPriceMinor: 5000 }],
     payments: [{ method: 'cash', accountId: cash.id, amountMinor: 11000, date: '2026-11-05' }],
   })).data;
-  // Credit sale: 3 × 50.00 + tax = 165.00, no payment.
+  // Credit sale: 3 × 50.00 = 150.00, no payment.
   const creditSale = (await api.sales.create({
     date: '2026-11-20',
     customerId: customerA.id,

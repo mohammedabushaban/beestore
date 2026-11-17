@@ -325,7 +325,7 @@
         saleNumbers.add(s.number);
         if (s.status === 'void') continue;
         const lineSum = (s.lines || []).reduce((a, l) => a + (l.lineTotalMinor || 0), 0);
-        const expectTotal = lineSum - (s.discountMinor || 0) + (s.taxIncluded ? 0 : (s.taxMinor || 0));
+        const expectTotal = lineSum - (s.discountMinor || 0) + (s.taxMinor || 0);
         if (expectTotal !== s.totalMinor) {
           err('sale-math', 'فاتورة ' + s.number + ': المجموع لا يساوي البنود − الخصم + الضريبة', 'sale', s.id);
         }

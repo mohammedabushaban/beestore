@@ -112,42 +112,35 @@ test('audit #1: change is handed back from the cash drawer, never from a card', 
   assert.strictEqual(res.ok, false, 'change above the cash tendered is refused');
 });
 
-test('audit #2: tax-inclusive prices are not charged the tax twice', async () => {
-  const { api, variant } = await shop({ taxEnabled: true, taxRate: 16, taxIncludedInPrices: true });
+test('tax removed: old tax switches are dropped and new invoices never carry tax', async () => {
+  const { api, repo, variant } = await shop({ taxEnabled: true, taxRate: 16, taxIncludedInPrices: false });
+  const stored = await repo.get('meta', 'settings');
+  assert.strictEqual('taxEnabled' in stored, false);
+  assert.strictEqual('taxRate' in stored, false);
   const sale = ok(await api.sales.create({
-    date: '2026-10-10', lines: [{ variantId: variant.id, qty: 1, unitPriceMinor: 11600 }],
-    payments: [{ method: 'cash', amountMinor: 11600 }],
-  }), 'inclusive sale');
-  assert.strictEqual(sale.totalMinor, 11600);
-  assert.strictEqual(sale.taxMinor, 1600);
+    date: '2026-10-10', lines: [{ variantId: variant.id, qty: 1, unitPriceMinor: 10000 }],
+    payments: [{ method: 'cash', amountMinor: 10000 }],
+  }), 'sale');
+  assert.deepStrictEqual([sale.totalMinor, sale.taxMinor], [10000, 0]);
   const b = await balances();
   assert.strictEqual(b['4010'], -10000);
-  assert.strictEqual(b['2300'], -1600);
+  assert.strictEqual('2300' in b, false, 'no tax account is created');
 });
 
-test('audit #3: a full return reverses the output tax and refunds what was paid', async () => {
-  const { api, acc, variant } = await shop({ taxEnabled: true, taxRate: 10, taxIncludedInPrices: false });
-  const sale = ok(await api.sales.create({
-    date: '2026-10-10', lines: [{ variantId: variant.id, qty: 3, unitPriceMinor: 1000 }],
-    payments: [{ method: 'cash', amountMinor: 3300 }],
-  }), 'taxed sale');
-  assert.strictEqual(sale.totalMinor, 3300);
-  const r1 = ok(await api.returns.create({
-    saleId: sale.id, date: '2026-10-11', lines: [{ saleLineIndex: 0, qty: 1 }],
-    refundMode: 'cash_refund', refundMethod: acc.cash.id,
-  }), 'partial return');
-  assert.deepStrictEqual([r1.refundMinor, r1.taxMinor], [1100, 100]);
-  const r2 = ok(await api.returns.create({
-    saleId: sale.id, date: '2026-10-11', lines: [{ saleLineIndex: 0, qty: 2 }],
-    refundMode: 'cash_refund', refundMethod: acc.cash.id,
-  }), 'final return');
-  assert.deepStrictEqual([r2.refundMinor, r2.taxMinor], [2200, 200]);
-  const b = await balances();
-  assert.strictEqual(b['2300'] || 0, 0, 'no tax left owing on fully returned goods');
-  assert.strictEqual(b['1010'], 100000, 'customer got back exactly what they paid');
-  assert.strictEqual((b['4010'] || 0) + (b['4020'] || 0), 0, 'net sales zero');
-  const pnl = ok(await api.reports.profitAndLoss('2026-10-01', '2026-10-31'), 'pnl');
-  assert.strictEqual(pnl.netSales, 0);
+test('legacy taxed invoices: returns still give back the tax the customer paid', () => {
+  // A historical invoice from a version that charged 10% on top.
+  const sale = {
+    taxMinor: 300, discountMinor: 0, totalMinor: 3300,
+    lines: [{ qty: 3, unitPriceMinor: 1000, lineDiscountMinor: 0, lineTotalMinor: 3000, returnedQty: 0 }],
+  };
+  const q1 = BeeStore.returns.quoteRefund(sale.lines[0], 1, sale, 0);
+  assert.deepStrictEqual([q1.refundMinor, q1.taxMinor], [1100, 100]);
+  sale.lines[0].returnedQty = 1;
+  sale.lines[0].returnedTaxMinor = q1.taxMinor;
+  sale.lines[0].returnedDiscountMinor = 0;
+  sale.lines[0].returnedInvoiceDiscountMinor = 0;
+  const q2 = BeeStore.returns.quoteRefund(sale.lines[0], 2, sale, 0);
+  assert.deepStrictEqual([q2.refundMinor, q2.taxMinor], [2200, 200]);
 });
 
 test('audit #6: returns share the invoice-level discount', async () => {

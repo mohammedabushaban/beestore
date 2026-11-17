@@ -42,6 +42,7 @@
     STOCK_ADJUSTMENT: 'stockMovements',
     STOCK_EQUITY_RECLASS: 'stockMovements',
     REVALUATION: 'stockMovements',
+    CREDIT_APPLICATION: 'sales',
   };
 
   const n = (v) => Math.round(Number(v) || 0);

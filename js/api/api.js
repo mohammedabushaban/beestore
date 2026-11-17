@@ -17,7 +17,7 @@
         'settings', 'auth', 'clockGuard', 'accounts', 'categories', 'products', 'variants', 'stock',
         'sales', 'returns', 'customers', 'suppliers', 'purchases', 'purchaseReturns',
         'expenses', 'employees', 'payroll', 'fixedAssets', 'transactions', 'periods',
-        'chart', 'journal', 'posting', 'journalIntegrity', 'yearEnd', 'settlements',
+        'chart', 'journal', 'posting', 'journalIntegrity', 'yearEnd', 'auditReview', 'settlements',
         'dailyClosing', 'reports', 'dashboard', 'backup', 'maintenance', 'audit',
         'accountingPackage',
       ];
@@ -291,6 +291,11 @@
       deactivate: async (id) => ok(await BeeStore.chart.deactivate(id)),
     };
 
+    auditReview = {
+      historicalErrors: async () => ok(await BeeStore.auditReview.historicalErrors()),
+      anomalies: async (options) => ok(await BeeStore.auditReview.anomalies(options)),
+    };
+
     yearEnd = {
       status: async () => ok(await BeeStore.yearEnd.status()),
       preview: async (year) => ok(await BeeStore.yearEnd.preview(year)),
@@ -382,6 +387,9 @@
       balance: async (id, asOf) => ok(await BeeStore.customers.balance(id, asOf)),
       statement: async (id) => ok(await BeeStore.customers.statement(id)),
       receivePayment: async (data) => ok(await BeeStore.customers.receivePayment(data)),
+      writeOff: async (data) => ok(await BeeStore.customers.writeOff(data)),
+      availableCredit: async (customerId) => ok(await BeeStore.customers.availableCredit(BeeStore.customers.repo, customerId)),
+      applyCredit: async (customerId, date) => ok(await BeeStore.customers.applyCredit(customerId, date)),
       overdueInstallments: async () => ok(await BeeStore.customers.getOverdueInstallments()),
     };
 

@@ -13,7 +13,7 @@ require('../js/storage/migrations.js');
 ['settings', 'auth', 'audit', 'accounts', 'categories', 'products', 'variants',
   'stock', 'sales', 'customers', 'returns', 'purchases', 'purchaseReturns',
   'suppliers', 'expenses', 'employees', 'payroll', 'fixedAssets', 'transactions',
-  'periods', 'chartOfAccounts', 'journal', 'posting', 'journalIntegrity', 'yearEnd', 'dailyClosing', 'reports',
+  'periods', 'chartOfAccounts', 'journal', 'posting', 'journalIntegrity', 'yearEnd', 'auditReview', 'dailyClosing', 'reports',
   'dashboard', 'backup', 'maintenance', 'settlements', 'zip', 'xlsx', 'monthReviewPdf',
   'accountingPackage'].forEach(f => require('../js/services/' + f + '.js'));
 const Api = require('../js/api/api.js');
@@ -402,4 +402,113 @@ test('year-end close moves the result to 3040, zeroes P&L and keeps reports inta
     [['2025', false], ['2026', false]]);
   ok(await api.periods.reopen('2025-12'), 'month reopens once the year is open');
   assert.deepStrictEqual((await BeeStore.journal.verify()).errors, []);
+});
+
+// ---------------------------------------------------------------------------
+// v4 M4: bad-debt write-off, applying customer credit; review reports.
+// ---------------------------------------------------------------------------
+
+test('M4: writing off a receivable posts 6410 and keeps documents and journal in step', async () => {
+  const { repo, api, customer, variant } = await shop();
+  const sale = ok(await api.sales.create({
+    date: '2026-10-05', customerId: customer.id,
+    lines: [{ variantId: variant.id, qty: 2, unitPriceMinor: 1000 }],
+  }), 'credit sale');
+  const tooMuch = await api.customers.writeOff({ customerId: customer.id, saleId: sale.id, amountMinor: 2500, reason: 'x' });
+  assert.strictEqual(tooMuch.ok, false, 'cannot write off more than the invoice due');
+  assert.strictEqual((await api.customers.writeOff({ customerId: customer.id, saleId: sale.id })).ok, false, 'reason required');
+  const w = ok(await api.customers.writeOff({ customerId: customer.id, saleId: sale.id, date: '2026-10-20', reason: 'زبون مفلس' }), 'write-off');
+  assert.strictEqual(w.amountMinor, 2000);
+  assert.strictEqual(w.accountId, null);
+  const after = ok(await api.sales.get(sale.id), 'sale');
+  assert.deepStrictEqual([after.dueMinor, after.status], [0, 'paid']);
+  const tb = await BeeStore.journal.trialBalance({ asOf: '2026-10-31' });
+  assert.strictEqual(tb.accounts.find(a => a.code === '6410').balanceMinor, 2000);
+  // Customer balance: opening 3,000 + 2,000 invoice − 2,000 written off.
+  assert.strictEqual(ok(await api.customers.balance(customer.id), 'balance'), 3000);
+  const pnl = await BeeStore.reports._documentProfitAndLoss('2026-10-01', '2026-10-31', { legacy: true });
+  assert.strictEqual(pnl.expensesByCategory['ديون معدومة'], 2000);
+  const parity = ok(await api.reports.parityReport({ from: '2026-10-01', to: '2026-10-31' }), 'parity');
+  assert.deepStrictEqual(parity.failures, [], JSON.stringify(parity.failures, null, 1));
+  assert.deepStrictEqual((await journalCheck(repo)).errors, []);
+});
+
+test('applying a customer credit pays open invoices without changing the net balance', async () => {
+  const { repo, api, acc, customer, variant } = await shop();
+  // Credit from an invoice-linked return kept as customer credit.
+  const first = ok(await api.sales.create({
+    date: '2026-10-02', customerId: customer.id,
+    lines: [{ variantId: variant.id, qty: 2, unitPriceMinor: 1000 }],
+    payments: [{ method: 'cash', amountMinor: 2000 }],
+  }), 'paid sale');
+  ok(await api.returns.create({
+    saleId: first.id, date: '2026-10-03', lines: [{ saleLineIndex: 0, qty: 1 }], refundMode: 'customer_credit',
+  }), 'credit return');
+  const open = ok(await api.sales.create({
+    date: '2026-10-04', customerId: customer.id,
+    lines: [{ variantId: variant.id, qty: 3, unitPriceMinor: 1000 }],
+  }), 'open invoice');
+  assert.strictEqual(ok(await api.customers.availableCredit(customer.id), 'credit'), 1000);
+  const before = ok(await api.customers.balance(customer.id), 'balance before');
+  const res = ok(await api.customers.applyCredit(customer.id, '2026-10-05'), 'apply');
+  assert.strictEqual(res.appliedMinor, 1000);
+  const sale = ok(await api.sales.get(open.id), 'sale');
+  assert.deepStrictEqual([sale.dueMinor, sale.status, sale.creditAppliedMinor], [2000, 'partial', 1000]);
+  assert.strictEqual(ok(await api.customers.balance(customer.id), 'balance after'), before);
+  assert.strictEqual(ok(await api.customers.availableCredit(customer.id), 'credit after'), 0);
+  assert.strictEqual((await api.customers.applyCredit(customer.id, '2026-10-05')).ok, false, 'nothing left');
+  assert.deepStrictEqual((await journalCheck(repo)).errors, []);
+  // Voiding the invoice gives the credit back.
+  ok(await api.sales.void(open.id, 'خطأ'), 'void');
+  assert.strictEqual(ok(await api.customers.availableCredit(customer.id), 'credit restored'), 1000);
+  assert.deepStrictEqual((await journalCheck(repo)).errors, []);
+  void acc;
+});
+
+test('historical review quantifies over-refunds, misattributed change and unreversed legacy tax', async () => {
+  const { repo, api, variant } = await shop();
+  // Simulate data recorded before the fixes: strip the new return fields
+  // and move change onto the card payment, as the old code stored them.
+  const sale = ok(await api.sales.create({
+    date: '2026-10-02', lines: [{ variantId: variant.id, qty: 2, unitPriceMinor: 1000 }],
+    discount: { type: 'percent', value: 10 }, payments: [{ method: 'cash', amountMinor: 1800 }],
+  }), 'discounted sale');
+  const ret = ok(await api.returns.create({
+    saleId: sale.id, date: '2026-10-03', lines: [{ saleLineIndex: 0, qty: 1 }], refundMode: 'cash_refund',
+  }), 'return');
+  const rawRet = repo.data.salesReturns.get(ret.id);
+  for (const l of rawRet.lines) { delete l.invoiceDiscountMinor; delete l.taxMinor; }
+  const mixed = ok(await api.sales.create({
+    date: '2026-10-04', lines: [{ variantId: variant.id, qty: 1, unitPriceMinor: 1200 }],
+    payments: [{ method: 'cash', amountMinor: 1000 }, { method: 'card', amountMinor: 500 }], overpaymentMode: 'change',
+  }), 'mixed');
+  const rawMixed = repo.data.sales.get(mixed.id);
+  rawMixed.payments[0].changeMinor = 0;
+  rawMixed.payments[1].changeMinor = 300;
+
+  const review = ok(await api.auditReview.historicalErrors(), 'review');
+  assert.strictEqual(review.discountReturns.length, 1);
+  assert.strictEqual(review.discountReturns[0].overRefundMinor, 100);
+  assert.strictEqual(review.mixedChange.length, 1);
+  assert.strictEqual(review.mixedChange[0].changeMinor, 300);
+  assert.strictEqual(review.totals.findings, 2);
+});
+
+test('anomaly report flags duplicates, large discounts, sales below cost and negative stock', async () => {
+  const { repo, api, variant } = await shop();
+  const mk = (time, price, discount) => api.sales.create({
+    date: '2026-10-10', time, lines: [{ variantId: variant.id, qty: 1, unitPriceMinor: price }],
+    discount, payments: [{ method: 'cash', amountMinor: 5000 }], overpaymentMode: 'change',
+  });
+  ok(await mk('10:00', 1000), 'a');
+  ok(await mk('10:03', 1000), 'duplicate');
+  ok(await mk('12:00', 1000, { type: 'percent', value: 50 }), 'big discount');
+  ok(await mk('13:00', 300), 'below cost (cost 400)');
+  repo.data.variants.get(variant.id).quantity = -2;
+  const a = ok(await api.auditReview.anomalies({ from: '2026-10-01', to: '2026-10-31' }), 'anomalies');
+  assert.strictEqual(a.counts.duplicates, 1);
+  assert.ok(a.largeDiscounts.some(d => d.discountPercent >= 50));
+  assert.strictEqual(a.belowCost.length, 1, 'only the 3.00 sale is below its 4.00 cost');
+  assert.strictEqual(a.belowCost[0].lossMinor, 100);
+  assert.strictEqual(a.counts.negativeStock, 1);
 });

@@ -36,8 +36,8 @@
       const categories = await tx.list('expenseCategories');
       const settings = await tx.get('meta', 'settings');
       const now = BeeStore.dates.now();
+      // 2300 exists only for historical taxed data (tax is not supported).
       const taxPayable = options.taxPayable === true ||
-        !!(settings && settings.taxEnabled) ||
         chart.some(a => a && (a.systemKey === 'tax_payable' ||
           String(a.code) === BeeStore.chartSeed.TAX_ACCOUNT.code));
 

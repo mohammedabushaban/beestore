@@ -647,6 +647,9 @@
         return acc;
       }, { subtotal: 0, discount: 0, tax: 0, total: 0, paid: 0, due: 0 });
       const returnsTotal = returns.reduce((sum, r) => sum + (Number(r.refundMinor) || 0), 0);
+      // Returns net of the output tax they reverse, comparable with net sales.
+      const returnsTax = returns.reduce((sum, r) => sum + (Number(r.taxMinor) || 0), 0);
+      const returnsNetOfTax = returnsTotal - returnsTax;
       const journalNetOfTax = journalTotals.total - journalTotals.tax;
       const salesJournalTable = table('Sales Journal', 'csv/02-sales-journal.csv',
         ['رقم الفاتورة / Invoice', 'التاريخ / Date', 'الزبون / Customer',
@@ -664,7 +667,7 @@
               major(journalTotals.total), major(journalTotals.paid), major(journalTotals.due), '', ''],
             ['مرتجعات الشهر / Returns', '', '', '', '', '', '', major(returnsTotal), '', '', '', ''],
             ['صافي المبيعات بعد المرتجعات / Net sales', '', '', '', '', '', '',
-              major(journalNetOfTax - returnsTotal), '', '', '', ''],
+              major(journalNetOfTax - returnsNetOfTax), '', '', '', ''],
           ],
         });
 
@@ -1056,13 +1059,23 @@
         ['التغير في الرواتب المستحقة / Accrued salaries change', major(d.accrued)],
         ['التغير في سلف الموظفين / Advances change', major(d.advances)],
         ['التغير في الضريبة / Tax change', major(d.tax)],
+        ['التغير في أرصدة الزبائن الدائنة / Customer credits change', major(d.customerCredits)],
         ['النقد من العمليات / Cash from operations', major(rec.cashFromOperations)],
         ['رأس مال مضاف / Capital in', major(rec.capitalIn)],
         ['مسحوبات / Withdrawals', major(-rec.withdrawals)],
+        ['أرصدة افتتاحية / Opening balances', major(rec.openingBalances)],
         ['التغير النقدي المتوقع / Expected cash change', major(rec.cashChange)],
         ['التغير النقدي الفعلي / Actual cash change', major(rec.actualCashChange)],
         ['مطابق؟ / Matches', rec.matches ? 'نعم / Yes' : 'لا / No'],
       ];
+      if (rec.activities) {
+        reconRows.push(
+          ['تدفقات تشغيلية / Operating activities', major(rec.activities.operating)],
+          ['تدفقات استثمارية / Investing activities', major(rec.activities.investing)],
+          ['تدفقات تمويلية / Financing activities', major(rec.activities.financing)],
+          ['أرصدة افتتاحية / Opening balances (journal)', major(rec.activities.opening)],
+          ['صافي التغير / Net change (journal)', major(rec.activities.total)]);
+      }
       const reconTable = table('Profit-Cash Recon', 'csv/15-profit-cash-recon.csv',
         ['البند / Item', moneyHeader('القيمة / Value')], reconRows,
         { widths: [52, 18], moneyColumns: [1] });
@@ -1489,7 +1502,7 @@
       const expectedNetSales = review.pnl.current.netSales;
       addCheck('sales_journal_matches_net_sales',
         'مجموع يومية المبيعات ناقص المرتجعات يساوي صافي المبيعات',
-        expectedNetSales, journalNetOfTax - returnsTotal);
+        expectedNetSales, journalNetOfTax - returnsNetOfTax);
       addCheck('sales_journal_tax_identity',
         'إجمالي الفواتير = صافي قبل الضريبة + الضريبة',
         journalTotals.total, journalNetOfTax + journalTotals.tax);

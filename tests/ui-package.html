@@ -262,7 +262,7 @@
 
       await test('L8 integrity is 16 checks and the closed day recomputes cleanly', async () => {
         const res = (await api.maintenance.integrityCheck()).data;
-        assert(res.checks === 16, 'checks ' + res.checks);
+        assert(res.checks === 17, 'checks ' + res.checks);
         const closingErrors = res.errors.filter(e => e.check === 'closing-recompute');
         assert(closingErrors.length === 0, JSON.stringify(closingErrors));
         assert(res.drawer && res.drawer.actualMinor === res.drawer.expectedMinor,

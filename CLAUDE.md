@@ -1,9 +1,9 @@
-# BeeStore v5 — after A5 (Journal Reports & Accountant Controls)
+# BeeStore v5 — after A6 (Integrity Checker, invariants, performance, year-end close)
 
 ## Active Task
-None. Next in v5 §13 order: **A6** (see below).
+None. v5 §13 build order A1–A6 is complete; remaining work is the v4 milestones below.
 
-## Current state (verified 2026-11-05)
+## Current state (verified 2026-11-17)
 - App `3.6.0-lite`, `schemaVersion` 10, `dbVersion` 10, summary `VERSION` 10.
 - Purchase invoices now search **products** by name/item code/barcode (not a
   flat size/colour variant list), load the chosen product's variants, prefill
@@ -26,7 +26,19 @@ None. Next in v5 §13 order: **A6** (see below).
   setting. Missing: backfill migration, editing time when back-dating, time on
   stock movements, sort by time.
 - Invoices page shows overpayment (badge + view details).
-- Node suite: 38 test files / 269 tests pass
+- Audit fixes (2026-11-17): change is taken from cash payments only;
+  tax-inclusive totals no longer add tax twice (`sale.taxIncluded`); returns
+  share the invoice discount and reverse output tax (`ret.taxMinor`, Dr 2300);
+  profit⇄cash recon includes 2030/3030 and journal `activities`;
+  `money.parseDecimal` handles `12,5` / `1,250`.
+- v5 A6 done (2026-11-17): `js/services/journalIntegrity.js` (integrity
+  check #17), `js/services/yearEnd.js` (YEAR_CLOSE → 3040 retained earnings,
+  card on the month-closing page), undated TB/GL stop at today,
+  `stock.valueAsOf` sums changes (back-dated movements), journal balance sheet
+  nets customers, `MemoryRepository` is linear (50k invoices ≈ 65 s).
+  `tests/test-a6-integrity.js` holds the property and performance tests
+  (`BEESTORE_PERF=50000` for the full-size run).
+- Node suite: 43 test files / 299 tests pass
   (`node --test --test-concurrency=1 tests/*.js`).
 - Browser suites: `tests/smoke.html`, `idb-lazy.html`, `ui-*.html` (including
   `ui-purchases.html` 4/4); offline
@@ -36,10 +48,7 @@ None. Next in v5 §13 order: **A6** (see below).
 - After changing any shipped file run `node scripts/build-sw-list.js` to
   regenerate `sw.js`.
 
-## Not yet done (v5 §13 build order)
-- **A6**: Integrity Checker §9 journal checks (control accounts = sub-ledgers,
-  gapless numbers, document↔journal, orphan entries), property/invariant
-  tests, 50,000-invoice performance test.
+## Not yet done
 - **v4 milestones**: M4 credit-sales presentation + write-off, M5 invoices
   table, M6 date-time (rest, see above), M8 statements + item card, M9 purchases, M10 recurring
   expenses + daily allocation, M11 migration/regression sweep, M12 (replaced

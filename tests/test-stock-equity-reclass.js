@@ -13,7 +13,7 @@ require('../js/storage/migrations.js');
 ['settings', 'auth', 'audit', 'accounts', 'categories', 'products', 'variants',
   'stock', 'sales', 'customers', 'returns', 'purchases', 'purchaseReturns',
   'suppliers', 'expenses', 'employees', 'payroll', 'fixedAssets', 'transactions',
-  'periods', 'chartOfAccounts', 'journal', 'posting', 'dailyClosing', 'reports',
+  'periods', 'chartOfAccounts', 'journal', 'posting', 'journalIntegrity', 'dailyClosing', 'reports',
   'dashboard', 'backup', 'maintenance'].forEach(f => require('../js/services/' + f + '.js'));
 const Api = require('../js/api/api.js');
 

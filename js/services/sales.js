@@ -182,7 +182,11 @@
           }
         }
 
-        const totalMinor = subtotalMinor - discountMinor + taxMinor;
+        // Tax-inclusive prices already contain the tax: the customer pays the
+        // taxable amount and revenue is that amount net of tax. Only
+        // tax-exclusive prices add the tax on top.
+        const taxIncluded = taxMinor > 0 && !!settings.taxIncludedInPrices;
+        const totalMinor = subtotalMinor - discountMinor + (taxIncluded ? 0 : taxMinor);
 
         if (totalMinor <= 0) {
           throw BeeStore.errors.err('INVALID', 'لا يمكن حفظ فاتورة بمبلغ صفر - تأكد من سعر الصُنف أو قيمة الخصم');
@@ -240,14 +244,37 @@
         }
         let changeGivenMinor = 0;
         if (overpaymentMode === 'change' && overpaymentMinor > 0) {
-          // Change leaves the drawer immediately, so expected cash is the
-          // invoice total. Attribute it to the last physical receipt.
+          // Change leaves the cash drawer, never a card/bank/wallet channel:
+          // a card is charged the exact amount the customer authorised. The
+          // change is taken from cash receipts (last first) and may not exceed
+          // what was tendered in cash, otherwise the drawer, the clearing
+          // account and the daily closing would all disagree with reality.
           changeGivenMinor = overpaymentMinor;
+          const cashIndexes = [];
           for (let i = payments.length - 1; i >= 0; i--) {
-            if (payments[i].amountMinor > 0) {
-              payments[i].changeMinor = changeGivenMinor;
-              break;
+            if (payments[i].amountMinor > 0 && (payments[i].methodKind || 'cash') === 'cash') {
+              cashIndexes.push(i);
             }
+          }
+          const cashTendered = cashIndexes.reduce((sum, i) => sum + payments[i].amountMinor, 0);
+          if (cashTendered < changeGivenMinor) {
+            throw BeeStore.errors.err('VALIDATION',
+              'لا يمكن إعادة باقٍ أكبر من المبلغ المدفوع نقداً — قلّل مبلغ البطاقة/التحويل أو اختر رصيداً للزبون');
+          }
+          let left = changeGivenMinor;
+          for (const i of cashIndexes) {
+            if (left <= 0) break;
+            const take = Math.min(left, payments[i].amountMinor);
+            payments[i].changeMinor = take;
+            left -= take;
+          }
+          // Re-apply the invoice so that cash receipts net of change and the
+          // other channels together clear exactly the invoice total.
+          let toApply = totalMinor;
+          for (const payment of payments) {
+            const net = payment.amountMinor - payment.changeMinor;
+            payment.appliedMinor = Math.max(0, Math.min(net, toApply));
+            toApply -= payment.appliedMinor;
           }
         }
 
@@ -274,6 +301,7 @@
           discount: data.discount || null,
           discountMinor,
           taxMinor,
+          taxIncluded,
           totalMinor,
           payments,
           paidMinor,

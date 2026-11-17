@@ -401,8 +401,10 @@
           doc.customerId) {
           addCustomer(out, monthBucket, dayBucket, doc.customerId, -amount);
         }
+        const returnTax = Number(doc.taxMinor) || 0;
         if (monthBucket) {
-          monthBucket.pnl.netSales -= amount;
+          monthBucket.pnl.netSales -= amount - returnTax;
+          monthBucket.pnl.tax -= returnTax;
           for (const line of (doc.lines || [])) {
             if (line.restock) {
               monthBucket.pnl.cogs -= line.restockCostMinor != null

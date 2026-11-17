@@ -17,7 +17,7 @@
         'settings', 'auth', 'clockGuard', 'accounts', 'categories', 'products', 'variants', 'stock',
         'sales', 'returns', 'customers', 'suppliers', 'purchases', 'purchaseReturns',
         'expenses', 'employees', 'payroll', 'fixedAssets', 'transactions', 'periods',
-        'chart', 'journal', 'posting', 'settlements',
+        'chart', 'journal', 'posting', 'journalIntegrity', 'yearEnd', 'settlements',
         'dailyClosing', 'reports', 'dashboard', 'backup', 'maintenance', 'audit',
         'accountingPackage',
       ];
@@ -188,7 +188,8 @@
           const saleLine = sale.lines[Number(line.saleLineIndex)];
           if (!saleLine) continue;
           const qty = Number(line.qty) || 0;
-          refund += BeeStore.returns.quoteRefund(saleLine, qty).refundMinor;
+          refund += BeeStore.returns.quoteRefund(saleLine, qty, sale,
+            Number(line.saleLineIndex)).refundMinor;
           continue;
         }
         // v4 R9.2: an unlinked line needs a variant and is capped at list
@@ -288,6 +289,13 @@
       create: async (data) => ok(await BeeStore.chart.create(data)),
       update: async (id, patch) => ok(await BeeStore.chart.update(id, patch)),
       deactivate: async (id) => ok(await BeeStore.chart.deactivate(id)),
+    };
+
+    yearEnd = {
+      status: async () => ok(await BeeStore.yearEnd.status()),
+      preview: async (year) => ok(await BeeStore.yearEnd.preview(year)),
+      close: async (year, note) => ok(await BeeStore.yearEnd.close(year, note)),
+      reopen: async (year, note) => ok(await BeeStore.yearEnd.reopen(year, note)),
     };
 
     journal = {
@@ -559,6 +567,7 @@
       reclassifyStockEquity: async (options) =>
         ok(await BeeStore.maintenance.reclassifyStockEquity(options)),
       integrityCheck: async () => ok(await BeeStore.maintenance.integrityCheck()),
+      journalIntegrity: async (options) => ok(await BeeStore.journalIntegrity.check(options)),
       resetAll: async () => ok(await BeeStore.maintenance.resetAll()),
       isDatabaseEmpty: async () => ok(await BeeStore.maintenance.isDatabaseEmpty()),
     };

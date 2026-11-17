@@ -68,6 +68,7 @@
     STOCK_EQUITY_RECLASS: 'تصنيف تسوية مخزون كرصيد افتتاحي',
     REVALUATION: 'إعادة تقييم تكلفة',
     MANUAL: 'قيد يدوي',
+    YEAR_CLOSE: 'إقفال سنة مالية',
   };
 
   function sourceLabel(type) {
@@ -506,7 +507,8 @@
     /**
      * Trial balance from the journal. Debit-positive balances; totals are
      * compared exactly and a difference is never plugged.
-     * @param {object} [filters] {from,to,asOf,includeZero}
+     * @param {object} [filters] {from,to,asOf,includeZero,includeFuture}
+     *   without to/asOf the balances are as of today unless includeFuture
      * @returns {Promise<object>} balances
      */
     async trialBalance(filters) {
@@ -522,6 +524,10 @@
         }
         to = String(filters.asOf);
       }
+      // Depreciation and prepaid-expense releases are posted ahead as
+      // scheduled entries. Without an end date the balance is "as of today",
+      // never "as of the end of the schedule" (opt in with includeFuture).
+      if (!to && !filters.includeFuture) to = BeeStore.dates.today();
       if (from && to && from > to) {
         throw BeeStore.errors.err('VALIDATION', 'تاريخ البداية بعد تاريخ النهاية');
       }
@@ -608,7 +614,9 @@
     async generalLedger(filters) {
       filters = filters || {};
       const from = filters.from ? String(filters.from) : null;
-      const to = filters.to ? String(filters.to) : null;
+      // Same "as of today" default as the trial balance (scheduled entries).
+      const to = filters.to ? String(filters.to)
+        : (filters.includeFuture ? null : BeeStore.dates.today());
       if (from && !isDate(from)) throw BeeStore.errors.err('VALIDATION', 'تاريخ البداية غير صالح');
       if (to && !isDate(to)) throw BeeStore.errors.err('VALIDATION', 'تاريخ النهاية غير صالح');
       if (from && to && from > to) {

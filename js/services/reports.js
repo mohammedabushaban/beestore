@@ -62,7 +62,7 @@
         }
       }
       for (const r of salesReturns) {
-        netSales -= r.refundMinor;
+        netSales -= r.refundMinor - (Number(r.taxMinor) || 0);
         for (const line of r.lines) {
           if (line.restock) {
             cogs -= line.restockCostMinor != null
@@ -704,6 +704,8 @@
         } else {
           const sales = await this.repo.listRange('sales', '0000-01-01', asOf, s => s.status !== 'void');
           for (const s of sales) taxPayable += s.taxMinor || 0;
+          const returns = await this.repo.listRange('salesReturns', '0000-01-01', asOf);
+          for (const r of returns) taxPayable -= Number(r.taxMinor) || 0;
         }
       }
 
@@ -824,7 +826,12 @@
       const byId = new Map(chart.map(a => [a.id, a]));
       const balances = new Map();
       const party = new Map();
+      // Year-end closing entries move P&L balances into 3040. Reports measure
+      // performance and equity from the underlying postings, so they are kept
+      // aside and only used to present retained earnings separately.
+      const closingEntries = entries.filter(e => e.sourceType === 'YEAR_CLOSE');
       for (const entry of entries) {
+        if (entry.sourceType === 'YEAR_CLOSE') continue;
         for (const line of (entry.lines || [])) {
           const amount = (Number(line.debitMinor) || 0) - (Number(line.creditMinor) || 0);
           if (!amount) continue;
@@ -835,7 +842,10 @@
           }
         }
       }
-      return { entries, chart, byId, balances, party };
+      return {
+        entries: entries.filter(e => e.sourceType !== 'YEAR_CLOSE'),
+        closingEntries, chart, byId, balances, party,
+      };
     }
 
     _ctxAccountBalance(ctx, accountId) {
@@ -963,14 +973,35 @@
       for (const account of ctx.chart) {
         if (!this._isMoneyChartAccount(account)) continue;
         const balance = this._ctxAccountBalance(ctx, account.id);
-        if (account.clearing) clearingOutstanding += balance;
-        cashByAccount[account.legacyAccountId || account.id] = balance;
+        if (account.clearing) {
+          // Same key as the document snapshot: one line for money still in
+          // card/wallet clearing, whatever the number of clearing accounts.
+          clearingOutstanding += balance;
+          if (balance) cashByAccount.clearing = (cashByAccount.clearing || 0) + balance;
+        } else {
+          cashByAccount[account.legacyAccountId || account.id] = balance;
+        }
         cashBalance += balance;
       }
 
       const inventoryValue = this._ctxSystemBalance(ctx, 'inventory', '1200');
-      const receivables = this._ctxSystemBalance(ctx, 'ar', '1100');
-      const customerCredits = -this._ctxSystemBalance(ctx, 'customer_credits', '2030');
+      // Present each customer's net position (AR 1100 + credits 2030), like
+      // the customer statement: a customer who owes 100 and holds a 30 credit
+      // is a 70 receivable, not a 100 asset and a 30 liability (set-off
+      // within the same counterparty). Lines without a party stay as booked.
+      const arTotal = this._ctxSystemBalance(ctx, 'ar', '1100');
+      const creditsTotal = this._ctxSystemBalance(ctx, 'customer_credits', '2030');
+      let receivables = 0;
+      let customerCredits = 0;
+      let taggedNet = 0;
+      for (const net of this._journalCustomerBalances(ctx).values()) {
+        taggedNet += net;
+        if (net >= 0) receivables += net;
+        else customerCredits += -net;
+      }
+      const untagged = arTotal + creditsTotal - taggedNet;
+      if (untagged >= 0) receivables += untagged;
+      else customerCredits += -untagged;
       const payables = -this._ctxSystemBalance(ctx, 'ap', '2010');
       const prepaid = this._ctxSystemBalance(ctx, 'prepaid', '1300');
       const accruedExpensesTotal = -this._ctxSystemBalance(ctx, 'accrued_expenses', '2020');
@@ -1010,6 +1041,17 @@
         accruedWithholdings + accruedEmployer + endOfService + taxPayable +
         unpaidExpenses + unpaidFixedAssets;
       const equityTotal = openingEquity + capitalIn - withdrawals + cumulativeProfit;
+      // Retained earnings of closed fiscal years (3040, from closing entries
+      // up to asOf) and the result of the years still open.
+      let retainedEarnings = 0;
+      for (const entry of ctx.closingEntries || []) {
+        for (const line of (entry.lines || [])) {
+          const account = ctx.byId.get(line.accountId);
+          if (!account || account.systemKey !== 'retained_earnings') continue;
+          retainedEarnings += (Number(line.creditMinor) || 0) - (Number(line.debitMinor) || 0);
+        }
+      }
+      const currentProfit = cumulativeProfit - retainedEarnings;
       return {
         asOf,
         assets: {
@@ -1025,7 +1067,8 @@
         },
         equity: {
           openingEquity, capitalIn, withdrawals,
-          retained: cumulativeProfit, cumulativeProfit, total: equityTotal,
+          retained: cumulativeProfit, cumulativeProfit,
+          retainedEarnings, currentProfit, total: equityTotal,
         },
         balanced: assets === liabilities + equityTotal,
         source: 'journal',
@@ -1468,13 +1511,22 @@
         snapClose.assets.fixedAssetsNet || 0);
       const dAdv = d(snapOpen.assets.advancesOutstanding, snapClose.assets.advancesOutstanding);
       const dTax = d(snapOpen.liabilities.taxPayable, snapClose.liabilities.taxPayable);
+      // 2030 customer credits are cash received and owed back to customers
+      // (prepayments, overpayments kept as credit): an increase is cash in.
+      const dCredits = d(snapOpen.liabilities.customerCredits || 0,
+        snapClose.liabilities.customerCredits || 0);
       const cashFromOperations = pnl.netProfit - dInv - dRec - dPre + dPay +
         dAcc + dWithholding + dEmployer + dEos + dUnpaid + dUnpaidFixed -
-        dFixed - dAdv + dTax;
+        dFixed - dAdv + dTax + dCredits;
       const capitalIn = snapClose.equity.capitalIn - snapOpen.equity.capitalIn;
       const withdrawals = snapClose.equity.withdrawals - snapOpen.equity.withdrawals;
-      const cashChange = cashFromOperations + capitalIn - withdrawals;
+      // Opening balances entered during the month (cash, stock, receivables,
+      // payables) change equity 3030 without being profit or capital.
+      const openingBalances = d(snapOpen.equity.openingEquity || 0,
+        snapClose.equity.openingEquity || 0);
+      const cashChange = cashFromOperations + capitalIn - withdrawals + openingBalances;
       const actualCashChange = snapClose.assets.cashBalance - snapOpen.assets.cashBalance;
+      const activities = await this._cashFlowByActivity(from, to);
       return {
         month, from, to,
         netProfit: pnl.netProfit,
@@ -1483,11 +1535,46 @@
           accrued: dAcc, withholding: dWithholding, employer: dEmployer,
           endOfService: dEos, unpaidExpenses: dUnpaid,
           unpaidFixedAssets: dUnpaidFixed, fixedAssets: dFixed,
-          advances: dAdv, tax: dTax,
+          advances: dAdv, tax: dTax, customerCredits: dCredits,
         },
-        cashFromOperations, capitalIn, withdrawals, cashChange, actualCashChange,
+        cashFromOperations, capitalIn, withdrawals, openingBalances,
+        cashChange, actualCashChange,
+        activities,
         matches: Math.abs(cashChange - actualCashChange) < 1,
       };
+    }
+
+    /**
+     * Direct cash flow by IAS 7 activity, read from the journal: every line
+     * on a money account (cash, bank, wallet clearing) is classified by its
+     * entry's source document. Transfers between money accounts net to zero.
+     * Returns null while journal reports are not active (legacy data not yet
+     * replayed), because the journal would then be incomplete.
+     * @param {string} from YYYY-MM-DD
+     * @param {string} to YYYY-MM-DD
+     * @returns {Promise<object|null>} {operating,investing,financing,opening,total}
+     */
+    async _cashFlowByActivity(from, to) {
+      if (!(await this._journalReportsActive())) return null;
+      const ctx = await this._journalContext(from, to);
+      const out = { operating: 0, investing: 0, financing: 0, opening: 0, total: 0 };
+      const investing = ['FIXED_ASSET', 'FIXED_ASSET_PAYMENT'];
+      const financing = ['OWNER_TRANSACTION'];
+      for (const entry of ctx.entries) {
+        let delta = 0;
+        for (const line of (entry.lines || [])) {
+          if (!this._isMoneyChartAccount(ctx.byId.get(line.accountId))) continue;
+          delta += (Number(line.debitMinor) || 0) - (Number(line.creditMinor) || 0);
+        }
+        if (!delta) continue;
+        const type = entry.sourceType;
+        if (investing.indexOf(type) >= 0) out.investing += delta;
+        else if (financing.indexOf(type) >= 0) out.financing += delta;
+        else if (type === 'OPENING') out.opening += delta;
+        else out.operating += delta;
+        out.total += delta;
+      }
+      return out;
     }
 
     // v2 §9.4: two months side by side with differences.

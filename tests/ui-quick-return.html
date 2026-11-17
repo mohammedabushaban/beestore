@@ -194,7 +194,9 @@
           const search = overlay.querySelector('input[placeholder^="باركود أو اسم الصنف"]');
           assert(search, 'حقل إضافة الصنف غير موجود');
           search.value = product.variant.barcode;
-          search.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+          const searchBtn = buttonByText(overlay, 'بحث');
+          assert(searchBtn, 'زر البحث غير موجود');
+          searchBtn.click();
           await waitFor(() => overlay.querySelector('.return-line'), 'إضافة الصنف');
 
           const reason = overlay.querySelector('input[placeholder="سبب المرتجع (اختياري)"]');

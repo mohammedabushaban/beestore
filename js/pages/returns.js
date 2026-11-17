@@ -167,7 +167,8 @@
     const items = [];
     const itemsDiv = el('div');
     const searchInput = input('text', '', {
-      placeholder: 'باركود أو اسم الصنف... (Enter)',
+      placeholder: 'باركود أو اسم الصنف...',
+      enterkeyhint: 'search',
     });
     const results = el('div', { class: 'search-results' });
 
@@ -239,6 +240,14 @@
       searchInput.value = code;
       await addByQuery(code);
     }, { label: 'مسح' });
+    // Mobile keyboards have no Enter key; a visible button runs the same
+    // lookup as Enter.
+    const searchBtn = el('button', {
+      class: 'btn btn-secondary',
+      type: 'button',
+      onclick: () => addByQuery(searchInput.value),
+      'aria-label': 'بحث عن الصنف',
+    }, 'بحث');
 
     const customersRes = await BeeStore.api.customers.list();
     if (typeof options.shouldOpen === 'function' && !options.shouldOpen()) return;
@@ -274,7 +283,7 @@
         'بدون فاتورة: السعر الافتراضي هو سعر القائمة، وتكلفة الإرجاع تُحسب بمتوسط التكلفة الحالي. السبب اختياري.'),
       el('div', { class: 'form-group' }, [
         el('label', { class: 'form-label' }, 'إضافة صنف'),
-        el('div', { class: 'field-with-action' }, [searchInput, scanBtn]),
+        el('div', { class: 'field-with-action' }, [searchInput, searchBtn, scanBtn]),
         results,
       ]),
       itemsDiv,
@@ -437,7 +446,10 @@
   }
 
   function _buildExchangePicker(panel, items) {
-    const searchInput = input('text', '', { placeholder: 'باركود أو اسم الصنف...' });
+    const searchInput = input('text', '', {
+      placeholder: 'باركود أو اسم الصنف...',
+      enterkeyhint: 'search',
+    });
     const results = el('div', { class: 'search-results' });
     const itemsDiv = el('div', { id: 'exchange-items' });
 
@@ -490,10 +502,16 @@
       searchInput.value = code;
       await addByQuery(code);
     }, { label: 'مسح' });
+    const searchBtn = el('button', {
+      class: 'btn btn-secondary',
+      type: 'button',
+      onclick: () => addByQuery(searchInput.value),
+      'aria-label': 'بحث عن صنف الاستبدال',
+    }, 'بحث');
 
     panel.appendChild(el('div', { class: 'form-group' }, [
-      el('label', { class: 'form-label' }, 'أضف صنفاً للاستبدال (Enter)'),
-      el('div', { class: 'field-with-action' }, [searchInput, scanBtn]),
+      el('label', { class: 'form-label' }, 'أضف صنفاً للاستبدال'),
+      el('div', { class: 'field-with-action' }, [searchInput, searchBtn, scanBtn]),
       results,
     ]));
     panel.appendChild(itemsDiv);

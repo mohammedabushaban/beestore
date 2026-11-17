@@ -62,7 +62,7 @@
         }
       }
       for (const r of salesReturns) {
-        netSales -= r.refundMinor;
+        netSales -= r.refundMinor - (Number(r.taxMinor) || 0);
         for (const line of r.lines) {
           if (line.restock) {
             cogs -= line.restockCostMinor != null
@@ -704,6 +704,8 @@
         } else {
           const sales = await this.repo.listRange('sales', '0000-01-01', asOf, s => s.status !== 'void');
           for (const s of sales) taxPayable += s.taxMinor || 0;
+          const returns = await this.repo.listRange('salesReturns', '0000-01-01', asOf);
+          for (const r of returns) taxPayable -= Number(r.taxMinor) || 0;
         }
       }
 
@@ -1468,13 +1470,22 @@
         snapClose.assets.fixedAssetsNet || 0);
       const dAdv = d(snapOpen.assets.advancesOutstanding, snapClose.assets.advancesOutstanding);
       const dTax = d(snapOpen.liabilities.taxPayable, snapClose.liabilities.taxPayable);
+      // 2030 customer credits are cash received and owed back to customers
+      // (prepayments, overpayments kept as credit): an increase is cash in.
+      const dCredits = d(snapOpen.liabilities.customerCredits || 0,
+        snapClose.liabilities.customerCredits || 0);
       const cashFromOperations = pnl.netProfit - dInv - dRec - dPre + dPay +
         dAcc + dWithholding + dEmployer + dEos + dUnpaid + dUnpaidFixed -
-        dFixed - dAdv + dTax;
+        dFixed - dAdv + dTax + dCredits;
       const capitalIn = snapClose.equity.capitalIn - snapOpen.equity.capitalIn;
       const withdrawals = snapClose.equity.withdrawals - snapOpen.equity.withdrawals;
-      const cashChange = cashFromOperations + capitalIn - withdrawals;
+      // Opening balances entered during the month (cash, stock, receivables,
+      // payables) change equity 3030 without being profit or capital.
+      const openingBalances = d(snapOpen.equity.openingEquity || 0,
+        snapClose.equity.openingEquity || 0);
+      const cashChange = cashFromOperations + capitalIn - withdrawals + openingBalances;
       const actualCashChange = snapClose.assets.cashBalance - snapOpen.assets.cashBalance;
+      const activities = await this._cashFlowByActivity(from, to);
       return {
         month, from, to,
         netProfit: pnl.netProfit,
@@ -1483,11 +1494,46 @@
           accrued: dAcc, withholding: dWithholding, employer: dEmployer,
           endOfService: dEos, unpaidExpenses: dUnpaid,
           unpaidFixedAssets: dUnpaidFixed, fixedAssets: dFixed,
-          advances: dAdv, tax: dTax,
+          advances: dAdv, tax: dTax, customerCredits: dCredits,
         },
-        cashFromOperations, capitalIn, withdrawals, cashChange, actualCashChange,
+        cashFromOperations, capitalIn, withdrawals, openingBalances,
+        cashChange, actualCashChange,
+        activities,
         matches: Math.abs(cashChange - actualCashChange) < 1,
       };
+    }
+
+    /**
+     * Direct cash flow by IAS 7 activity, read from the journal: every line
+     * on a money account (cash, bank, wallet clearing) is classified by its
+     * entry's source document. Transfers between money accounts net to zero.
+     * Returns null while journal reports are not active (legacy data not yet
+     * replayed), because the journal would then be incomplete.
+     * @param {string} from YYYY-MM-DD
+     * @param {string} to YYYY-MM-DD
+     * @returns {Promise<object|null>} {operating,investing,financing,opening,total}
+     */
+    async _cashFlowByActivity(from, to) {
+      if (!(await this._journalReportsActive())) return null;
+      const ctx = await this._journalContext(from, to);
+      const out = { operating: 0, investing: 0, financing: 0, opening: 0, total: 0 };
+      const investing = ['FIXED_ASSET', 'FIXED_ASSET_PAYMENT'];
+      const financing = ['OWNER_TRANSACTION'];
+      for (const entry of ctx.entries) {
+        let delta = 0;
+        for (const line of (entry.lines || [])) {
+          if (!this._isMoneyChartAccount(ctx.byId.get(line.accountId))) continue;
+          delta += (Number(line.debitMinor) || 0) - (Number(line.creditMinor) || 0);
+        }
+        if (!delta) continue;
+        const type = entry.sourceType;
+        if (investing.indexOf(type) >= 0) out.investing += delta;
+        else if (financing.indexOf(type) >= 0) out.financing += delta;
+        else if (type === 'OPENING') out.opening += delta;
+        else out.operating += delta;
+        out.total += delta;
+      }
+      return out;
     }
 
     // v2 §9.4: two months side by side with differences.

@@ -58,32 +58,75 @@
      * discount. Shared with the cashier preview so both paths agree.
      * @param {object} saleLine stored sale line
      * @param {number} qty quantity being returned
-     * @returns {{discountMinor:number,refundMinor:number,alreadyDiscountMinor:number}}
+     * @param {object} [sale] the invoice, to share its invoice discount and tax
+     * @param {number} [index] the line's index in sale.lines
+     * @returns {object} {discountMinor,invoiceDiscountMinor,taxMinor,refundMinor,already*}
      */
-    quoteRefund(saleLine, qty) {
+    quoteRefund(saleLine, qty, sale, index) {
       const qtySold = Number(saleLine.qty) || 0;
       const requested = Math.floor(Number(qty) || 0);
-      if (qtySold <= 0 || requested <= 0) {
-        return { discountMinor: 0, refundMinor: 0, alreadyDiscountMinor: 0 };
-      }
+      const empty = {
+        discountMinor: 0, invoiceDiscountMinor: 0, taxMinor: 0, refundMinor: 0,
+        alreadyDiscountMinor: 0, alreadyInvoiceDiscountMinor: 0, alreadyTaxMinor: 0,
+      };
+      if (qtySold <= 0 || requested <= 0) return empty;
       const returnedQty = Number(saleLine.returnedQty) || 0;
       const remainingQty = Math.max(0, qtySold - returnedQty);
-      const lineDiscount = Math.max(0,
-        Math.round(Number(saleLine.lineDiscountMinor) || 0));
-      const tracked = Number(saleLine.returnedDiscountMinor);
-      const alreadyDiscount = Math.min(lineDiscount, Math.max(0,
-        Number.isFinite(tracked) && saleLine.returnedDiscountMinor != null
-          ? tracked
-          : Math.round(lineDiscount * returnedQty / qtySold)));
-      const remainingDiscount = lineDiscount - alreadyDiscount;
-      const discountMinor = requested >= remainingQty
-        ? remainingDiscount
-        : Math.round(remainingDiscount * requested / remainingQty);
-      return {
-        discountMinor,
-        refundMinor: BeeStore.money.mul(saleLine.unitPriceMinor, requested) - discountMinor,
-        alreadyDiscountMinor: alreadyDiscount,
+      // Splits one line-level amount across returned units; the final return
+      // takes the remainder so the refunded parts sum exactly to the total.
+      const share = (total, trackedValue) => {
+        const lineTotal = Math.max(0, Math.round(Number(total) || 0));
+        const tracked = Number(trackedValue);
+        const already = Math.min(lineTotal, Math.max(0,
+          Number.isFinite(tracked) && trackedValue != null
+            ? tracked
+            : Math.round(lineTotal * returnedQty / qtySold)));
+        const remaining = lineTotal - already;
+        const now = requested >= remainingQty
+          ? remaining
+          : Math.round(remaining * requested / remainingQty);
+        return { already, now };
       };
+      const lineDisc = share(saleLine.lineDiscountMinor, saleLine.returnedDiscountMinor);
+      // v5 §3.1: the invoice-level discount and the tax belong to every line
+      // in proportion to its value, so a return gives back the price the
+      // customer actually paid for those units — never the pre-discount price.
+      const shares = sale && index != null ? this.invoiceShares(sale)[Number(index)] : null;
+      const invDisc = share(shares ? shares.invoiceDiscountMinor : 0,
+        saleLine.returnedInvoiceDiscountMinor);
+      const tax = share(shares ? shares.taxMinor : 0, saleLine.returnedTaxMinor);
+      const netMinor = BeeStore.money.mul(saleLine.unitPriceMinor, requested) -
+        lineDisc.now - invDisc.now;
+      // Inclusive tax is already inside the price; exclusive tax (and every
+      // legacy taxed sale, which always charged tax on top) is added back.
+      const refundMinor = netMinor + (sale && sale.taxIncluded ? 0 : tax.now);
+      return {
+        discountMinor: lineDisc.now,
+        invoiceDiscountMinor: invDisc.now,
+        taxMinor: tax.now,
+        refundMinor,
+        alreadyDiscountMinor: lineDisc.already,
+        alreadyInvoiceDiscountMinor: invDisc.already,
+        alreadyTaxMinor: tax.already,
+      };
+    }
+
+    /**
+     * Per-line share of the invoice-level discount and of the tax, allocated
+     * with the largest-remainder method so the shares sum exactly to the
+     * invoice amounts. Tax is allocated on each line's value after discount.
+     * @param {object} sale stored sale
+     * @returns {Array<{invoiceDiscountMinor:number,taxMinor:number}>}
+     */
+    invoiceShares(sale) {
+      const lines = (sale && sale.lines) || [];
+      const values = lines.map(l => Math.max(0, Math.round(Number(l.lineTotalMinor) || 0)));
+      const discount = Math.max(0, Math.round(Number(sale && sale.discountMinor) || 0));
+      const taxTotal = Math.max(0, Math.round(Number(sale && sale.taxMinor) || 0));
+      const discounts = discount > 0 ? BeeStore.money.allocate(discount, values) : values.map(() => 0);
+      const taxable = values.map((v, i) => Math.max(0, v - discounts[i]));
+      const taxes = taxTotal > 0 ? BeeStore.money.allocate(taxTotal, taxable) : values.map(() => 0);
+      return values.map((_, i) => ({ invoiceDiscountMinor: discounts[i], taxMinor: taxes[i] }));
     }
 
     async create(data) {
@@ -137,6 +180,7 @@
 
         const lines = [];
         let refundMinor = 0;
+        let taxRefundMinor = 0;
         let unlinkedRefundMinor = 0;
         let priceOverride = false;
         const seenLines = new Set();
@@ -159,11 +203,15 @@
               throw BeeStore.errors.err('EXCEEDS_SOLD', 'كمية المرتجع تتجاوز الكمية المباعة المتبقية');
             }
             const unitPriceMinor = saleLine.unitPriceMinor;
-            const quote = this.quoteRefund(saleLine, qty);
+            const quote = this.quoteRefund(saleLine, qty, sale, index);
             const lineRefund = quote.refundMinor;
             refundMinor += lineRefund;
+            taxRefundMinor += quote.taxMinor;
             saleLine.returnedDiscountMinor =
               quote.alreadyDiscountMinor + quote.discountMinor;
+            saleLine.returnedInvoiceDiscountMinor =
+              quote.alreadyInvoiceDiscountMinor + quote.invoiceDiscountMinor;
+            saleLine.returnedTaxMinor = quote.alreadyTaxMinor + quote.taxMinor;
             // v5 §3.2: a returned unit comes back at the exact cost that was
             // charged to COGS when it sold. Track the already-returned cost so
             // the final return takes the remaining value exactly.
@@ -198,6 +246,8 @@
               unitCostMinor: saleLine.unitCostMinor,
               restock: line.restock !== false,
               lineRefundMinor: lineRefund,
+              invoiceDiscountMinor: quote.invoiceDiscountMinor,
+              taxMinor: quote.taxMinor,
               returnedCostMinor,
               restockCostMinor: line.restock !== false ? returnedCostMinor : 0,
               valueChangeMinor: 0,
@@ -283,6 +333,8 @@
           flags,
           lines,
           refundMinor,
+          // Output tax reversed by this return (part of refundMinor).
+          taxMinor: taxRefundMinor,
           restockCostMinor: 0,
           refundMode,
           refundMethod: refundAccountId,

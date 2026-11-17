@@ -861,7 +861,8 @@
     }
 
     /**
-     * Sales return: Dr 4020 refund / Cr cash-bank-clearing, AR, or 2030.
+     * Sales return: Dr 4020 refund net of tax + Dr 2300 tax /
+     * Cr cash-bank-clearing, AR, or 2030.
      * @param {object} tx active transaction
      * @param {object} ret salesReturns record
      * @param {object} [options] {replay}
@@ -871,7 +872,11 @@
       const refund = round(ret.refundMinor);
       if (refund === 0) return null;
       const mode = ret.refundMode || 'cash_refund';
-      const parts = [{ key: 'sales_returns', debit: refund }];
+      // The refund carries the output tax of the returned units: that part
+      // reduces 2300, only the rest is a sales return (contra revenue).
+      const tax = Math.max(0, Math.min(refund, round(ret.taxMinor)));
+      const parts = [{ key: 'sales_returns', debit: refund - tax }];
+      if (tax > 0) parts.push({ key: 'tax_payable', debit: tax });
       if (mode === 'customer_credit') {
         parts.push({
           key: 'customer_credits', credit: refund,
@@ -898,6 +903,7 @@
         sourceId: ret.id,
         event: EVENTS.SALE_RETURN,
         description: 'مرتجع مبيعات ' + ret.number,
+        taxPayable: tax > 0,
         replay: options && options.replay,
         parts,
       });

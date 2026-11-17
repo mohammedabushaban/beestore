@@ -26,7 +26,14 @@ None. Next in v5 §13 order: **A6** (see below).
   setting. Missing: backfill migration, editing time when back-dating, time on
   stock movements, sort by time.
 - Invoices page shows overpayment (badge + view details).
-- Node suite: 38 test files / 269 tests pass
+- Audit fixes (2026-11-17): change is taken from cash payments only;
+  tax-inclusive totals no longer add tax twice (`sale.taxIncluded`); returns
+  share the invoice discount and reverse output tax (`ret.taxMinor`, Dr 2300);
+  profit⇄cash recon includes 2030/3030 and journal `activities`;
+  `money.parseDecimal` handles `12,5` / `1,250`. Open audit items: integrity
+  checks (A6), negative-stock setting, future-dated scheduled entries,
+  year-end closing / retained earnings.
+- Node suite: 42 test files / 291 tests pass
   (`node --test --test-concurrency=1 tests/*.js`).
 - Browser suites: `tests/smoke.html`, `idb-lazy.html`, `ui-*.html` (including
   `ui-purchases.html` 4/4); offline

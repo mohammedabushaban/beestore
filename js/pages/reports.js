@@ -293,13 +293,28 @@
           line('+ الزيادة في ذمم الموردين', r.deltas.payables),
           line('+ الزيادة في الرواتب المستحقة', r.deltas.accrued),
           line('− الزيادة في السلف', -r.deltas.advances),
+          line('+ الزيادة في أرصدة الزبائن الدائنة', r.deltas.customerCredits || 0),
           el('tr', { class: 'total-row' }, [el('td', {}, 'النقد من العمليات'), el('td', {}, formatMoney(r.cashFromOperations))]),
           line('+ رأس مال داخل', r.capitalIn),
           line('− سحوبات', -r.withdrawals),
+          line('+ أرصدة افتتاحية مُدخلة خلال الشهر', r.openingBalances || 0),
           el('tr', { class: 'total-row' }, [el('td', {}, 'التغير المحسوب'), el('td', {}, formatMoney(r.cashChange))]),
           el('tr', { class: 'total-row' }, [el('td', {}, 'التغير الفعلي'), el('td', {}, formatMoney(r.actualCashChange))]),
         ])]),
       ]));
+      if (r.activities) {
+        const a = r.activities;
+        out.appendChild(el('div', { class: 'card' }, [
+          el('h3', {}, 'التدفقات النقدية حسب النشاط (من القيود)'),
+          el('table', { class: 'data-table' }, [el('tbody', {}, [
+            line('الأنشطة التشغيلية', a.operating),
+            line('الأنشطة الاستثمارية (أصول ثابتة)', a.investing),
+            line('الأنشطة التمويلية (رأس مال / مسحوبات)', a.financing),
+            line('أرصدة افتتاحية', a.opening),
+            el('tr', { class: 'total-row' }, [el('td', {}, 'صافي التغير في النقدية'), el('td', {}, formatMoney(a.total))]),
+          ])]),
+        ]));
+      }
     }
   }
 

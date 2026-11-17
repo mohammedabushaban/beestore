@@ -27,7 +27,23 @@
    */
   function parseDecimal(str) {
     if (str === null || str === undefined || str === '') return 0;
-    const n = Number(normalizeDigits(str).replace(/[^\d.\-]/g, ''));
+    if (typeof str === 'number') return isFinite(str) ? str : 0;
+    let s = normalizeDigits(str).replace(/[\s\u00a0]/g, '');
+    // A comma is a decimal separator when it is the only separator and is
+    // followed by one or two digits ("12,5" → 12.5); otherwise commas group
+    // thousands ("1,250" / "1,250.75"). Anything else is ambiguous and
+    // rejected rather than silently turned into a different amount.
+    if (s.indexOf(',') >= 0) {
+      if (s.indexOf('.') < 0 && /^-?\d+,\d{1,2}$/.test(s)) {
+        s = s.replace(',', '.');
+      } else if (/^-?\d{1,3}(,\d{3})+(\.\d*)?$/.test(s)) {
+        s = s.replace(/,/g, '');
+      } else {
+        return 0;
+      }
+    }
+    s = s.replace(/[^\d.\-]/g, '');
+    const n = Number(s);
     return isFinite(n) ? n : 0;
   }
 
@@ -38,7 +54,15 @@
    * @returns {number} integer minor units
    */
   function fromMajor(major) {
-    return roundMinor(parseDecimal(major) * 100);
+    const n = parseDecimal(major);
+    if (!n) return 0;
+    // Shift the decimal point in the string form ("1.005e2" = 100.5) so
+    // binary floating point cannot turn x.xx5 into x.xx4999; round half away
+    // from zero so +/- amounts are symmetric.
+    const abs = Math.abs(n);
+    const text = String(abs);
+    const shifted = text.indexOf('e') >= 0 ? abs * 100 : Number(text + 'e2');
+    return (n < 0 ? -1 : 1) * Math.round(shifted);
   }
 
   function toMajor(minor) {

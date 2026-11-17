@@ -188,7 +188,8 @@
           const saleLine = sale.lines[Number(line.saleLineIndex)];
           if (!saleLine) continue;
           const qty = Number(line.qty) || 0;
-          refund += BeeStore.returns.quoteRefund(saleLine, qty).refundMinor;
+          refund += BeeStore.returns.quoteRefund(saleLine, qty, sale,
+            Number(line.saleLineIndex)).refundMinor;
           continue;
         }
         // v4 R9.2: an unlinked line needs a variant and is capped at list

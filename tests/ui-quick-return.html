@@ -149,6 +149,17 @@
         date: today,
       })).data;
 
+      // A second product whose name also matches «قميص»: a name search must
+      // list both and let the user choose, never add the first match.
+      assert((await api.products.quickAdd({
+        name: 'قميص أحمر',
+        barcode: '6281000000024',
+        costMinor: 600,
+        priceMinor: 1200,
+        openingQuantity: 3,
+        date: today,
+      })).ok, 'second product');
+
       BeeStore.router = {
         currentRoute: '/returns/direct',
         navigate: (path) => { navCalls.push(path); },
@@ -185,6 +196,25 @@
           const { overlay } = await openDirect();
           assert((overlay.textContent || '').indexOf('مرتجع بدون فاتورة') >= 0,
             'الحوار لم يُفتح مرة أخرى');
+          overlay.querySelector('.btn-close').click();
+          await waitFor(() => !document.querySelector('.dialog-overlay'), 'إغلاق الحوار');
+        });
+
+        await test('a name search lists the matches and adds only the item the user picks', async () => {
+          const { overlay } = await openDirect();
+          const search = overlay.querySelector('input[placeholder^="باركود أو اسم الصنف"]');
+          search.value = 'قميص';
+          buttonByText(overlay, 'بحث').click();
+          await waitFor(() => overlay.querySelectorAll('.search-result-item').length === 2, 'قائمة النتائج');
+          assert(!overlay.querySelector('.return-line'), 'لا يجب إضافة أي صنف قبل الاختيار');
+          const red = Array.from(overlay.querySelectorAll('.search-result-item'))
+            .find(b => (b.textContent || '').indexOf('قميص أحمر') >= 0);
+          assert(red, 'الصنف الثاني غير موجود في النتائج');
+          red.click();
+          const line = await waitFor(() => overlay.querySelector('.return-line'), 'إضافة الصنف المختار');
+          assert((line.textContent || '').indexOf('قميص أحمر') >= 0, 'أُضيف صنف غير الذي اخترته');
+          assert(overlay.querySelectorAll('.return-line').length === 1, 'يجب إضافة صنف واحد فقط');
+          assert(overlay.querySelectorAll('.search-result-item').length === 0, 'القائمة يجب أن تُغلق بعد الاختيار');
           overlay.querySelector('.btn-close').click();
           await waitFor(() => !document.querySelector('.dialog-overlay'), 'إغلاق الحوار');
         });

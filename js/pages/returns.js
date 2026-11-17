@@ -162,6 +162,50 @@
   }
 
   /** v4 R9: item-only return without an invoice reference. */
+  /**
+   * Item lookup for return/exchange forms. A scanned or typed barcode that
+   * matches exactly one item adds it at once; any other search lists the
+   * matches so the user picks the right product, size and colour.
+   * @param {HTMLElement} results container for the match list
+   * @param {function(object)} onPick called with the chosen variant
+   * @returns {function(string): Promise<void>} lookup(query)
+   */
+  function _variantLookup(results, onPick) {
+    const clear = () => { results.innerHTML = ''; };
+    return async function lookup(query) {
+      const q = String(query || '').trim();
+      clear();
+      if (!q) return;
+      const res = await BeeStore.api.variants.search(q);
+      const matches = res.ok ? res.data : [];
+      const exact = matches.filter(v => v.barcode && String(v.barcode) === q);
+      if (exact.length === 1) { onPick(exact[0]); return; }
+      if (matches.length === 0) { toast('الصنف غير موجود', 'error'); return; }
+      const LIMIT = 30;
+      results.appendChild(el('p', { class: 'form-hint' },
+        matches.length + ' نتيجة — اختر الصنف' +
+        (matches.length > LIMIT ? ' (يُعرض أول ' + LIMIT + '، حدّد البحث أكثر)' : '')));
+      for (const v of matches.slice(0, LIMIT)) {
+        const details = [v.size, v.color].filter(Boolean).join(' / ');
+        const meta = [
+          v.itemCode || v.productItemCode || '',
+          v.barcode ? 'باركود ' + v.barcode : '',
+          'السعر ' + formatMoney(Number(v.priceMinor) || 0),
+          'المتوفر ' + (Number(v.quantity) || 0),
+        ].filter(Boolean).join(' • ');
+        results.appendChild(el('button', {
+          class: 'search-result-item',
+          type: 'button',
+          onclick: () => { clear(); onPick(v); },
+        }, [
+          el('span', { class: 'search-result-name' },
+            (v.productName || 'صنف') + (details ? ' — ' + details : '')),
+          el('span', { class: 'search-result-meta' }, meta),
+        ]));
+      }
+    };
+  }
+
   async function _showUnlinkedReturnForm(options) {
     options = options || {};
     const items = [];
@@ -197,6 +241,8 @@
       }, [
         el('span', { style: 'flex:1;min-width:160px;' }, [
           (item.productName || variant.productId),
+          [variant.size, variant.color].filter(Boolean).length
+            ? ' — ' + [variant.size, variant.color].filter(Boolean).join(' / ') : '',
           item.itemCode ? ' · ' + item.itemCode : '',
           ' — القائمة: ' + formatMoney(item.listPriceMinor),
         ].join('')),
@@ -217,19 +263,7 @@
       searchInput.focus();
     }
 
-    async function addByQuery(query) {
-      const q = String(query || '').trim();
-      if (!q) return;
-      let variant = null;
-      const barcodeRes = await BeeStore.api.variants.byBarcode(q);
-      if (barcodeRes.ok && barcodeRes.data) variant = barcodeRes.data;
-      else {
-        const searchRes = await BeeStore.api.variants.search(q);
-        if (searchRes.ok && searchRes.data.length > 0) variant = searchRes.data[0];
-      }
-      if (!variant) { toast('الصنف غير موجود', 'error'); return; }
-      addVariant(variant);
-    }
+    const addByQuery = _variantLookup(results, addVariant);
 
     searchInput.addEventListener('keydown', async (e) => {
       if (e.key !== 'Enter') return;
@@ -453,17 +487,8 @@
     const results = el('div', { class: 'search-results' });
     const itemsDiv = el('div', { id: 'exchange-items' });
 
-    async function addByQuery(q) {
-      q = String(q || '').trim();
-      if (!q) return;
-      let variant = null;
-      const barcodeRes = await BeeStore.api.variants.byBarcode(q);
-      if (barcodeRes.ok && barcodeRes.data) variant = barcodeRes.data;
-      else {
-        const sRes = await BeeStore.api.variants.search(q);
-        if (sRes.ok && sRes.data.length > 0) variant = sRes.data[0];
-      }
-      if (!variant) { toast('الصنف غير موجود', 'error'); return; }
+    function addVariant(variant) {
+      if (!variant || !variant.id) return;
       if (items.some(it => it.variantId === variant.id)) { toast('الصنف مضاف مسبقاً', 'error'); return; }
       const qtyEl = input('number', '1', { min: 1, style: 'width:60px' });
       const item = {
@@ -491,6 +516,7 @@
       searchInput.value = '';
       searchInput.focus();
     }
+    const addByQuery = _variantLookup(results, addVariant);
 
     searchInput.addEventListener('keydown', async (e) => {
       if (e.key !== 'Enter') return;

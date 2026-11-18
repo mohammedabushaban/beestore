@@ -2,6 +2,33 @@
   'use strict';
   const BeeStore = root.BeeStore || (root.BeeStore = {});
 
+  /** Payment-method ids that route their clearing money into `accountId`. */
+  function methodsForAccount(settings, accountId) {
+    if (!accountId) return [];
+    return ((settings && settings.paymentMethods) || [])
+      .filter(m => m && m.accountId === accountId)
+      .map(m => m.id);
+  }
+
+  /**
+   * Clearing money a payment method holds for this account. Keyed by method id
+   * in the summary, so it survives a deleted or re-pointed method.
+   */
+  function clearingTotal(summary, settings, accountId) {
+    let total = 0;
+    for (const methodId of methodsForAccount(settings, accountId)) {
+      total += BeeStore.summary.methodBalance(summary, methodId);
+    }
+    return total;
+  }
+
+  function methodName(settings, methodId) {
+    const found = ((settings && settings.paymentMethods) || [])
+      .find(m => m && m.id === methodId);
+    return found ? found.name : methodId;
+  }
+
+
   class AccountsService {
     constructor(repo) {
       this.repo = repo;
@@ -101,8 +128,30 @@
     async balance(accountId) {
       // L2 §5: the materialized summary already holds all-time account
       // balances, so the accounts page does not rescan the invoice history.
+      // Card/wallet receipts sit in a clearing balance keyed by payment method,
+      // so add it for the methods that settle into this account.
       const summary = await this.repo.getSummary();
-      return BeeStore.summary.balance(summary, accountId);
+      const settings = (await this.repo.get('meta', 'settings')) || {};
+      return BeeStore.summary.balance(summary, accountId) +
+        clearingTotal(summary, settings, accountId);
+    }
+
+    /**
+     * Every account balance in one read, including clearing (card/wallet)
+     * money. The dashboard and the accounts page both use this so the totals
+     * always add up.
+     * @returns {Promise<Object>} accountId → balance in minor units
+     */
+    async balances() {
+      const accounts = await this.repo.list('accounts');
+      const summary = await this.repo.getSummary();
+      const settings = (await this.repo.get('meta', 'settings')) || {};
+      const out = {};
+      for (const a of accounts) {
+        out[a.id] = BeeStore.summary.balance(summary, a.id) +
+          clearingTotal(summary, settings, a.id);
+      }
+      return out;
     }
 
     /**
@@ -140,6 +189,39 @@
       return totals;
     }
 
+    /**
+     * Card/wallet money still held by the provider for these methods, as of a
+     * date. Reported separately from `balancesAsOf` because the balance sheet
+     * adds it as a cash-equivalent asset (`assets.clearingOutstanding`), so
+     * including it in both places would double-count it.
+     * @param {string[]} methodIds payment method ids
+     * @param {string} date YYYY-MM-DD
+     * @returns {Promise<number>} signed clearing balance in minor units
+     */
+    async _clearingAsOf(methodIds, date) {
+      if (!methodIds.length) return 0;
+      const summary = await this.repo.getSummary();
+      const month = String(date).slice(0, 7);
+      const monthEnd = BeeStore.dates.endOfMonth(date) === date;
+      let total = 0;
+      for (const key of BeeStore.summary.monthKeys(summary)) {
+        if (key >= month) break;
+        for (const id of methodIds) {
+          total += ((summary.months[key].methods || {})[id]) || 0;
+        }
+      }
+      if (monthEnd) {
+        const bucket = summary.months[month];
+        for (const id of methodIds) {
+          total += (bucket && bucket.methods && bucket.methods[id]) || 0;
+        }
+      } else {
+        const partial = await this._partialMonthFlows(month, date);
+        for (const id of methodIds) total += partial.methods[id] || 0;
+      }
+      return total;
+    }
+
     /** Sums day-level account deltas from documents in the target month. */
     async _partialMonthFlows(month, toDate) {
       const from = month + '-01';
@@ -149,7 +231,7 @@
         'purchaseReturns', 'cashAdjustments', 'cardSettlements',
         'payrollLiabilityPayments', 'fixedAssets', 'fixedAssetPayments',
       ];
-      const totals = { accounts: {}, customers: {}, suppliers: {}, tax: 0 };
+      const totals = { accounts: {}, methods: {}, customers: {}, suppliers: {}, tax: 0 };
       const add = (target, source) => {
         for (const id of Object.keys(source || {})) {
           target[id] = (target[id] || 0) + source[id];
@@ -163,6 +245,7 @@
             if (day < from || day > toDate) continue;
             const delta = contrib.days[day];
             add(totals.accounts, delta.accounts);
+            add(totals.methods, delta.methods);
             add(totals.customers, delta.customers);
             add(totals.suppliers, delta.suppliers);
             totals.tax += delta.tax || 0;
@@ -197,28 +280,44 @@
         ? this.repo.listRange(collection, from, to)
         : this.repo.list(collection));
       const movements = [];
+      // Card/wallet receipts never touch `accountId` on the document; they are
+      // held in the clearing balance of the payment method that settles here.
+      const settings = (await this.repo.get('meta', 'settings')) || {};
+      const clearingMethods = methodsForAccount(settings, accountId);
+      const isClearingHere = (methodId) => clearingMethods.indexOf(methodId) >= 0;
       const allSales = await fetch('sales');
       for (const s of allSales) {
         if (s.status === 'void') continue;
         for (const p of (s.payments || [])) {
-          if (p.methodKind !== 'clearing' && p.accountId === accountId) {
-            if (range && p.date < range.from) continue;
-            if (range && p.date > range.to) continue;
-            // v4 R2.2: the account keeps the receipt net of change handed
-            // back (the same rule as balances and the daily closing).
-            const net = (Number(p.amountMinor) || 0) - (Number(p.changeMinor) || 0);
-            if (net === 0) continue;
-            movements.push({ date: p.date, amountMinor: net, type: 'sale_payment', refId: s.id, refNumber: s.number, description: 'تحصيل فاتورة ' + s.number + (p.changeMinor ? ' (بعد الباقي)' : '') });
-          }
+          const clearing = p.methodKind === 'clearing';
+          if (clearing ? !isClearingHere(p.method) : p.accountId !== accountId) continue;
+          const pDate = p.date || s.date;
+          if (range && pDate < range.from) continue;
+          if (range && pDate > range.to) continue;
+          // v4 R2.2: the account keeps the receipt net of change handed back
+          // (the same rule as balances and the daily closing).
+          const net = (Number(p.amountMinor) || 0) - (Number(p.changeMinor) || 0);
+          if (net === 0) continue;
+          movements.push({
+            date: pDate,
+            amountMinor: net,
+            type: 'sale_payment', refId: s.id, refNumber: s.number,
+            description: 'تحصيل فاتورة ' + s.number +
+              (p.changeMinor ? ' (بعد الباقي)' : '') +
+              (clearing ? ' — ' + methodName(settings, p.method) : ''),
+          });
         }
       }
       const customerPayments = await fetch('customerPayments');
       for (const p of customerPayments) {
-        if (p.methodKind !== 'clearing' && p.accountId === accountId) {
-          if (range && p.date < range.from) continue;
-          if (range && p.date > range.to) continue;
-          movements.push({ date: p.date, amountMinor: p.amountMinor, type: 'customer_payment', refId: p.id, description: 'دفعة زبون' });
-        }
+        const clearing = p.methodKind === 'clearing';
+        if (clearing ? !isClearingHere(p.method) : p.accountId !== accountId) continue;
+        if (range && p.date < range.from) continue;
+        if (range && p.date > range.to) continue;
+        movements.push({
+          date: p.date, amountMinor: p.amountMinor, type: 'customer_payment', refId: p.id,
+          description: 'دفعة زبون' + (clearing ? ' — ' + methodName(settings, p.method) : ''),
+        });
       }
       const supplierPayments = await fetch('supplierPayments');
       for (const p of supplierPayments) {
@@ -242,23 +341,25 @@
       const expenses = await fetch('expenses');
       for (const e of expenses) {
         if (e.voided) continue;
-        if (e.methodKind !== 'clearing' && e.accountId === accountId) {
-          if (range && e.date < range.from) continue;
-          if (range && e.date > range.to) continue;
-          const paid = BeeStore.expenses._initialPaid(e);
-          if (paid) {
-            movements.push({ date: e.date, amountMinor: -paid, type: 'expense', refId: e.id, description: e.description || 'مصروف' });
-          }
+        const clearing = e.methodKind === 'clearing';
+        const method = e.paymentMethod || e.method;
+        if (clearing ? !isClearingHere(method) : e.accountId !== accountId) continue;
+        if (range && e.date < range.from) continue;
+        if (range && e.date > range.to) continue;
+        const paid = BeeStore.expenses._initialPaid(e);
+        if (paid) {
+          movements.push({ date: e.date, amountMinor: -paid, type: 'expense', refId: e.id, description: e.description || 'مصروف' });
         }
       }
       const expensePayments = await fetch('expensePayments');
       for (const p of expensePayments) {
         if (p.voided) continue;
-        if (p.methodKind !== 'clearing' && p.accountId === accountId) {
-          if (range && p.date < range.from) continue;
-          if (range && p.date > range.to) continue;
-          movements.push({ date: p.date, amountMinor: -p.amountMinor, type: 'expense_payment', refId: p.id, description: 'سداد مصروف مستحق' });
-        }
+        const clearing = p.methodKind === 'clearing';
+        const method = p.paymentMethod || p.method;
+        if (clearing ? !isClearingHere(method) : p.accountId !== accountId) continue;
+        if (range && p.date < range.from) continue;
+        if (range && p.date > range.to) continue;
+        movements.push({ date: p.date, amountMinor: -p.amountMinor, type: 'expense_payment', refId: p.id, description: 'سداد مصروف مستحق' });
       }
       const advances = await fetch('employeeAdvances');
       for (const a of advances) {
@@ -293,12 +394,13 @@
       }
       const salesReturns = await fetch('salesReturns');
       for (const r of salesReturns) {
-        if (r.refundMode === 'cash_refund' && r.refundMethodKind !== 'clearing' &&
-          r.refundMethod === accountId) {
-          if (range && r.date < range.from) continue;
-          if (range && r.date > range.to) continue;
-          movements.push({ date: r.date, amountMinor: -r.refundMinor, type: 'return_refund', refId: r.id, refNumber: r.number, description: 'مرتجع ' + r.number });
-        }
+        if (r.refundMode !== 'cash_refund') continue;
+        const clearing = r.refundMethodKind === 'clearing';
+        const matches = clearing ? isClearingHere(r.refundPaymentMethod) : r.refundMethod === accountId;
+        if (!matches) continue;
+        if (range && r.date < range.from) continue;
+        if (range && r.date > range.to) continue;
+        movements.push({ date: r.date, amountMinor: -r.refundMinor, type: 'return_refund', refId: r.id, refNumber: r.number, description: 'مرتجع ' + r.number });
       }
       const purchaseReturns = await fetch('purchaseReturns');
       for (const r of purchaseReturns) {
@@ -310,7 +412,22 @@
       }
       const settlements = await fetch('cardSettlements');
       for (const settlement of settlements) {
-        if (settlement.voided || settlement.bankAccountId !== accountId) continue;
+        if (settlement.voided) continue;
+        if (isClearingHere(settlement.method)) {
+          // The provider pays out the gross: the clearing balance drops by the
+          // full amount and the fee is the cost of collecting it.
+          movements.push({
+            date: settlement.date,
+            amountMinor: -(Number(settlement.grossMinor) || 0),
+            type: 'card_settlement',
+            refId: settlement.id,
+            refNumber: settlement.number,
+            description: 'تسوية ' + (settlement.methodName || settlement.method) +
+              ' — مُحوَّل للبنك',
+          });
+          continue;
+        }
+        if (settlement.bankAccountId !== accountId) continue;
         movements.push({
           date: settlement.date,
           amountMinor: settlement.netReceivedMinor,
@@ -343,6 +460,12 @@
       // the account opening, otherwise every running balance is wrong.
       if (from && from > '0000-01-01') {
         running = await this.balanceAsOf(accountId, BeeStore.dates.addDays(from, -1));
+        // A wallet's ledger also carries the provider's clearing balance, so
+        // the opening must include what was already held before the range.
+        if (clearingMethods.length) {
+          running += await this._clearingAsOf(clearingMethods,
+            BeeStore.dates.addDays(from, -1));
+        }
       }
       for (const m of movements) {
         running += m.amountMinor;

@@ -86,8 +86,11 @@
       const receivablesTotal = summary.receivablesMinor || 0;
       const payablesTotal = summary.payablesMinor || 0;
       const accountBalances = {};
+      // Includes card/wallet clearing money so the dashboard total matches the
+      // accounts page and the actual cash on hand.
+      const balances = await BeeStore.accounts.balances();
       for (const a of accounts) {
-        accountBalances[a.name] = BeeStore.summary.balance(summary, a.id);
+        accountBalances[a.name] = balances[a.id] || 0;
       }
 
       const salesByDay = {};

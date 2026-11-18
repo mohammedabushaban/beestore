@@ -42,14 +42,39 @@
 
     const res = await BeeStore.api.accounts.list();
     if (!res.ok) { toast(res.error.message, 'error'); return; }
+    const settingsRes = await BeeStore.api.settings.get();
+    const settings = settingsRes.ok ? settingsRes.data : {};
 
+    // Card/wallet receipts wait with the provider until a settlement. Show that
+    // money on the account it settles into, and spell out how much of the
+    // balance is still unsettled, so the totals are never "short".
+    let balances = {};
+    const balancesRes = await BeeStore.api.accounts.balances();
+    if (balancesRes.ok) balances = balancesRes.data;
+
+    let total = 0;
     const rows = await Promise.all(res.data.map(async acc => {
-      const balanceRes = await BeeStore.api.accounts.balance(acc.id);
-      const balance = balanceRes.ok ? balanceRes.data : 0;
+      const balance = balances[acc.id] || 0;
+      total += balance;
+      const clearingMethods = (settings.paymentMethods || []).filter(m =>
+        m && m.accountId === acc.id && m.active !== false &&
+        BeeStore.settings.methodKind(settings, m.id) === 'clearing');
+      const clearing = clearingMethods.length
+        ? (await Promise.all(clearingMethods.map(async m => {
+          const q = await BeeStore.api.settlements.quote(m.id, { date: BeeStore.dates.today() });
+          return q.ok ? Math.max(0, q.data.unsettledMinor) : 0;
+        }))).reduce((sum, v) => sum + v, 0)
+        : 0;
       return [
         acc.name,
         acc.type === 'cash' ? 'نقدي' : acc.type === 'bank' ? 'بنك' : 'محفظة',
-        formatMoney(balance),
+        el('div', {}, [
+          el('div', { style: 'font-weight:600;' }, formatMoney(balance)),
+          clearing
+            ? el('div', { class: 'form-hint' }, 'منها ' + formatMoney(clearing) + ' لدى المزوّد')
+            : null,
+        ]),
+        acc.active === false ? el('span', { class: 'badge badge-muted' }, 'موقوف') : '',
         el('button', { class: 'btn btn-sm btn-secondary', onclick: () => _editAccount(acc.id) }, 'تعديل'),
       ];
     }));
@@ -57,11 +82,38 @@
     container.appendChild(el('div', { class: 'table-wrapper' },
       el('table', { class: 'data-table' }, [
         el('thead', {}, el('tr', {}, [
-          el('th', {}, 'الاسم'), el('th', {}, 'النوع'), el('th', {}, 'الرصيد'), el('th', {}, ''),
+          el('th', {}, 'الاسم'), el('th', {}, 'النوع'), el('th', {}, 'الرصيد'),
+          el('th', {}, 'الحالة'), el('th', {}, ''),
         ])),
-        el('tbody', {}, rows.map(r => el('tr', {}, r.map(c => el('td', {}, c))))),
+        el('tbody', {}, rows.map(r => el('tr', {}, r.map(c => el('td', {}, c))))
+          .concat([el('tr', { style: 'font-weight:700; border-top:2px solid var(--border);' }, [
+            el('td', {}, 'الإجمالي'), el('td', {}, ''), el('td', {}, formatMoney(total)),
+            el('td', {}, ''), el('td', {}, ''),
+          ])])),
       ])
     ));
+
+    // A per-method view so a wallet's unsettled money is reviewable even when
+    // the method is inactive or its account was re-pointed.
+    const overview = await BeeStore.api.settlements.overview(BeeStore.dates.today());
+    if (overview.ok && overview.data.methods.length) {
+      const methodRows = overview.data.methods.map(m => el('tr', {}, [
+        el('td', {}, m.methodName || m.method),
+        el('td', {}, formatMoney(Math.max(0, m.unsettledMinor || 0))),
+        el('td', {}, m.method),
+      ]));
+      container.appendChild(el('div', { class: 'card' }, [
+        el('h3', {}, 'البطاقات والمحافظ — غير مسوّى'),
+        el('p', { class: 'form-hint' },
+          'هذه مبالغ موجودة فعلياً لكنها لم تصل بعد إلى حساب بنكي. تظهر ضمن رصيد الحساب المرتبط بالطريقة.'),
+        el('table', { class: 'data-table' }, [
+          el('thead', {}, el('tr', {}, [
+            el('th', {}, 'طريقة الدفع'), el('th', {}, 'غير مسوّى'), el('th', {}, 'المعرّف'),
+          ])),
+          el('tbody', {}, methodRows),
+        ]),
+      ]));
+    }
   }
 
   async function _renderLedger(container) {

@@ -109,10 +109,56 @@
     method.kind = METHOD_KINDS.indexOf(method.kind) >= 0
       ? method.kind
       : inferKind(method.id);
+    // An inactive method stays in settings (so historical documents keep their
+    // label and balance) but is hidden from POS/collections pickers.
+    method.active = method.active !== false;
     method.feeBasisPoints = Math.max(0, Number(method.feeBasisPoints) || 0);
     method.feeFixedMinor = Math.max(0, Math.round(Number(method.feeFixedMinor) || 0));
     method.settlementDays = Math.max(0, Math.floor(Number(method.settlementDays) || 0));
     return method;
+  }
+
+  /**
+   * Documents that reference a payment-method id. Used to block deleting a
+   * method that already moved money, which would hide its balance and break
+   * historical reports.
+   * @param {object} reader repository or transaction
+   * @param {string} methodId payment method id
+   * @returns {Promise<{sales:number,collections:number,returns:number,expenses:number,settlements:number,total:number}>}
+   */
+  async function methodUsage(reader, methodId) {
+    const usage = { sales: 0, collections: 0, returns: 0, expenses: 0, settlements: 0, total: 0 };
+    if (!methodId) return usage;
+    const wanted = String(methodId);
+    const sales = await reader.list('sales');
+    for (const sale of sales) {
+      for (const p of (sale.payments || [])) {
+        if (String(p.method || '') === wanted) { usage.sales++; break; }
+      }
+    }
+    const collections = await reader.list('customerPayments');
+    for (const p of collections) {
+      if (String(p.method || '') === wanted) usage.collections++;
+    }
+    const returns = await reader.list('salesReturns');
+    for (const r of returns) {
+      if (String(r.refundPaymentMethod || '') === wanted) usage.returns++;
+    }
+    const expenses = await reader.list('expenses');
+    for (const e of expenses) {
+      if (String(e.method || '') === wanted) usage.expenses++;
+    }
+    const expensePayments = await reader.list('expensePayments');
+    for (const p of expensePayments) {
+      if (String(p.method || '') === wanted) usage.expenses++;
+    }
+    const settlements = await reader.list('cardSettlements');
+    for (const s of settlements) {
+      if (String(s.method || '') === wanted) usage.settlements++;
+    }
+    usage.total = usage.sales + usage.collections + usage.returns +
+      usage.expenses + usage.settlements;
+    return usage;
   }
 
   function normaliseComponent(component, index) {
@@ -160,6 +206,30 @@
         if (Array.isArray(updated.paymentMethods)) {
           updated.paymentMethods = updated.paymentMethods.map(normaliseMethod);
         }
+        // A new method has no clearing chart account until the chart is seeded
+        // again. Seed inside this same transaction so a card/wallet method can
+        // be used (and settled) immediately after saving.
+        const methodsChanged = !existing ||
+          JSON.stringify(((existing.paymentMethods) || []).map(m => m && m.id).sort()) !==
+          JSON.stringify(((updated.paymentMethods) || []).map(m => m && m.id).sort());
+        // Deleting a method that already moved money hides its balance and the
+        // daily-closing / settlement rows that reference it. Require the owner
+        // to deactivate it instead, so history stays reviewable.
+        if (existing && Array.isArray(existing.paymentMethods) &&
+          Array.isArray(updated.paymentMethods)) {
+          const kept = new Set(updated.paymentMethods.map(m => m.id));
+          const removed = existing.paymentMethods.filter(m => m && !kept.has(m.id));
+          // Only the removal path needs a document scan; ordinary settings
+          // saves (fees, labels, account re-pointing) stay cheap.
+          for (const old of removed) {
+            const usage = await methodUsage(tx, old.id);
+            if (usage.total > 0) {
+              throw BeeStore.errors.err('VALIDATION',
+                'لا يمكن حذف طريقة الدفع «' + (old.name || old.id) + '» لأن عليها ' +
+                usage.total + ' حركة مسجّلة. أوقفها بدل حذفها لتبقى مبالغها وتقاريرها ظاهرة.');
+            }
+          }
+        }
         const components = Array.isArray(updated.payrollComponents)
           ? updated.payrollComponents : DEFAULT_SETTINGS.payrollComponents;
         updated.payrollComponents = components.map(normaliseComponent);
@@ -167,7 +237,12 @@
         updated.capitalizationWarnThresholdMinor = Math.max(0,
           Math.round(Number(updated.capitalizationWarnThresholdMinor) || 0));
         tx.put('meta', updated);
-        return updated;
+        let stored = updated;
+        if (methodsChanged && BeeStore.chart && BeeStore.chart.ensureSeededTx) {
+          await BeeStore.chart.ensureSeededTx(tx);
+          stored = (await tx.get('meta', 'settings')) || updated;
+        }
+        return stored;
       });
     }
 
@@ -301,6 +376,28 @@
         : DEFAULT_SETTINGS.paymentMethods;
       const found = methods.find(m => m.id === method);
       return found ? normaliseMethod(found) : null;
+    }
+
+    /**
+     * How many documents reference a payment-method id. Lets the owner review a
+     * method before deactivating or deleting it.
+     * @param {string} methodId payment method id
+     * @returns {Promise<object>} usage counts
+     */
+    async usage(methodId) {
+      return methodUsage(this.repo, methodId);
+    }
+
+    /**
+     * Methods hidden from POS/collection pickers because they are inactive but
+     * kept for history.
+     * @param {object} settings settings record
+     * @returns {object[]} inactive methods
+     */
+    inactiveMethods(settings) {
+      return ((settings && settings.paymentMethods) || [])
+        .filter(m => m && m.active === false)
+        .map(m => normaliseMethod(m));
     }
 
     /**

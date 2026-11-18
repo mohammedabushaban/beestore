@@ -592,7 +592,7 @@
     const methods = settings && Array.isArray(settings.paymentMethods) && settings.paymentMethods.length
       ? settings.paymentMethods
       : DEFAULT_METHODS;
-    return methods.map(m => ({ value: m.id, label: m.name }));
+    return methods.filter(m => m.active !== false).map(m => ({ value: m.id, label: m.name }));
   }
 
   function _addPayment(container, opts) {

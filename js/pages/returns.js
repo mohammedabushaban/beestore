@@ -303,7 +303,8 @@
     BeeStore.api.settings.get().then(res => {
       if (!res.ok) return;
       const methods = (res.data.paymentMethods || [])
-        .filter(m => BeeStore.settings.methodKind(res.data, m.id) !== 'customer_credit');
+        .filter(m => m.active !== false &&
+          BeeStore.settings.methodKind(res.data, m.id) !== 'customer_credit');
       methodSelect.textContent = '';
       for (const method of methods) {
         methodSelect.appendChild(el('option', { value: method.id }, method.name));
@@ -409,7 +410,8 @@
     BeeStore.api.settings.get().then(res => {
       if (!res.ok) return;
       const methods = (res.data.paymentMethods || [])
-        .filter(m => BeeStore.settings.methodKind(res.data, m.id) !== 'customer_credit');
+        .filter(m => m.active !== false &&
+          BeeStore.settings.methodKind(res.data, m.id) !== 'customer_credit');
       methodSelect.textContent = '';
       for (const method of methods) {
         methodSelect.appendChild(el('option', { value: method.id }, method.name));

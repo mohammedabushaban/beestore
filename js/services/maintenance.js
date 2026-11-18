@@ -806,6 +806,84 @@
       };
     }
 
+    /**
+     * Reviews how payment methods map to money accounts. Answers "where did the
+     * money go?" after a method was deleted or re-pointed:
+     * per method: account, usage counts, unsettled clearing balance;
+     * plus orphan methods still holding money but missing from settings.
+     * @returns {Promise<object>} {methods, orphans, totals, warnings}
+     */
+    async paymentAudit() {
+      const settings = (await this.repo.get('meta', 'settings')) || {};
+      const accounts = await this.repo.list('accounts');
+      const summary = await this.repo.getSummary();
+      const accountById = {};
+      for (const a of accounts) accountById[a.id] = a;
+      const methods = (settings.paymentMethods || []).map(m => m && m.id ? m : null)
+        .filter(Boolean);
+      const known = new Set(methods.map(m => m.id));
+      const balances = await BeeStore.accounts.balances();
+      const rows = [];
+      for (const m of methods) {
+        const account = m.accountId ? accountById[m.accountId] : null;
+        const usage = await BeeStore.settings.usage(m.id);
+        rows.push({
+          id: m.id,
+          name: m.name || m.id,
+          kind: BeeStore.settings.methodKind(settings, m.id),
+          active: m.active !== false,
+          accountId: m.accountId || null,
+          accountName: account ? account.name : '',
+          accountActive: account ? account.active !== false : false,
+          hasAccount: !!account,
+          chartAccountId: m.chartAccountId || null,
+          usage,
+          unsettledMinor: BeeStore.summary.methodBalance(summary, m.id),
+        });
+      }
+      // Money still held by a method that no longer exists in settings.
+      const orphans = [];
+      for (const id of Object.keys(summary.methodBalances || {})) {
+        if (known.has(id)) continue;
+        const amount = BeeStore.summary.methodBalance(summary, id);
+        if (!amount) continue;
+        const usage = await BeeStore.settings.usage(id);
+        orphans.push({ id, unsettledMinor: amount, usage });
+      }
+      const activeBalances = balances;
+      const totals = {
+        accountsMinor: Object.keys(activeBalances)
+          .reduce((sum, id) => sum + (activeBalances[id] || 0), 0),
+        clearingMinor: Object.keys(summary.methodBalances || {})
+          .reduce((sum, id) => sum + (summary.methodBalances[id] || 0), 0),
+      };
+      const warnings = [];
+      for (const row of rows) {
+        if (!row.hasAccount && row.kind !== 'customer_credit') {
+          warnings.push({
+            code: 'NO_ACCOUNT', methodId: row.id,
+            message: 'طريقة الدفع «' + row.name + '» غير مرتبطة بأي حساب، لذلك لا يظهر رصيدها في صفحة الحسابات.',
+          });
+        }
+        if (row.kind === 'clearing' && row.accountId &&
+          row.accountActive === false) {
+          warnings.push({
+            code: 'INACTIVE_ACCOUNT', methodId: row.id,
+            message: 'حساب طريقة الدفع «' + row.name + '» موقوف؛ المبالغ الجديدة لن تظهر في الحساب.',
+          });
+        }
+      }
+      for (const orphan of orphans) {
+        warnings.push({
+          code: 'DELETED_METHOD', methodId: orphan.id,
+          message: 'طريقة الدفع «' + orphan.id + '» حُذفت من الإعدادات وما زال عليها ' +
+            BeeStore.money.format(orphan.unsettledMinor) +
+            '. أعد إضافتها بنفس المعرّف أو سوِّ مبلغها حتى لا يبقى الرصيد بلا حساب.',
+        });
+      }
+      return { methods: rows, orphans, totals, warnings };
+    }
+
     async isDatabaseEmpty() {
       const collections = [
         'products', 'variants', 'sales', 'salesReturns', 'customers', 'customerPayments',

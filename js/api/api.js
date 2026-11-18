@@ -269,6 +269,7 @@
       get: async () => ok(await BeeStore.settings.get()),
       save: async (data) => ok(await BeeStore.settings.save(data)),
       update: async (patch) => ok(await BeeStore.settings.update(patch)),
+      methodUsage: async (methodId) => ok(await BeeStore.settings.usage(methodId)),
     };
 
     accounts = {
@@ -277,6 +278,7 @@
       create: async (data) => ok(await BeeStore.accounts.create(data)),
       update: async (id, patch) => ok(await BeeStore.accounts.update(id, patch)),
       balance: async (id) => ok(await BeeStore.accounts.balance(id)),
+      balances: async () => ok(await BeeStore.accounts.balances()),
       balanceAsOf: async (id, date) => ok(await BeeStore.accounts.balanceAsOf(id, date)),
       ledger: async (id, range) => ok(await BeeStore.accounts.getLedger(id, range)),
     };
@@ -576,6 +578,7 @@
         ok(await BeeStore.maintenance.reclassifyStockEquity(options)),
       integrityCheck: async () => ok(await BeeStore.maintenance.integrityCheck()),
       journalIntegrity: async (options) => ok(await BeeStore.journalIntegrity.check(options)),
+      paymentAudit: async () => ok(await BeeStore.maintenance.paymentAudit()),
       resetAll: async () => ok(await BeeStore.maintenance.resetAll()),
       isDatabaseEmpty: async () => ok(await BeeStore.maintenance.isDatabaseEmpty()),
     };

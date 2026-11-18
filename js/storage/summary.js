@@ -14,7 +14,7 @@
   // returned transiently in `days` (never persisted) so an as-of date inside
   // the current month can be computed from that month's documents without
   // scanning the whole history.
-  const VERSION = 10;
+  const VERSION = 11;
 
   const COLLECTIONS = [
     'accounts', 'sales', 'purchases', 'customerPayments', 'supplierPayments',
@@ -28,6 +28,11 @@
     return {
       version: VERSION,
       accountBalances: {},
+      // v5 §6: money held by a card/wallet provider until settlement belongs
+      // to the payment method, not to a cash/bank account. Keying it by method
+      // id keeps the balance correct when the method's account is re-pointed
+      // or the method is removed from settings (the document snapshot stays).
+      methodBalances: {},
       receivablesMinor: 0,
       payablesMinor: 0,
       unpaidExpensesMinor: 0,
@@ -40,6 +45,7 @@
   function emptyMonth() {
     return {
       accounts: {},
+      methods: {},
       flowTypes: {},
       customers: {},
       suppliers: {},
@@ -70,12 +76,13 @@
   }
 
   function emptyDay() {
-    return { accounts: {}, customers: {}, suppliers: {}, tax: 0, openingInventory: 0, unpaidExpenses: 0 };
+    return { accounts: {}, methods: {}, customers: {}, suppliers: {}, tax: 0, openingInventory: 0, unpaidExpenses: 0 };
   }
 
   function emptyContribution() {
     return {
       accounts: {},
+      methodBalances: {},
       receivables: 0,
       payables: 0,
       unpaidExpenses: 0,
@@ -98,6 +105,20 @@
   function addTo(map, key, amount) {
     if (!key || !amount) return;
     map[key] = (map[key] || 0) + amount;
+  }
+
+  // Clearing money (card/wallet) is tracked per payment method so a deleted or
+  // re-pointed method can never make the money disappear from the accounts.
+  // Month/day buckets let an as-of date stay correct too.
+  function addMethod(out, methodId, amount, when, fallbackDate) {
+    if (!methodId || !amount) return;
+    if (!out.methodBalances) out.methodBalances = {};
+    addTo(out.methodBalances, methodId, amount);
+    const day = dayOf(when || fallbackDate);
+    const mb = ensureMonth(out, monthOf(day));
+    if (mb) addTo(mb.methods, methodId, amount);
+    const db = ensureDay(out, day);
+    if (db) addTo(db.methods, methodId, amount);
   }
 
   function ensureMonth(out, month) {
@@ -277,7 +298,10 @@
           const amount = Number(p.amountMinor) || 0;
           const change = Number(p.changeMinor) || 0;
           const netCash = amount - change;
-          if (p.methodKind !== 'clearing') {
+          if (p.methodKind === 'clearing') {
+            // The provider holds the money until a settlement arrives.
+            addMethod(out, p.method, netCash, p.date || doc.date);
+          } else {
             account('sale_payment', p.accountId, netCash, p.date || doc.date);
           }
           // A payment attached to the invoice cuts the customer's balance on
@@ -342,7 +366,9 @@
           }
           break;
         }
-        if (doc.methodKind !== 'clearing') {
+        if (doc.methodKind === 'clearing') {
+          addMethod(out, doc.method, amount, doc.date);
+        } else {
           account('customer_payment', doc.accountId, amount);
         }
         addCustomer(out, monthBucket, dayBucket, doc.customerId, -amount);
@@ -359,7 +385,11 @@
         {
           const paid = initialPaidMinor(doc);
           const amount = Math.max(0, Math.round(Number(doc.amountMinor) || 0));
-          if (doc.methodKind !== 'clearing') account('expense', doc.accountId, -paid);
+          if (doc.methodKind === 'clearing') {
+            addMethod(out, doc.paymentMethod || doc.method, -paid, doc.date);
+          } else {
+            account('expense', doc.accountId, -paid);
+          }
           addUnpaidAt(out, amount - paid, doc.date);
           if (doc.categoryName !== 'رواتب') addExpenseToMonths(out, doc);
         }
@@ -367,7 +397,11 @@
       case 'expensePayments': {
         if (doc.voided) break;
         const amount = Math.round(Number(doc.amountMinor) || 0);
-        if (doc.methodKind !== 'clearing') account('expense_payment', doc.accountId, -amount);
+        if (doc.methodKind === 'clearing') {
+          addMethod(out, doc.paymentMethod || doc.method, -amount, doc.date);
+        } else {
+          account('expense_payment', doc.accountId, -amount);
+        }
         addUnpaidAt(out, -amount, doc.date);
         break;
       }
@@ -403,8 +437,12 @@
       }
       case 'salesReturns': {
         const amount = Number(doc.refundMinor) || 0;
-        if (doc.refundMode === 'cash_refund' && doc.refundMethodKind !== 'clearing') {
-          account('return_refund', doc.refundMethod, -amount);
+        if (doc.refundMode === 'cash_refund') {
+          if (doc.refundMethodKind === 'clearing') {
+            addMethod(out, doc.refundPaymentMethod, -amount, doc.date);
+          } else {
+            account('return_refund', doc.refundMethod, -amount);
+          }
         }
         // A customer credit or exchange reduces the customer's net position
         // (AR or 2030); a cash refund does not touch AR.
@@ -445,6 +483,9 @@
       case 'cardSettlements': {
         if (doc.voided) break;
         account('card_settlement', doc.bankAccountId, Number(doc.netReceivedMinor) || 0);
+        // The gross leaves the provider's clearing balance; only the net lands
+        // in the bank, and the fee is the cost of collecting it.
+        addMethod(out, doc.method, -(Number(doc.grossMinor) || 0), doc.date);
         if (monthBucket) {
           const feeMinor = Number(doc.feeMinor) || 0;
           monthBucket.pnl.cardFees += feeMinor;
@@ -549,7 +590,8 @@
 
   function isEmptyMonth(bucket) {
     if (!bucket) return true;
-    if (Object.keys(bucket.accounts).length || Object.keys(bucket.flowTypes).length ||
+    if (Object.keys(bucket.accounts).length || Object.keys(bucket.methods || {}).length ||
+      Object.keys(bucket.flowTypes).length ||
       Object.keys(bucket.customers).length || Object.keys(bucket.suppliers).length) return false;
     if (bucket.capitalIn || bucket.withdrawals || bucket.openingInventory) return false;
     if (bucket.unpaidExpenses) return false;
@@ -569,7 +611,8 @@
     }
     for (const key of Object.keys(out.days)) {
       const day = out.days[key];
-      if (!Object.keys(day.accounts).length && !Object.keys(day.customers).length &&
+      if (!Object.keys(day.accounts).length && !Object.keys(day.methods || {}).length &&
+        !Object.keys(day.customers).length &&
         !Object.keys(day.suppliers).length && !day.tax && !day.openingInventory &&
         !day.unpaidExpenses) {
         delete out.days[key];
@@ -588,6 +631,8 @@
   function applyContribution(summary, contrib, sign) {
     if (!summary || !contrib) return;
     applyNumeric(summary.accountBalances, contrib.accounts, sign);
+    if (!summary.methodBalances) summary.methodBalances = {};
+    applyNumeric(summary.methodBalances, contrib.methodBalances || {}, sign);
     summary.receivablesMinor += sign * (Number(contrib.receivables) || 0);
     summary.payablesMinor += sign * (Number(contrib.payables) || 0);
     summary.unpaidExpensesMinor += sign * (Number(contrib.unpaidExpenses) || 0);
@@ -600,6 +645,8 @@
       const bucket = summary.months[month];
       const source = contrib.months[month];
       applyNumeric(bucket.accounts, source.accounts, sign);
+      if (!bucket.methods) bucket.methods = {};
+      applyNumeric(bucket.methods, source.methods || {}, sign);
       applyNumeric(bucket.customers, source.customers, sign);
       applyNumeric(bucket.suppliers, source.suppliers, sign);
       applyNumeric(bucket.pnl.expensesByCategory, source.pnl.expensesByCategory, sign);
@@ -858,6 +905,16 @@
     return (summary && summary.accountBalances && summary.accountBalances[accountId]) || 0;
   }
 
+  /**
+   * Money a payment method is still holding (card/wallet clearing balance).
+   * @param {Object} summary summary
+   * @param {string} methodId payment method id
+   * @returns {number} signed balance in minor units
+   */
+  function methodBalance(summary, methodId) {
+    return (summary && summary.methodBalances && summary.methodBalances[methodId]) || 0;
+  }
+
   BeeStore.summary = {
     VERSION,
     COLLECTIONS,
@@ -879,6 +936,7 @@
     capitalThrough,
     overdue,
     balance,
+    methodBalance,
   };
   if (typeof module !== 'undefined') module.exports = BeeStore.summary;
 })(typeof window !== 'undefined' ? window : globalThis);

@@ -151,6 +151,8 @@
       const feeRateInput = input('number', ((Number(current.feeBasisPoints) || 0) / 100).toFixed(2), { min: 0, step: 0.01 });
       const feeFixedInput = input('number', ((Number(current.feeFixedMinor) || 0) / 100).toFixed(2), { min: 0, step: 0.01 });
       const daysInput = input('number', String(Math.max(0, Number(current.settlementDays) || 0)), { min: 0, step: 1 });
+      const activeCheck = el('input', { type: 'checkbox' });
+      activeCheck.checked = current.active !== false;
       const id = current.id || BeeStore.ids.randomId('pm');
       const row = el('div', { class: 'payment-method-row', 'data-id': id });
       row.appendChild(el('div', { class: 'form-group', style: 'flex:2; min-width:140px;' }, [el('label', { class: 'form-label' }, 'الاسم'), nameInput]));
@@ -159,6 +161,7 @@
       row.appendChild(el('div', { class: 'form-group', style: 'min-width:105px;' }, [el('label', { class: 'form-label' }, 'العمولة ٪'), feeRateInput]));
       row.appendChild(el('div', { class: 'form-group', style: 'min-width:105px;' }, [el('label', { class: 'form-label' }, 'عمولة ثابتة'), feeFixedInput]));
       row.appendChild(el('div', { class: 'form-group', style: 'min-width:95px;' }, [el('label', { class: 'form-label' }, 'أيام التسوية'), daysInput]));
+      row.appendChild(el('label', { style: 'align-self:flex-end; display:flex; gap:6px; align-items:center;' }, [activeCheck, 'نشطة']));
       row.appendChild(el('button', { class: 'btn btn-sm btn-danger', onclick: () => row.remove(), style: 'align-self:flex-end;' }, 'حذف'));
       row._nameInput = nameInput;
       row._accSelect = accSelect;
@@ -166,6 +169,7 @@
       row._feeRateInput = feeRateInput;
       row._feeFixedInput = feeFixedInput;
       row._daysInput = daysInput;
+      row._activeCheck = activeCheck;
       row._chartAccountId = current.chartAccountId || null;
       rows.appendChild(row);
     }
@@ -176,6 +180,7 @@
     container.appendChild(el('div', { class: 'card' }, [
       el('h3', {}, 'طرق الدفع'),
       el('p', { class: 'form-hint' }, 'تظهر هذه الطرق في نقطة البيع وعند استلام الدفعات. طرق البطاقة والمحفظة ترحّل إلى حساب تسوية مستقل، وتُستخدم نسبة العمولة والعمولة الثابتة لحساب العمولة المتوقعة عند التسوية.'),
+      el('p', { class: 'form-hint' }, 'أوقف الطريقة بدل حذفها إذا سبق استخدامها: الطريقة الموقوفة لا تظهر في البيع لكن مبالغها تبقى ظاهرة في الحسابات والتقارير. الحذف مسموح فقط لطريقة بلا أي حركة.'),
       rows,
       el('div', { class: 'dialog-actions' }, [
         el('button', { class: 'btn btn-secondary', onclick: () => _addRow(null) }, '+ إضافة طريقة'),
@@ -192,6 +197,7 @@
                 kind: row._kindSelect.value,
                 accountId: row._accSelect.value || null,
                 chartAccountId: row._chartAccountId,
+                active: row._activeCheck ? row._activeCheck.checked : true,
                 feeBasisPoints: Math.max(0, Math.round(BeeStore.money.parseDecimal(row._feeRateInput.value) * 100)),
                 feeFixedMinor: Math.max(0, BeeStore.money.fromMajor(row._feeFixedInput.value)),
                 settlementDays: Math.max(0, Math.floor(BeeStore.money.parseDecimal(row._daysInput.value))),
@@ -709,6 +715,22 @@
     ]);
     container.appendChild(equityCard);
 
+    const auditBox = el('div', { id: 'payment-audit' });
+    container.appendChild(el('div', { class: 'card' }, [
+      el('h3', {}, 'مراجعة طرق الدفع والحسابات'),
+      el('p', { class: 'form-hint' },
+        'يعرض هذا الفحص أين تذهب أموال كل طريقة دفع: الحساب المرتبط بها، عدد الحركات، والمبلغ غير المسوّى. ' +
+        'استخدمه إذا حُذفت طريقة دفع أو تغيّر حسابها ولم تجد المبالغ في صفحة الحسابات.'),
+      el('div', { class: 'dialog-actions' }, [
+        el('button', {
+          class: 'btn btn-secondary',
+          type: 'button',
+          onclick: () => _loadPaymentAudit(auditBox),
+        }, 'مراجعة الآن'),
+      ]),
+      auditBox,
+    ]));
+
     // v2 §12.3: error log viewer (technical details only, no business data).
     const errList = el('div', { id: 'errorlog-list' }, [el('p', {}, 'جاري التحميل...')]);
     container.appendChild(el('div', { class: 'card' }, [
@@ -734,6 +756,60 @@
       ]),
     ]));
     _loadErrorLog(errList);
+  }
+
+  async function _loadPaymentAudit(host) {
+    host.innerHTML = '<p class="form-hint">جاري المراجعة...</p>';
+    const res = await BeeStore.api.maintenance.paymentAudit();
+    host.innerHTML = '';
+    if (!res.ok) {
+      host.appendChild(el('p', { class: 'alert alert-danger' }, res.error.message));
+      return;
+    }
+    const d = res.data;
+    const kindLabel = {
+      cash: 'نقدي', bank_direct: 'بنك مباشر', clearing: 'بطاقة/محفظة',
+      customer_credit: 'رصيد زبون',
+    };
+    if (d.warnings.length === 0) {
+      host.appendChild(el('p', { class: 'alert alert-success' },
+        '✓ كل طرق الدفع مرتبطة بحسابات، ولا توجد مبالغ بلا حساب.'));
+    } else {
+      for (const w of d.warnings) {
+        host.appendChild(el('p', { class: 'alert alert-warning' }, w.message));
+      }
+    }
+    const rows = d.methods.map(m => el('tr', {}, [
+      el('td', {}, m.name),
+      el('td', {}, kindLabel[m.kind] || m.kind),
+      el('td', {}, m.active ? 'نشطة' : 'موقوفة'),
+      el('td', {}, m.accountName || el('span', { class: 'text-danger' }, 'بلا حساب')),
+      el('td', {}, String(m.usage.total)),
+      el('td', {}, formatMoney(m.unsettledMinor)),
+    ]));
+    if (d.orphans.length) {
+      for (const o of d.orphans) {
+        rows.push(el('tr', { style: 'background: var(--danger-bg, #fdecec);' }, [
+          el('td', {}, o.id + ' (محذوفة)'),
+          el('td', {}, '—'),
+          el('td', {}, 'محذوفة'),
+          el('td', {}, el('span', { class: 'text-danger' }, 'بلا حساب')),
+          el('td', {}, String(o.usage.total)),
+          el('td', {}, formatMoney(o.unsettledMinor)),
+        ]));
+      }
+    }
+    host.appendChild(el('div', { class: 'table-wrapper' },
+      el('table', { class: 'data-table' }, [
+        el('thead', {}, el('tr', {}, [
+          el('th', {}, 'طريقة الدفع'), el('th', {}, 'النوع'), el('th', {}, 'الحالة'),
+          el('th', {}, 'الحساب'), el('th', {}, 'الحركات'), el('th', {}, 'غير مسوّى'),
+        ])),
+        el('tbody', {}, rows),
+      ])));
+    host.appendChild(el('p', { class: 'form-hint' },
+      'إجمالي أرصدة الحسابات: ' + formatMoney(d.totals.accountsMinor) +
+      ' — منها ' + formatMoney(d.totals.clearingMinor) + ' لدى البطاقات والمحافظ.'));
   }
 
   async function _previewStockEquity(host) {

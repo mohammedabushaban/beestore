@@ -4,7 +4,8 @@
 None. v5 §13 build order A1–A6 is complete; remaining work is the v4 milestones below.
 
 ## Current state (verified 2026-11-17)
-- App `3.6.0-lite`, `schemaVersion` 10, `dbVersion` 10, summary `VERSION` 10.
+- App `3.6.0-lite`, `schemaVersion` 10, `dbVersion` 10, summary `VERSION` 11
+  (payment-method clearing balances).
 - Purchase invoices now search **products** by name/item code/barcode (not a
   flat size/colour variant list), load the chosen product's variants, prefill
   cost from the variant, and offer inline Quick Add. A product created there is

@@ -274,18 +274,46 @@
     async overview(date) {
       const asOf = date || BeeStore.dates.today();
       const settings = await BeeStore.settings.get();
+      const month = asOf.slice(0, 7);
+      const monthSettlements = await this.repo.listRange('cardSettlements', month + '-01',
+        BeeStore.dates.monthRange(month).to, doc => !doc.voided);
+      const summary = await this.repo.getSummary();
       const methods = (settings.paymentMethods || [])
         .filter(method => BeeStore.settings.methodKind(settings, method.id) === 'clearing');
       const rows = [];
-      for (const method of methods) {
-        const quote = await this.quote(method.id, { date: asOf });
-        const month = asOf.slice(0, 7);
-        const settlements = await this.repo.listRange('cardSettlements', month + '-01',
-          BeeStore.dates.monthRange(month).to,
-          doc => !doc.voided && doc.method === method.id);
+      const seen = {};
+      const pushRow = async (methodId, methodName, known) => {
+        if (seen[methodId]) return;
+        seen[methodId] = true;
+        const settlements = monthSettlements.filter(doc => doc.method === methodId);
         const feesMonthMinor = settlements.reduce((sum, doc) => sum + round(doc.feeMinor), 0);
         const expectedFeesMonthMinor = settlements.reduce((sum, doc) => sum + round(doc.expectedFeeMinor), 0);
         const settledMonthMinor = settlements.reduce((sum, doc) => sum + round(doc.grossMinor), 0);
+        let quote;
+        try {
+          quote = known
+            ? await this.quote(methodId, { date: asOf })
+            : null;
+        } catch (e) {
+          quote = null;
+        }
+        if (!quote) {
+          // Deleted method, or a configured one whose clearing account is
+          // missing: its money is still tracked by id in the summary, so show
+          // it instead of hiding the balance.
+          quote = {
+            method: methodId,
+            methodName: methodName || methodId,
+            date: asOf,
+            unsettledMinor: Math.max(0, BeeStore.summary.methodBalance(summary, methodId)),
+            receipts: [],
+            expectedFeeMinor: 0,
+            grossMinor: 0,
+            suggestedNetMinor: 0,
+            reconciled: false,
+            missingMethod: true,
+          };
+        }
         rows.push({
           ...quote,
           feesMonthMinor,
@@ -295,6 +323,17 @@
           effectiveFeeBasisPoints: settledMonthMinor > 0
             ? Math.round(feesMonthMinor * 10000 / settledMonthMinor) : 0,
         });
+      };
+      for (const method of methods) await pushRow(method.id, method.name, true);
+      // Methods removed from settings but still holding money or settled this
+      // month must stay reviewable.
+      for (const id of Object.keys(summary.methodBalances || {})) {
+        if (seen[id] || !summary.methodBalances[id]) continue;
+        await pushRow(id, id, false);
+      }
+      for (const doc of monthSettlements) {
+        if (seen[doc.method]) continue;
+        await pushRow(doc.method, doc.methodName || doc.method, false);
       }
       return { date: asOf, methods: rows };
     }

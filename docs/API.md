@@ -9,11 +9,13 @@ All methods return `{ ok: true, data: ... }` or `{ ok: false, error: { code, mes
 | `settings.get()` | `GET /api/settings` | Get all settings |
 | `settings.save(data)` | `PUT /api/settings` | Save all settings |
 | `settings.update(patch)` | `PATCH /api/settings` | Update settings partially |
+| `settings.methodUsage(methodId)` | `GET /api/settings/payment-methods/:id/usage` | Count documents that reference a payment method |
 | `accounts.list()` | `GET /api/accounts` | List all accounts |
 | `accounts.get(id)` | `GET /api/accounts/:id` | Get account by ID |
 | `accounts.create(data)` | `POST /api/accounts` | Create new account |
 | `accounts.update(id, patch)` | `PATCH /api/accounts/:id` | Update account |
-| `accounts.balance(id)` | `GET /api/accounts/:id/balance` | Get account balance |
+| `accounts.balance(id)` | `GET /api/accounts/:id/balance` | Get account balance (includes card/wallet clearing money) |
+| `accounts.balances()` | `GET /api/accounts/balances` | All account balances in one read (includes clearing) |
 | `accounts.ledger(id, range)` | `GET /api/accounts/:id/ledger?from=&to=` | Get account ledger |
 | `chart.list(options)` | `GET /api/chart?activeOnly=` | List v5 chart accounts (sorted by code) |
 | `chart.get(id)` | `GET /api/chart/:id` | Get a chart account |
@@ -160,6 +162,7 @@ All methods return `{ ok: true, data: ... }` or `{ ok: false, error: { code, mes
 | `maintenance.recalculateStock()` | `POST /api/maintenance/recalculate-stock` | Recalculate stock |
 | `maintenance.resetAll()` | `POST /api/maintenance/reset` | Reset all data |
 | `maintenance.isDatabaseEmpty()` | `GET /api/maintenance/empty` | Check if empty |
+| `maintenance.paymentAudit()` | `GET /api/maintenance/payment-audit` | Per-method account/usage/unsettled review + orphans |
 | `audit.list(limit)` | `GET /api/audit?limit=` | List audit log |
 | `security.status()` | `GET /api/security/status` | Local lock/profile state (no PIN material) |
 | `security.profiles()` | `GET /api/security/profiles` | Owner/cashier `{id,name,pinSet}` only |

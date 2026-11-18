@@ -14,7 +14,8 @@ IndexedDB (`beestore`), with an optional JSON file mirror. Accounting is
 double-entry (v5 journal) with a document-derived fallback.
 
 - App version: `3.6.0-lite`; `schemaVersion` 10; `dbVersion` 10; summary
-  `VERSION` 10. Confirm in `js/core/namespace.js`, `js/storage/idbRepository.js`,
+  `VERSION` 11 (payment-method clearing balances). Confirm in
+  `js/core/namespace.js`, `js/storage/idbRepository.js`,
   `js/storage/summary.js`.
 - Money is **always integer minor units** (agorot). `₪ 12.34` → `1234`.
   Format only at the UI via `BeeStore.money.format(minor)` → `"12.34 ₪"`.

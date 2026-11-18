@@ -948,6 +948,7 @@
       : BeeStore.settings.methodOptions();
     for (const m of methods) {
       if (m.id === 'cash') continue;
+      if (m.active === false) continue;
       const account = m.accountId || BeeStore.settings.resolvePaymentAccount(settings, m.id);
       if (account && account === preview.cashDrawerAccountId) continue;
       out.push(m.id);
